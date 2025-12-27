@@ -3,67 +3,80 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MyFin - Modular</title>
+    <title>MyFin - Cloud Edition</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = { darkMode: 'class' }
-    </script>
+    <script>tailwind.config = { darkMode: 'class' }</script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700&family=Playfair+Display:wght@400;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
 
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700&display=swap" rel="stylesheet">
     <style> 
         [v-cloak] { display: none; } 
-        body { font-family: 'Inter', sans-serif; transition: background-color 0.3s, color 0.3s; }
-        
-        /* TEMPLATES */
-        .doc-clean { font-family: 'Inter', sans-serif; color: #334155; }
-        .doc-clean .doc-header { border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 20px; }
-        .doc-clean .doc-title { font-size: 2.5rem; font-weight: 800; text-transform: uppercase; letter-spacing: -1px; color: #0f172a; }
-        .doc-clean .doc-table th { border-bottom: 2px solid #0f172a; color: #0f172a; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
-        
-        .doc-corporate { font-family: 'Arial', sans-serif; color: #1e293b; }
-        .doc-corporate .doc-header { background-color: #1e293b; color: white; padding: 30px; margin: -50px -50px 30px -50px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        .doc-corporate .doc-title { font-size: 2rem; font-weight: 700; text-transform: uppercase; color: white; }
-        .doc-corporate .doc-table th { background-color: #f1f5f9; color: #334155; font-weight: bold; border: none; padding: 10px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        .doc-corporate .doc-total-box { background-color: #1e293b; color: white; padding: 10px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-        .doc-classic { font-family: 'Playfair Display', serif; color: #2a2a2a; }
-        .doc-classic .doc-header { text-align: center; border-bottom: 1px double #ccc; padding-bottom: 30px; margin-bottom: 30px; }
-        .doc-classic .doc-title { font-size: 3rem; font-weight: 400; font-style: italic; color: #444; }
-        .doc-classic .doc-table th { border-top: 1px solid #444; border-bottom: 1px solid #444; font-family: 'Inter', sans-serif; font-size: 0.8rem; padding: 10px 0; }
-
+        body { font-family: 'Inter', sans-serif; transition: background-color 0.3s; }
+        .toast-enter-active, .toast-leave-active { transition: all 0.5s ease; }
+        .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(20px); }
         @media print {
             body * { visibility: hidden; }
             #invoice-print-area, #invoice-print-area * { visibility: visible; }
-            #invoice-print-area { position: absolute; left: 0; top: 0; width: 100%; height: 100%; margin: 0; padding: 40px; background: white; z-index: 9999; }
+            #invoice-print-area { position: absolute; left: 0; top: 0; width: 100%; height: 100%; padding: 40px; background: white; z-index: 9999; }
             .no-print { display: none !important; }
-            input, select, textarea { border: none !important; background: transparent !important; resize: none; appearance: none; }
-            ::placeholder { color: transparent; }
         }
-
-        /* NEW: Toast Animations */
-        .toast-enter-active, .toast-leave-active { transition: all 0.5s ease; }
-        .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(20px); }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-slate-900 dark:text-gray-200">
 
 <div id="app" v-cloak>
-    <div v-if="!selectedCompany" class="min-h-screen flex flex-col items-center justify-center p-4 dark:bg-slate-900">
-        <company-manager></company-manager>
+    
+    <div v-if="loading" class="fixed inset-0 bg-slate-900 flex flex-col items-center justify-center text-white" style="z-index: 9999;">
+        <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-emerald-500 border-opacity-75 mb-4"></div>
+        <h2 class="text-xl font-bold animate-pulse">Connecting to Cloud...</h2>
+    </div>
+
+    <div v-else-if="!currentUser" class="min-h-screen flex items-center justify-center bg-slate-800 p-4">
+        <div class="bg-white dark:bg-slate-900 p-8 rounded-lg shadow-2xl w-full max-w-md border border-slate-700">
+            <h1 class="text-3xl font-bold text-center mb-2 text-slate-800 dark:text-white">MyFin<span class="text-emerald-500">Cloud</span></h1>
+            <p class="text-center text-gray-500 text-sm mb-8">Secure Access Portal</p>
+            <form @submit.prevent="handleLogin" class="space-y-4">
+                <div>
+                    <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Username</label>
+                    <input v-model="loginForm.username" type="text" class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded p-3 focus:outline-none focus:border-emerald-500 dark:text-white" placeholder="Username">
+                </div>
+                <div>
+                    <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Password</label>
+                    <input v-model="loginForm.password" type="password" class="w-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded p-3 focus:outline-none focus:border-emerald-500 dark:text-white" placeholder="Password">
+                </div>
+                <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded transition">Login</button>
+            </form>
+            <div class="mt-6 text-center text-xs text-gray-400"><p>Default Admin: <b>admin</b> / <b>admin</b></p></div>
+        </div>
     </div>
 
     <div v-else class="min-h-screen">
-        <dashboard-manager></dashboard-manager>
+        <div v-if="!selectedCompany && isSuperUser" class="min-h-screen flex flex-col items-center justify-center p-4">
+            <div class="w-full max-w-5xl">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Welcome, {{ currentUser.username }} (Super Admin)</h2>
+                    <button @click="logout" class="text-red-400 hover:text-red-300 text-sm underline">Logout</button>
+                </div>
+                <company-manager></company-manager>
+                <div class="mt-12 border-t border-slate-700 pt-8"><user-manager></user-manager></div>
+            </div>
+        </div>
+        <div v-else-if="selectedCompany">
+            <dashboard-manager></dashboard-manager>
+        </div>
     </div>
 
     <transition name="toast">
-        <div v-if="toast.show" class="fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-2xl text-white flex items-center gap-3 z-50 transform"
+        <div v-if="toast.show" class="fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-2xl text-white flex items-center gap-3 transform"
+             style="z-index: 10000;"
              :class="toast.type === 'error' ? 'bg-red-500' : 'bg-emerald-600'">
             <i class="fas" :class="toast.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'"></i>
             <span class="font-bold">{{ toast.message }}</span>
@@ -71,16 +84,48 @@
     </transition>
 </div>
 
-<script type="text/x-template" id="company-template">
-    <div class="w-full max-w-5xl">
-        <div class="flex justify-between items-center mb-8">
-            <h1 class="text-3xl font-bold text-slate-800 dark:text-white">MyFin<span class="text-emerald-500">Manager</span></h1>
-            <button @click="openModal()" class="bg-slate-800 dark:bg-emerald-600 text-white px-6 py-2 rounded shadow hover:bg-slate-700">
-                <i class="fas fa-plus mr-2"></i>Create Company
-            </button>
+<script src="js/1-store.js"></script>
+<script src="js/2-company.js"></script>
+<script src="js/3-dashboard.js"></script>
+<script src="js/4-app.js"></script>
+
+<script type="text/x-template" id="user-manager-template">
+    <div class="bg-white dark:bg-slate-800 rounded-lg shadow p-6">
+        <div class="flex justify-between items-center mb-6">
+            <h2 class="text-2xl font-bold text-slate-800 dark:text-white"><i class="fas fa-users-cog mr-2"></i> User Access Control</h2>
+            <button @click="openUserModal()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">+ Add User</button>
         </div>
-        <div v-if="companies.length === 0" class="bg-white dark:bg-slate-800 p-12 rounded-lg shadow text-center">
-            <h2 class="text-xl text-gray-600 dark:text-gray-300 font-bold">No Companies Found</h2>
+        <table class="w-full text-sm text-left text-gray-600 dark:text-gray-300">
+            <thead class="bg-gray-100 dark:bg-slate-700 uppercase text-xs font-bold"><tr><th class="p-3">Username</th><th class="p-3">Role</th><th class="p-3">Company</th><th class="p-3 text-right">Action</th></tr></thead>
+            <tbody>
+                <tr v-for="u in users" :key="u.username" class="border-b dark:border-slate-700">
+                    <td class="p-3 font-bold">{{ u.username }}</td>
+                    <td class="p-3"><span :class="u.role === 'super' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'" class="px-2 py-1 rounded-full text-xs font-bold uppercase">{{ u.role }}</span></td>
+                    <td class="p-3">{{ getCompanyName(u.company_id) }}</td>
+                    <td class="p-3 text-right"><button v-if="u.username !== 'admin'" @click="deleteUser(u.id)" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button></td>
+                </tr>
+            </tbody>
+        </table>
+        <div v-if="showUserModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="z-index: 9999;">
+            <div class="bg-white dark:bg-slate-800 rounded p-6 w-96">
+                <h3 class="font-bold mb-4 dark:text-white">Add New User</h3>
+                <div class="space-y-3">
+                    <input v-model="userForm.username" placeholder="Username" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                    <input v-model="userForm.password" placeholder="Password" type="password" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                    <div><label class="block text-xs font-bold mb-1 dark:text-gray-400">Role</label><select v-model="userForm.role" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white"><option value="company_admin">Company Admin</option><option value="super">Super Admin</option></select></div>
+                    <div v-if="userForm.role === 'company_admin'"><label class="block text-xs font-bold mb-1 dark:text-gray-400">Assign to Company</label><select v-model="userForm.company_id" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white"><option v-for="c in companies" :value="c.id">{{ c.name }}</option></select></div>
+                </div>
+                <div class="flex justify-end gap-2 mt-4"><button @click="showUserModal = false" class="bg-gray-200 dark:bg-slate-700 px-3 py-1 rounded dark:text-white">Cancel</button><button @click="saveUser" class="bg-blue-600 text-white px-3 py-1 rounded">Create</button></div>
+            </div>
+        </div>
+    </div>
+</script>
+
+<script type="text/x-template" id="company-template">
+    <div class="w-full">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-slate-800 dark:text-white">Company<span class="text-emerald-500">List</span></h1>
+            <button @click="openModal()" class="bg-slate-800 dark:bg-emerald-600 text-white px-6 py-2 rounded shadow hover:bg-slate-700"><i class="fas fa-plus mr-2"></i>New Company</button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div v-for="c in companies" :key="c.id" class="bg-white dark:bg-slate-800 rounded-lg shadow hover:shadow-xl transition overflow-hidden group border dark:border-slate-700">
@@ -94,363 +139,124 @@
                 </div>
                 <div class="p-5">
                     <h3 class="font-bold text-lg text-slate-800 dark:text-white">{{ c.name }}</h3>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">{{ c.regNo }}</p>
-                    <button @click="select(c)" class="w-full bg-emerald-600 text-white py-2 rounded hover:bg-emerald-700 font-bold text-sm">Select</button>
+                    <button @click="select(c)" class="w-full bg-emerald-600 text-white py-2 rounded hover:bg-emerald-700 font-bold text-sm mt-4">Manage</button>
                 </div>
             </div>
         </div>
-        <div v-if="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div v-if="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
             <div class="bg-white dark:bg-slate-800 rounded w-full max-w-xl p-6">
                 <h2 class="text-xl font-bold mb-4 dark:text-white">{{ isEditing ? 'Edit' : 'Create' }} Company</h2>
                 <div class="grid grid-cols-2 gap-4">
-                     <div class="col-span-2 border border-dashed p-2 text-center bg-gray-50 dark:bg-slate-900 rounded">
-                        <input type="file" @change="handleLogo" class="text-sm dark:text-gray-400">
-                    </div>
+                     <div class="col-span-2 border border-dashed p-2 text-center bg-gray-50 dark:bg-slate-900 rounded"><input type="file" @change="handleLogo" class="text-sm dark:text-gray-400"></div>
                     <input v-model="form.name" placeholder="Company Name" class="border p-2 rounded col-span-2 dark:bg-slate-700 dark:border-slate-600 dark:text-white">
                     <input v-model="form.regNo" placeholder="Reg No" class="border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
-                    <input v-model="form.phone" placeholder="Phone" class="border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
-                    <input v-model="form.bankName" placeholder="Bank" class="border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
-                    <input v-model="form.accNo" placeholder="Account No" class="border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
                     <textarea v-model="form.address1" placeholder="Address" class="border p-2 rounded col-span-2 dark:bg-slate-700 dark:border-slate-600 dark:text-white"></textarea>
                 </div>
-                <div class="flex justify-end gap-2 mt-4">
-                    <button @click="showModal = false" class="bg-gray-200 dark:bg-slate-700 dark:text-white px-4 py-2 rounded">Cancel</button>
-                    <button @click="save" class="bg-emerald-600 text-white px-4 py-2 rounded">Save</button>
-                </div>
+                <div class="flex justify-end gap-2 mt-4"><button @click="showModal = false" class="bg-gray-200 dark:bg-slate-700 dark:text-white px-4 py-2 rounded">Cancel</button><button @click="save" class="bg-emerald-600 text-white px-4 py-2 rounded">Save</button></div>
             </div>
         </div>
     </div>
 </script>
 
 <script type="text/x-template" id="dashboard-template">
-    <div class="flex flex-col h-screen">
-        <nav class="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shadow-lg no-print">
-            <div class="font-bold text-xl text-emerald-400">MyFin <span class="text-white text-sm font-normal opacity-70">| {{ activeCompany.name }}</span></div>
-            <button @click="logout" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1 rounded">Switch Company</button>
-        </nav>
-
-        <div class="flex flex-grow overflow-hidden">
-            <aside class="w-64 bg-slate-800 text-slate-300 hidden md:flex flex-col no-print border-r border-slate-700">
-                <nav class="p-4 space-y-2">
-                    <a @click="switchTab('overview')" :class="{'bg-slate-700 text-white': currentTab === 'overview'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-chart-pie w-6"></i> Dashboard</a>
-                    <a @click="switchTab('contacts')" :class="{'bg-slate-700 text-white': currentTab === 'contacts'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-address-book w-6"></i> Contacts</a>
-                    <a @click="switchTab('finance')" :class="{'bg-slate-700 text-white': currentTab === 'finance'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-file-invoice-dollar w-6"></i> Finance</a>
-                    <div class="h-px bg-slate-700 my-2"></div>
-                    <a @click="switchTab('settings')" :class="{'bg-slate-700 text-white': currentTab === 'settings'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-cog w-6"></i> Settings</a>
-                </nav>
-            </aside>
-
-            <main class="flex-grow p-6 overflow-y-auto bg-gray-100 dark:bg-slate-900">
-                
-                <div v-if="currentTab === 'overview'" class="no-print">
-                    <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-4">Financial Overview</h2>
-                    
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-blue-400">
-                             <div class="text-xs text-gray-400 font-bold uppercase">Forecast (Quotes)</div>
-                             <div class="text-2xl font-bold text-blue-500 mt-1">RM {{ financials.forecast.toFixed(2) }}</div>
-                        </div>
-                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-yellow-400">
-                             <div class="text-xs text-gray-400 font-bold uppercase">Pending Invoices</div>
-                             <div class="text-2xl font-bold text-yellow-500 mt-1">RM {{ financials.pending.toFixed(2) }}</div>
-                        </div>
-                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-emerald-500">
-                             <div class="text-xs text-gray-400 font-bold uppercase">Cleared Cash</div>
-                             <div class="text-2xl font-bold text-emerald-500 mt-1">RM {{ financials.cleared.toFixed(2) }}</div>
-                        </div>
-                         <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-red-500">
-                             <div class="text-xs text-gray-400 font-bold uppercase">Total Expenses</div>
-                             <div class="text-2xl font-bold text-red-500 mt-1">RM {{ financials.expenses.toFixed(2) }}</div>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow">
-                            <h3 class="font-bold text-slate-700 dark:text-gray-300 mb-4">Income Status</h3>
-                            <div class="h-64 flex items-center justify-center">
-                                <canvas id="incomeChart"></canvas>
-                            </div>
-                        </div>
-                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow">
-                            <h3 class="font-bold text-slate-700 dark:text-gray-300 mb-4">Expense Status</h3>
-                            <div class="h-64 flex items-center justify-center">
-                                <canvas id="expenseChart"></canvas>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div v-if="currentTab === 'contacts'" class="no-print">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Contacts (Clients & Suppliers)</h2>
-                        <button @click="newClient" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm">Add Contact</button>
-                    </div>
-                    <div class="bg-white dark:bg-slate-800 shadow rounded overflow-hidden">
-                        <table class="w-full text-sm text-left text-gray-600 dark:text-gray-300">
-                            <thead class="bg-gray-50 dark:bg-slate-700 uppercase text-xs font-bold">
-                                <tr>
-                                    <th class="p-4">Name</th>
-                                    <th class="p-4">Type</th>
-                                    <th class="p-4">Phone</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="cl in clients" class="border-b dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700">
-                                    <td class="p-4 font-bold">{{ cl.name }}</td>
-                                    <td class="p-4">
-                                        <span :class="cl.type === 'Supplier' ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'" class="px-2 py-1 rounded-full text-xs font-bold">
-                                            {{ cl.type || 'Client' }}
-                                        </span>
-                                    </td>
-                                    <td class="p-4">{{ cl.phone }}</td>
-                                </tr>
-                                <tr v-if="clients.length === 0"><td colspan="3" class="p-4 text-center">No records.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div v-if="currentTab === 'settings'" class="no-print max-w-2xl">
-                    <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-6">Settings</h2>
-                    <div class="bg-white dark:bg-slate-800 p-6 rounded shadow mb-6">
-                        <h3 class="font-bold text-lg mb-4 dark:text-white">Application Theme</h3>
-                        <div class="flex gap-4">
-                            <label class="flex items-center gap-2 cursor-pointer dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="light" class="accent-emerald-600"> Light</label>
-                            <label class="flex items-center gap-2 cursor-pointer dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="dark" class="accent-emerald-600"> Dark</label>
-                            <label class="flex items-center gap-2 cursor-pointer dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="auto" class="accent-emerald-600"> Time Based (Auto)</label>
-                        </div>
-                    </div>
-                    <div class="bg-white dark:bg-slate-800 p-6 rounded shadow mb-6">
-                        <h3 class="font-bold text-lg mb-4 dark:text-white">Document Template</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div @click="tempPrefs.docTemplate = 'clean'" :class="{'ring-2 ring-emerald-500': tempPrefs.docTemplate === 'clean'}" class="border dark:border-slate-600 p-4 rounded cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700">
-                                <div class="font-bold text-sm text-center dark:text-white">Modern Clean</div>
-                            </div>
-                            <div @click="tempPrefs.docTemplate = 'corporate'" :class="{'ring-2 ring-emerald-500': tempPrefs.docTemplate === 'corporate'}" class="border dark:border-slate-600 p-4 rounded cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700">
-                                <div class="font-bold text-sm text-center dark:text-white">Corporate Bold</div>
-                            </div>
-                            <div @click="tempPrefs.docTemplate = 'classic'" :class="{'ring-2 ring-emerald-500': tempPrefs.docTemplate === 'classic'}" class="border dark:border-slate-600 p-4 rounded cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700">
-                                <div class="font-bold text-sm text-center dark:text-white">Classic Serif</div>
-                            </div>
-                        </div>
-                    </div>
-                    <button @click="saveSettings" class="bg-emerald-600 text-white px-6 py-2 rounded shadow hover:bg-emerald-700">Save Preferences</button>
-                </div>
-
-                <div v-if="currentTab === 'finance'">
-                    
-                    <div v-if="financeView === 'list'" class="no-print">
-                         <div class="flex justify-between items-center mb-4">
-                            <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Finance</h2>
-                            <button @click="openEditor()" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm shadow">Create New</button>
-                        </div>
-
-                        <div class="flex border-b border-gray-300 dark:border-slate-700 mb-4">
-                            <button @click="financeFilter = 'all'" :class="financeFilter === 'all' ? 'border-b-2 border-emerald-500 text-emerald-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">All Transactions</button>
-                            <button @click="financeFilter = 'income'" :class="financeFilter === 'income' ? 'border-b-2 border-blue-500 text-blue-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">Income (INV/QT)</button>
-                            <button @click="financeFilter = 'expense'" :class="financeFilter === 'expense' ? 'border-b-2 border-orange-500 text-orange-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">Expenses (Vouchers)</button>
-                        </div>
-
-                        <div class="bg-white dark:bg-slate-800 shadow rounded overflow-hidden">
-                            <table class="w-full text-sm text-left text-gray-600 dark:text-gray-300">
-                                <thead class="bg-gray-50 dark:bg-slate-700 uppercase text-xs font-bold">
-                                    <tr>
-                                        <th class="p-4">Date</th>
-                                        <th class="p-4">No</th>
-                                        <th class="p-4">Type</th>
-                                        <th class="p-4">Party</th>
-                                        <th class="p-4">Status</th>
-                                        <th class="p-4">Total</th>
-                                        <th class="p-4 text-right">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr v-for="t in filteredList" :key="t.id" class="border-b dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 relative group">
-                                        <td class="p-4">{{ t.date }}</td>
-                                        <td class="p-4 font-mono text-xs">{{ t.number }}</td>
-                                        <td class="p-4">
-                                            <span :class="{
-                                                'text-blue-500': t.type === 'Quote',
-                                                'text-purple-500': t.type === 'Invoice',
-                                                'text-orange-500': t.type === 'Purchase Order',
-                                                'text-red-500': t.type === 'Payment Voucher'
-                                            }" class="font-bold text-xs uppercase">{{ t.type }}</span>
-                                        </td>
-                                        <td class="p-4">{{ getClientName(t.client_id) }}</td>
-                                        <td class="p-4">
-                                            <select v-model="t.status" @change="saveTx(t)" class="bg-transparent border-none text-xs font-bold cursor-pointer focus:outline-none">
-                                                <option value="Pending">Pending</option>
-                                                <option value="Converted" v-if="t.type === 'Quote'">Converted</option>
-                                                <option value="Cleared" v-if="t.type === 'Invoice'">Cleared</option>
-                                                <option value="Delayed" v-if="t.type === 'Invoice'">Delayed</option>
-                                                <option value="Not Delivered" v-if="t.type === 'Purchase Order'">Not Delivered</option>
-                                                <option value="Delivered" v-if="t.type === 'Purchase Order'">Delivered</option>
-                                                <option value="Paid" v-if="t.type === 'Payment Voucher'">Paid</option>
-                                            </select>
-                                        </td>
-                                        <td class="p-4 font-bold">RM {{ t.total.toFixed(2) }}</td>
-                                        <td class="p-4 text-right">
-                                            <button @click="downloadRowPDF(t)" class="text-gray-500 hover:text-emerald-500 mr-3" title="Download PDF"><i class="fas fa-file-pdf"></i></button>
-                                            <button @click="openEditor(t)" class="text-blue-600 dark:text-blue-400 mr-2 hover:underline">Edit</button>
-                                            <button @click="deleteTx(t.id)" class="text-red-500 hover:underline">Del</button>
-                                        </td>
-                                        
-                                        <div v-if="t.type === 'Invoice' && t.status !== 'Cleared'" class="absolute bottom-0 left-0 h-1 transition-all" 
-                                             :class="getAgingStatus(t).color" 
-                                             :style="{ width: getAgingStatus(t).width }"></div>
-                                    </tr>
-                                    <tr v-if="filteredList.length === 0"><td colspan="7" class="p-10 text-center">No transactions in this view.</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div v-else class="flex gap-6 max-w-6xl mx-auto">
-                        
-                        <div class="flex-grow bg-white rounded shadow-xl">
-                            <div class="bg-slate-100 dark:bg-slate-700 px-6 py-3 border-b dark:border-slate-600 flex justify-between items-center no-print">
-                                <div class="flex gap-2 items-center">
-                                    <button @click="financeView = 'list'" class="text-gray-600 dark:text-gray-300 mr-2"><i class="fas fa-arrow-left"></i> Back</button>
-                                    <div class="bg-white dark:bg-slate-800 border dark:border-slate-600 rounded flex overflow-hidden">
-                                        <button @click="setDocType('Quote')" :class="{'bg-slate-800 text-white': txForm.type === 'Quote'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">Quote</button>
-                                        <button @click="setDocType('Invoice')" :class="{'bg-slate-800 text-white': txForm.type === 'Invoice'}" class="px-3 py-1 text-xs dark:text-gray-300">Invoice</button>
-                                        <button @click="setDocType('Purchase Order')" :class="{'bg-slate-800 text-white': txForm.type === 'Purchase Order'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">PO</button>
-                                        <button @click="setDocType('Payment Voucher')" :class="{'bg-slate-800 text-white': txForm.type === 'Payment Voucher'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">Voucher</button>
-                                    </div>
-                                </div>
-                                <div class="flex gap-2">
-                                    <button v-if="canConvert" @click="convertQuote" class="bg-purple-600 text-white px-3 py-1 rounded shadow text-sm hover:bg-purple-700 transition">
-                                        <i class="fas fa-magic mr-1"></i> Accept & Generate INV/PO
-                                    </button>
-                                    
-                                    <button @click="printTx" class="bg-blue-600 text-white px-3 py-1 rounded shadow text-sm"><i class="fas fa-print"></i> Print</button>
-                                    <button @click="saveTx" class="bg-emerald-600 text-white px-3 py-1 rounded shadow text-sm"><i class="fas fa-save"></i> Save</button>
-                                </div>
-                            </div>
-
-                            <div id="invoice-print-area" :class="'doc-' + currentPrefs.docTemplate" class="p-12 text-gray-800 bg-white">
-                                <div class="doc-header flex justify-between items-start">
-                                    <div class="w-1/2">
-                                        <img v-if="activeCompany.logo" :src="activeCompany.logo" class="doc-logo h-20 w-auto object-contain mb-4">
-                                        <div v-else class="h-20 w-20 bg-gray-100 flex items-center justify-center text-gray-300 mb-4 text-xs">No Logo</div>
-                                        
-                                        <h1 class="doc-title">{{ documentTitle }}</h1>
-                                        <div class="doc-meta mt-1 font-mono"># {{ txForm.number }}</div>
-                                        <div class="text-sm mt-1">Date: <input v-model="txForm.date" type="date" class="bg-transparent"></div>
-                                        <div class="text-sm mt-1">Status: <span class="font-bold uppercase">{{ txForm.status }}</span></div>
-                                    </div>
-                                    <div class="text-right w-1/2">
-                                        <div class="font-bold text-xl">{{ activeCompany.name }}</div>
-                                        <div class="text-sm opacity-75 whitespace-pre-line">{{ activeCompany.address1 }}</div>
-                                        <div class="text-sm opacity-75">{{ activeCompany.phone }}</div>
-                                        <div class="text-xs opacity-50 mt-1">{{ activeCompany.regNo }}</div>
-                                    </div>
-                                </div>
-
-                                <div class="mb-8 p-4 bg-gray-50 bg-opacity-50 rounded border transition duration-300"
-                                     :class="validationErrors.client_id ? 'border-red-500 bg-red-50' : 'border-gray-200'">
-                                    
-                                    <div class="flex justify-between">
-                                        <label class="block text-xs font-bold opacity-50 uppercase mb-1" :class="validationErrors.client_id ? 'text-red-500' : ''">{{ partyLabel }}</label>
-                                        <span v-if="validationErrors.client_id" class="text-xs text-red-500 font-bold"><i class="fas fa-exclamation-triangle"></i> Required</span>
-                                    </div>
-                                    
-                                    <select v-model="txForm.client_id" class="w-full bg-transparent font-bold text-lg border-b border-gray-300 focus:outline-none"
-                                            @change="validationErrors.client_id = false">
-                                        <option value="" disabled>Select Party...</option>
-                                        <option v-for="c in clients" :value="c.id">{{ c.name }} {{ c.type === 'Supplier' ? '(Supplier)' : '' }}</option>
-                                    </select>
-                                </div>
-
-                                <table class="doc-table w-full mb-8">
-                                    <thead>
-                                        <tr>
-                                            <th class="text-left py-2">Description</th>
-                                            <th class="text-center py-2 w-24">Unit</th>
-                                            <th class="text-center py-2 w-20">Qty</th>
-                                            <th class="text-right py-2 w-32">Price (RM)</th>
-                                            <th class="text-right py-2 w-32">Total</th>
-                                            <th class="w-10 no-print"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr v-for="(item, i) in txForm.items" :key="i" class="border-b border-gray-100">
-                                            <td class="py-2"><input v-model="item.desc" class="w-full bg-transparent" placeholder="Description"></td>
-                                            <td class="py-2"><input v-model="item.unit" class="w-full text-center bg-transparent" placeholder="Unit"></td>
-                                            <td class="py-2"><input v-model="item.qty" type="number" class="w-full text-center bg-transparent"></td>
-                                            <td class="py-2"><input v-model="item.price" type="number" class="w-full text-right bg-transparent"></td>
-                                            <td class="py-2 text-right font-medium">{{ (item.qty * item.price).toFixed(2) }}</td>
-                                            <td class="py-2 text-center no-print"><button @click="removeItem(i)" class="text-red-400"><i class="fas fa-times"></i></button></td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                                <button @click="addItem" class="mb-6 text-sm text-blue-600 hover:underline no-print">+ Add Item</button>
-
-                                <div class="flex justify-end">
-                                    <div class="w-64">
-                                        <div class="flex justify-between py-1 opacity-75"><span>Subtotal</span><span>{{ subtotal.toFixed(2) }}</span></div>
-                                        <div class="flex justify-between py-1 opacity-75 items-center">
-                                            <span>Tax/Adj (%) <input v-model="txForm.taxRate" type="number" class="w-12 text-center border rounded text-xs ml-1"></span>
-                                            <span>{{ taxAmount.toFixed(2) }}</span>
-                                        </div>
-                                        <div class="doc-total-box flex justify-between py-2 border-t-2 border-current font-bold text-xl mt-2">
-                                            <span>Total (RM)</span>
-                                            <span>{{ grandTotal.toFixed(2) }}</span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="doc-footer mt-12 pt-8 border-t text-sm opacity-75">
-                                    <div class="font-bold mb-1">Authorized By:</div>
-                                    <div class="h-16 border-b border-dotted w-1/2 mb-2 mx-auto md:mx-0"></div>
-                                    <div class="mt-4 italic">Notes: <input v-model="txForm.notes" class="w-full bg-transparent border-b border-dotted"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="w-64 bg-white dark:bg-slate-800 rounded shadow-xl p-4 no-print h-fit">
-                            <h3 class="font-bold text-gray-700 dark:text-gray-300 mb-4 border-b pb-2">Status Timeline</h3>
-                            <div v-if="txForm.history && txForm.history.length > 0" class="space-y-4">
-                                <div v-for="(h, i) in txForm.history.slice().reverse()" :key="i" class="relative pl-4 border-l-2 border-gray-200 dark:border-slate-600">
-                                    <div class="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-emerald-500"></div>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">{{ new Date(h.date).toLocaleDateString() }} {{ new Date(h.date).toLocaleTimeString() }}</p>
-                                    <p class="font-bold text-sm text-gray-800 dark:text-gray-200">{{ h.status }}</p>
-                                    <p class="text-xs text-gray-600 dark:text-gray-500 italic">{{ h.note }}</p>
-                                </div>
-                            </div>
-                            <div v-else class="text-center text-gray-400 text-sm py-4">No history yet.</div>
-                        </div>
-
-                    </div>
-                </div>
-            </main>
-        </div>
-        
-        <div v-if="clientModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-             <div class="bg-white dark:bg-slate-800 p-6 rounded w-96 space-y-3">
-                <h3 class="font-bold dark:text-white">New Contact</h3>
+    <div>
+        <div v-if="clientModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="z-index: 9999;">
+             <div class="bg-white dark:bg-slate-800 p-6 rounded w-96 space-y-3 shadow-2xl border dark:border-slate-600">
+                <h3 class="font-bold dark:text-white text-lg">New Contact</h3>
                 <div class="grid grid-cols-2 gap-2">
-                    <label class="block p-2 border rounded cursor-pointer text-center" :class="clientForm.type === 'Client' ? 'bg-blue-100 border-blue-500 text-blue-800' : 'dark:text-white dark:border-slate-600'">
+                    <label class="block p-2 border rounded text-center cursor-pointer" :class="clientForm.type === 'Client' ? 'bg-blue-100 border-blue-500 text-blue-800' : 'dark:border-slate-600 dark:text-white'">
                         <input type="radio" v-model="clientForm.type" value="Client" class="hidden"> Client
                     </label>
-                    <label class="block p-2 border rounded cursor-pointer text-center" :class="clientForm.type === 'Supplier' ? 'bg-orange-100 border-orange-500 text-orange-800' : 'dark:text-white dark:border-slate-600'">
+                    <label class="block p-2 border rounded text-center cursor-pointer" :class="clientForm.type === 'Supplier' ? 'bg-orange-100 border-orange-500 text-orange-800' : 'dark:border-slate-600 dark:text-white'">
                         <input type="radio" v-model="clientForm.type" value="Supplier" class="hidden"> Supplier
                     </label>
                 </div>
-                
                 <input v-model="clientForm.name" placeholder="Name" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
                 <input v-model="clientForm.phone" placeholder="Phone" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white">
                 <div class="flex justify-end gap-2">
-                    <button @click="clientModal=false" class="bg-gray-200 dark:bg-slate-700 dark:text-white px-3 py-1 rounded">Cancel</button>
-                    <button @click="saveClient" class="bg-emerald-600 text-white px-3 py-1 rounded">Save</button>
+                    <button @click="clientModal=false" class="px-3 py-1 rounded border dark:border-slate-600 dark:text-white hover:bg-gray-100 dark:hover:bg-slate-700">Cancel</button>
+                    <button @click="saveClient" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded">Save</button>
                 </div>
+            </div>
+        </div>
+
+        <div class="flex flex-col h-screen">
+            <nav class="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shadow-lg no-print">
+                <div class="flex items-center gap-4">
+                    <div class="font-bold text-xl text-emerald-400">MyFin <span class="text-white text-sm font-normal opacity-70">| {{ activeCompany.name }}</span></div>
+                    <button v-if="isSuperUser" @click="logoutToMenu" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1 rounded"><i class="fas fa-exchange-alt mr-1"></i> Switch Company</button>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="text-sm opacity-70"><i class="fas fa-user-circle"></i> {{ currentUser.username }}</span>
+                    <button @click="fullLogout" class="text-red-400 hover:text-red-300 text-xs px-3 py-1 border border-red-900 rounded bg-red-900 bg-opacity-20">Logout</button>
+                </div>
+            </nav>
+            <div class="flex flex-grow overflow-hidden">
+                <aside class="w-64 bg-slate-800 text-slate-300 hidden md:flex flex-col no-print border-r border-slate-700">
+                    <nav class="p-4 space-y-2">
+                        <a @click="switchTab('overview')" :class="{'bg-slate-700 text-white': currentTab === 'overview'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-chart-pie w-6"></i> Dashboard</a>
+                        <a @click="switchTab('contacts')" :class="{'bg-slate-700 text-white': currentTab === 'contacts'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-address-book w-6"></i> Contacts</a>
+                        <a @click="switchTab('finance')" :class="{'bg-slate-700 text-white': currentTab === 'finance'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-file-invoice-dollar w-6"></i> Finance</a>
+                        <div class="h-px bg-slate-700 my-2"></div>
+                        <a @click="switchTab('settings')" :class="{'bg-slate-700 text-white': currentTab === 'settings'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700"><i class="fas fa-cog w-6"></i> Settings</a>
+                    </nav>
+                </aside>
+                <main class="flex-grow p-6 overflow-y-auto bg-gray-100 dark:bg-slate-900">
+                    <div v-if="currentTab === 'overview'" class="no-print">
+                        <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-4">Financial Overview</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-blue-400"><div class="text-xs text-gray-400 font-bold uppercase">Forecast</div><div class="text-2xl font-bold text-blue-500 mt-1">RM {{ financials.forecast.toFixed(2) }}</div></div>
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-yellow-400"><div class="text-xs text-gray-400 font-bold uppercase">Pending</div><div class="text-2xl font-bold text-yellow-500 mt-1">RM {{ financials.pending.toFixed(2) }}</div></div>
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-emerald-500"><div class="text-xs text-gray-400 font-bold uppercase">Cleared</div><div class="text-2xl font-bold text-emerald-500 mt-1">RM {{ financials.cleared.toFixed(2) }}</div></div>
+                             <div class="bg-white dark:bg-slate-800 p-6 rounded shadow border-l-4 border-red-500"><div class="text-xs text-gray-400 font-bold uppercase">Total Expenses</div><div class="text-2xl font-bold text-red-500 mt-1">RM {{ financials.expenses.toFixed(2) }}</div></div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded shadow"><h3 class="font-bold text-slate-700 dark:text-gray-300 mb-4">Income</h3><div class="h-64 flex items-center justify-center"><canvas id="incomeChart"></canvas></div></div>
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded shadow"><h3 class="font-bold text-slate-700 dark:text-gray-300 mb-4">Expense</h3><div class="h-64 flex items-center justify-center"><canvas id="expenseChart"></canvas></div></div>
+                        </div>
+                    </div>
+                    <div v-if="currentTab === 'contacts'" class="no-print">
+                        <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold text-slate-800 dark:text-white">Contacts</h2><button @click="newClient" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm">Add Contact</button></div>
+                        <div class="bg-white dark:bg-slate-800 shadow rounded overflow-hidden"><table class="w-full text-sm text-left text-gray-600 dark:text-gray-300"><thead class="bg-gray-50 dark:bg-slate-700 uppercase text-xs font-bold"><tr><th class="p-4">Name</th><th class="p-4">Type</th><th class="p-4">Phone</th></tr></thead><tbody><tr v-for="cl in clients" class="border-b dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700"><td class="p-4 font-bold">{{ cl.name }}</td><td class="p-4"><span :class="cl.type === 'Supplier' ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'" class="px-2 py-1 rounded-full text-xs font-bold">{{ cl.type || 'Client' }}</span></td><td class="p-4">{{ cl.phone }}</td></tr><tr v-if="clients.length === 0"><td colspan="3" class="p-4 text-center">No records.</td></tr></tbody></table></div>
+                    </div>
+                    <div v-if="currentTab === 'finance'">
+                        <div v-if="financeView === 'list'" class="no-print">
+                             <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold text-slate-800 dark:text-white">Finance</h2><button @click="openEditor()" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm shadow">Create New</button></div>
+                            <div class="flex border-b border-gray-300 dark:border-slate-700 mb-4"><button @click="financeFilter = 'all'" :class="financeFilter === 'all' ? 'border-b-2 border-emerald-500 text-emerald-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">All</button><button @click="financeFilter = 'income'" :class="financeFilter === 'income' ? 'border-b-2 border-blue-500 text-blue-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">Income</button><button @click="financeFilter = 'expense'" :class="financeFilter === 'expense' ? 'border-b-2 border-orange-500 text-orange-600 font-bold' : 'text-gray-500'" class="px-4 py-2 text-sm transition">Expenses</button></div>
+                            <div class="bg-white dark:bg-slate-800 shadow rounded overflow-hidden">
+                                <table class="w-full text-sm text-left text-gray-600 dark:text-gray-300"><thead class="bg-gray-50 dark:bg-slate-700 uppercase text-xs font-bold"><tr><th class="p-4">Date</th><th class="p-4">No</th><th class="p-4">Type</th><th class="p-4">Party</th><th class="p-4">Status</th><th class="p-4">Total</th><th class="p-4 text-right">Action</th></tr></thead><tbody><tr v-for="t in filteredList" :key="t.id" class="border-b dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 relative group"><td class="p-4">{{ t.date }}</td><td class="p-4 font-mono text-xs">{{ t.number }}</td><td class="p-4"><span :class="{'text-blue-500': t.type === 'Quote','text-purple-500': t.type === 'Invoice','text-orange-500': t.type === 'Purchase Order','text-red-500': t.type === 'Payment Voucher'}" class="font-bold text-xs uppercase">{{ t.type }}</span></td><td class="p-4">{{ getClientName(t.client_id) }}</td><td class="p-4"><select v-model="t.status" @change="saveTx(t)" class="bg-transparent border-none text-xs font-bold cursor-pointer focus:outline-none"><option value="Pending">Pending</option><option value="Converted" v-if="t.type === 'Quote'">Converted</option><option value="Cleared" v-if="t.type === 'Invoice'">Cleared</option><option value="Delayed" v-if="t.type === 'Invoice'">Delayed</option><option value="Not Delivered" v-if="t.type === 'Purchase Order'">Not Delivered</option><option value="Delivered" v-if="t.type === 'Purchase Order'">Delivered</option><option value="Paid" v-if="t.type === 'Payment Voucher'">Paid</option></select></td><td class="p-4 font-bold">RM {{ t.total.toFixed(2) }}</td><td class="p-4 text-right"><button @click="downloadRowPDF(t)" class="text-gray-500 hover:text-emerald-500 mr-3" title="Download PDF"><i class="fas fa-file-pdf"></i></button><button @click="openEditor(t)" class="text-blue-600 dark:text-blue-400 mr-2 hover:underline">Edit</button><button @click="deleteTx(t.id)" class="text-red-500 hover:underline">Del</button></td><div v-if="t.type === 'Invoice' && t.status !== 'Cleared'" class="absolute bottom-0 left-0 h-1 transition-all" :class="getAgingStatus(t).color" :style="{ width: getAgingStatus(t).width }"></div></tr></tbody></table>
+                            </div>
+                        </div>
+                        <div v-else class="flex gap-6 max-w-6xl mx-auto">
+                            <div class="flex-grow bg-white rounded shadow-xl">
+                                 <div class="bg-slate-100 dark:bg-slate-700 px-6 py-3 border-b dark:border-slate-600 flex justify-between items-center no-print">
+                                    <div class="flex gap-2 items-center"><button @click="financeView = 'list'" class="text-gray-600 dark:text-gray-300 mr-2"><i class="fas fa-arrow-left"></i> Back</button><div class="bg-white dark:bg-slate-800 border dark:border-slate-600 rounded flex overflow-hidden"><button @click="setDocType('Quote')" :class="{'bg-slate-800 text-white': txForm.type === 'Quote'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">Quote</button><button @click="setDocType('Invoice')" :class="{'bg-slate-800 text-white': txForm.type === 'Invoice'}" class="px-3 py-1 text-xs dark:text-gray-300">Invoice</button><button @click="setDocType('Purchase Order')" :class="{'bg-slate-800 text-white': txForm.type === 'Purchase Order'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">PO</button><button @click="setDocType('Payment Voucher')" :class="{'bg-slate-800 text-white': txForm.type === 'Payment Voucher'}" class="px-3 py-1 text-xs border-l dark:border-slate-600 dark:text-gray-300">Voucher</button></div></div>
+                                    <div class="flex gap-2"><button v-if="canConvert" @click="convertQuote" class="bg-purple-600 text-white px-3 py-1 rounded shadow text-sm hover:bg-purple-700 transition"><i class="fas fa-magic mr-1"></i> Accept</button><button @click="printTx" class="bg-blue-600 text-white px-3 py-1 rounded shadow text-sm"><i class="fas fa-print"></i> Print</button><button @click="saveTx" class="bg-emerald-600 text-white px-3 py-1 rounded shadow text-sm"><i class="fas fa-save"></i> Save</button></div>
+                                </div>
+                                <div id="invoice-print-area" :class="'doc-' + currentPrefs.docTemplate" class="p-12 text-gray-800 bg-white">
+                                    <div class="doc-header flex justify-between items-start"><div class="w-1/2"><img v-if="activeCompany.logo" :src="activeCompany.logo" class="doc-logo h-20 w-auto object-contain mb-4"><div v-else class="h-20 w-20 bg-gray-100 flex items-center justify-center text-gray-300 mb-4 text-xs">No Logo</div><h1 class="doc-title">{{ documentTitle }}</h1><div class="doc-meta mt-1 font-mono"># {{ txForm.number }}</div><div class="text-sm mt-1">Date: <input v-model="txForm.date" type="date" class="bg-transparent"></div><div class="text-sm mt-1">Status: <span class="font-bold uppercase">{{ txForm.status }}</span></div></div><div class="text-right w-1/2"><div class="font-bold text-xl">{{ activeCompany.name }}</div><div class="text-sm opacity-75 whitespace-pre-line">{{ activeCompany.address1 }}</div><div class="text-sm opacity-75">{{ activeCompany.phone }}</div><div class="text-xs opacity-50 mt-1">{{ activeCompany.regNo }}</div></div></div>
+                                    <div class="mb-8 p-4 bg-gray-50 bg-opacity-50 rounded border transition duration-300" :class="validationErrors.client_id ? 'border-red-500 bg-red-50' : 'border-gray-200'"><div class="flex justify-between"><label class="block text-xs font-bold opacity-50 uppercase mb-1">{{ partyLabel }}</label></div><select v-model="txForm.client_id" class="w-full bg-transparent font-bold text-lg border-b border-gray-300 focus:outline-none" @change="validationErrors.client_id = false"><option value="" disabled>Select Party...</option><option v-for="c in clients" :value="c.id">{{ c.name }} {{ c.type === 'Supplier' ? '(Supplier)' : '' }}</option></select></div>
+                                    <table class="doc-table w-full mb-8"><thead><tr><th class="text-left py-2">Description</th><th class="text-center py-2 w-24">Unit</th><th class="text-center py-2 w-20">Qty</th><th class="text-right py-2 w-32">Price</th><th class="text-right py-2 w-32">Total</th><th class="w-10 no-print"></th></tr></thead><tbody><tr v-for="(item, i) in txForm.items" :key="i" class="border-b border-gray-100"><td class="py-2"><input v-model="item.desc" class="w-full bg-transparent" placeholder="Description"></td><td class="py-2"><input v-model="item.unit" class="w-full text-center bg-transparent" placeholder="Unit"></td><td class="py-2"><input v-model="item.qty" type="number" class="w-full text-center bg-transparent"></td><td class="py-2"><input v-model="item.price" type="number" class="w-full text-right bg-transparent"></td><td class="py-2 text-right font-medium">{{ (item.qty * item.price).toFixed(2) }}</td><td class="py-2 text-center no-print"><button @click="removeItem(i)" class="text-red-400"><i class="fas fa-times"></i></button></td></tr></tbody></table>
+                                    <button @click="addItem" class="mb-6 text-sm text-blue-600 hover:underline no-print">+ Add Item</button>
+                                    <div class="flex justify-end"><div class="w-64"><div class="flex justify-between py-1 opacity-75"><span>Subtotal</span><span>{{ subtotal.toFixed(2) }}</span></div><div class="flex justify-between py-1 opacity-75 items-center"><span>Tax (%) <input v-model="txForm.taxRate" type="number" class="w-12 text-center border rounded text-xs ml-1"></span><span>{{ taxAmount.toFixed(2) }}</span></div><div class="doc-total-box flex justify-between py-2 border-t-2 border-current font-bold text-xl mt-2"><span>Total</span><span>{{ grandTotal.toFixed(2) }}</span></div></div></div>
+                                    <div class="doc-footer mt-12 pt-8 border-t text-sm opacity-75"><div class="font-bold mb-1">Authorized By:</div><div class="h-16 border-b border-dotted w-1/2 mb-2 mx-auto md:mx-0"></div><div class="mt-4 italic">Notes: <input v-model="txForm.notes" class="w-full bg-transparent border-b border-dotted"></div></div>
+                                </div>
+                            </div>
+                            <div class="w-64 bg-white dark:bg-slate-800 rounded shadow-xl p-4 no-print h-fit">
+                                <h3 class="font-bold text-gray-700 dark:text-gray-300 mb-4 border-b pb-2">Timeline</h3>
+                                <div v-if="txForm.history && txForm.history.length > 0" class="space-y-4"><div v-for="(h, i) in txForm.history.slice().reverse()" :key="i" class="relative pl-4 border-l-2 border-gray-200 dark:border-slate-600"><div class="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-emerald-500"></div><p class="text-xs text-gray-500">{{ new Date(h.date).toLocaleDateString() }}</p><p class="font-bold text-sm dark:text-gray-200">{{ h.status }}</p><p class="text-xs text-gray-600 italic">{{ h.note }}</p></div></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="currentTab === 'settings'" class="no-print max-w-2xl">
+                        <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-6">Settings</h2>
+                        <div class="bg-white dark:bg-slate-800 p-6 rounded shadow mb-6"><h3 class="font-bold text-lg mb-4 dark:text-white">Appearance</h3><div class="flex gap-4"><label class="flex items-center gap-2 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="light"> Light</label><label class="flex items-center gap-2 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="dark"> Dark</label><label class="flex items-center gap-2 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="auto"> Auto</label></div></div>
+                        <button @click="saveSettings" class="bg-emerald-600 text-white px-6 py-2 rounded shadow">Save</button>
+                    </div>
+                </main>
             </div>
         </div>
     </div>
 </script>
-<script src="js/1-store.js"></script>
-<script src="js/2-company.js"></script>
-<script src="js/3-dashboard.js"></script>
-<script src="js/4-app.js"></script>
 </body>
 </html>
