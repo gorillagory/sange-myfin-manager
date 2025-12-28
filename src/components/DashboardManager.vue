@@ -12,6 +12,8 @@ import ActivityTab from './dashboard/ActivityTab.vue';
 import UserManager from './dashboard/UserManager.vue';
 import CompanyManager from './dashboard/CompanyManager.vue';
 import ProductsTab from './dashboard/ProductsTab.vue';
+import PosTab from './dashboard/PosTab.vue';
+import AnalyticsTab from './dashboard/AnalyticsTab.vue';
 
 const currentTab = ref('overview');
 const tempPrefs = ref({ theme: 'light', docTemplate: 'clean' });
@@ -63,6 +65,8 @@ onMounted(() => {
             <aside class="w-64 bg-slate-800 text-slate-300 hidden md:flex flex-col no-print border-r border-slate-700">
                 <nav class="p-4 space-y-2">
                     <a @click="switchTab('overview')" :class="{'bg-slate-700 text-white': currentTab === 'overview'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-chart-pie w-6"></i> Dashboard</a>
+                    <a @click="switchTab('pos')" :class="{'bg-slate-700 text-white': currentTab === 'pos'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-cash-register w-6"></i> POS Terminal</a>
+                    <a @click="switchTab('analytics')" :class="{'bg-slate-700 text-white': currentTab === 'analytics'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-chart-line w-6"></i> Analytics</a>
                     <a @click="switchTab('contacts')" :class="{'bg-slate-700 text-white': currentTab === 'contacts'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-address-book w-6"></i> Contacts</a>
                     
                     <div class="text-xs uppercase font-bold text-slate-500 mt-4 mb-2 px-4">Finance</div>
@@ -87,6 +91,8 @@ onMounted(() => {
             
             <main class="flex-grow p-6 overflow-y-auto bg-gray-100 dark:bg-slate-900 transition-colors duration-300">
                 <OverviewTab v-if="currentTab === 'overview'" />
+                <PosTab v-if="currentTab === 'pos'" />
+                <AnalyticsTab v-if="currentTab === 'analytics'" />
                 <ContactsTab v-if="currentTab === 'contacts'" />
                 <SalesTab    v-if="currentTab === 'sales'" />
                 <ExpensesTab v-if="currentTab === 'expenses'" />

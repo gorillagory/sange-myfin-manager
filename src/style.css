@@ -115,3 +115,46 @@
     line-height: 1.2 !important;
     color: #64748b !important; /* Slate 500 equivalent */
 }
+
+/* --- PROFESSIONAL PDF ENGINE --- */
+@media print {
+    /* 1. Force Background Colors (for colored headers) */
+    body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    /* 2. Scale Down & Layout */
+    @page { margin: 0; size: auto; } /* Remove browser default headers/footers */
+    
+    #invoice-print-area {
+        padding: 20px 40px !important; /* Professional margins */
+        zoom: 0.85; /* Shrink everything to 85% to fit more items */
+        font-size: 10pt !important;
+    }
+
+    /* 3. Typography Overrides */
+    h1 { font-size: 22pt !important; margin-bottom: 0.5rem !important; }
+    h2 { font-size: 16pt !important; }
+    
+    /* Make the "Description" text smaller/tighter */
+    .whitespace-pre-wrap { 
+        font-size: 9pt !important; 
+        line-height: 1.2 !important; 
+        color: #4b5563 !important; /* Dark Grey looks sharper than black */
+    }
+
+    /* 4. Table Cleanup (Borderless Look) */
+    table, th, td { border: none !important; }
+    thead { border-bottom: 2px solid #ddd !important; } /* Only keep header line */
+    tr { border-bottom: 1px solid #eee !important; } /* Faint row lines */
+    
+    /* Compact Padding */
+    th, td { padding-top: 4px !important; padding-bottom: 4px !important; }
+
+    /* 5. Hide UI Elements */
+    ::-webkit-scrollbar { display: none; }
+    .no-print { display: none !important; }
+    button { display: none !important; }
+    input, textarea { border: none !important; background: transparent !important; }
+}
