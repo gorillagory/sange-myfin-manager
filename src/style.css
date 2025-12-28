@@ -1,0 +1,117 @@
+@tailwind utilities;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- DOCUMENT TEMPLATES --- */
+
+/* 1. CLEAN THEME (Default) */
+.doc-clean {
+    font-family: 'Inter', sans-serif;
+    color: #334155; /* Slate 700 */
+}
+.doc-clean .doc-header { border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; }
+.doc-clean .doc-title { color: #334155; letter-spacing: 0.1em; }
+.doc-clean .doc-table-head { border-bottom: 2px solid #334155; text-transform: uppercase; font-weight: bold; }
+.doc-clean .doc-table-head th { padding: 10px; text-align: left; }
+
+/* 2. CORPORATE THEME (Bank/Legal Look) */
+.doc-corporate {
+    font-family: 'Georgia', serif; /* Serif font for authority */
+    color: #1e293b;
+}
+.doc-corporate .doc-header { 
+    background-color: #f8fafc; 
+    border: 1px solid #cbd5e1; 
+    padding: 20px; 
+    margin-bottom: 30px;
+}
+.doc-corporate .doc-title { 
+    color: #1e3a8a; /* Navy Blue */
+    font-weight: 900; 
+    text-decoration: underline;
+}
+.doc-corporate .doc-table-head { 
+    background-color: #1e3a8a; /* Navy Blue Header */
+    color: white; 
+}
+.doc-corporate .doc-table-head th { padding: 12px; }
+.doc-corporate input { font-family: 'Georgia', serif; }
+
+/* 3. MODERN THEME (Tech/Startup Look) */
+.doc-modern {
+    font-family: 'Segoe UI', sans-serif;
+}
+.doc-modern .doc-header {
+    flex-direction: row-reverse; /* Logo on left, Title on right */
+    border-bottom: 8px solid #10b981; /* Emerald Thick Border */
+    padding-bottom: 20px;
+}
+.doc-modern .doc-title {
+    color: #10b981; /* Emerald */
+    font-size: 3.5rem; /* Huge Text */
+    line-height: 1;
+}
+.doc-modern .doc-table-head {
+    background-color: #ecfdf5; /* Light Emerald Bg */
+    color: #065f46; /* Dark Emerald Text */
+    border-top: 2px solid #10b981;
+}
+.doc-modern .doc-table-head th { padding: 15px; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.1em;}
+
+/* --- PDF GENERATION ENGINE --- */
+
+/* 1. STRICT HIDING */
+.pdf-mode .no-print { display: none !important; }
+
+/* 2. FORCE TEXT WRAPPING & WIDTHS */
+.pdf-mode table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: fixed !important; /* CRITICAL: Respects column % widths */
+}
+
+/* 3. CONVERT INPUTS TO "TEXT" LOOK */
+.pdf-mode input, 
+.pdf-mode textarea, 
+.pdf-mode select {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    resize: none !important; /* Removes drag corner */
+    outline: none !important;
+    width: 100% !important; /* CRITICAL: Fills the cell */
+    white-space: pre-wrap !important; /* Allows wrapping */
+    overflow: hidden !important;
+    line-height: 1.2 !important;
+    color: inherit !important; /* Inherit Theme Colors */
+    font-weight: inherit !important;
+}
+
+/* 4. HIDE PLACEHOLDERS IN PDF */
+.pdf-mode input::placeholder,
+.pdf-mode textarea::placeholder {
+    color: transparent !important;
+}
+
+/* 5. ALIGNMENT HELPERS */
+.pdf-mode th, .pdf-mode td {
+    vertical-align: top !important; /* Keeps multi-line text aligned to top */
+    word-wrap: break-word !important; /* Prevents long words breaking layout */
+}
+
+/* --- COMPACT PDF MODE --- */
+/* Makes the document tighter when printing to save paper */
+.pdf-mode th, 
+.pdf-mode td {
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+}
+
+/* Ensure the small text renders crisply */
+.pdf-mode .text-\[10px\] {
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+    color: #64748b !important; /* Slate 500 equivalent */
+}
