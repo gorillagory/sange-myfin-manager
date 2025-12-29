@@ -41,9 +41,5 @@ function handleLogin() {
                 <span>{{ loading ? 'Signing in...' : 'Sign In' }}</span>
             </button>
         </form>
-
-        <div class="mt-6 text-center text-xs text-gray-400">
-            <p>Super Admin Login: <b>admin@myfin.com</b></p>
-        </div>
     </div>
 </template>

@@ -1,24 +1,44 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { Store } from './store';
-import AuthManager from './components/AuthManager.vue';
-import CompanySelector from './components/CompanySelector.vue';
+
+// Components
+import AuthManager from './components/AuthManager.vue'; // Kept your original component name
 import DashboardManager from './components/DashboardManager.vue';
+import SuperDashboard from './components/SuperDashboard.vue'; // The new Command Center
 
 const currentUser = computed(() => Store.state.currentUser);
 const selectedCompany = computed(() => Store.state.selectedCompany);
 const toast = computed(() => Store.state.notification);
+
+// --- VIEW LOGIC ---
+const currentView = computed(() => {
+    // 1. Not Logged In -> Show Login Screen
+    if (!currentUser.value) return 'auth';
+    
+    // 2. Super Admin + No Company Selected -> Show Command Center
+    if (currentUser.value.role === 'super' && !selectedCompany.value) {
+        return 'super';
+    }
+    
+    // 3. Regular User OR Company Selected -> Show Workspace
+    return 'dashboard';
+});
+
+onMounted(() => {
+    Store.init();
+});
 </script>
 
 <template>
   <div class="font-sans text-gray-900 bg-gray-50 min-h-screen">
     
-    <div v-if="!currentUser" class="flex items-center justify-center h-screen bg-gradient-to-br from-slate-900 to-slate-800">
+    <div v-if="currentView === 'auth'" class="flex items-center justify-center h-screen bg-gradient-to-br from-slate-900 to-slate-800">
       <AuthManager />
     </div>
 
-    <div v-else-if="!selectedCompany">
-      <CompanySelector />
+    <div v-else-if="currentView === 'super'">
+      <SuperDashboard />
     </div>
 
     <div v-else>
