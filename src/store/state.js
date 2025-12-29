@@ -11,5 +11,6 @@ export const state = reactive({
     currentUser: null,
     activities: [],
     notification: { show: false, message: '', type: 'success' },
-    preferences: { theme: 'light' }
+    preferences: { theme: 'light' },
+    isLoading: true
 });

@@ -3,15 +3,15 @@ import { computed, onMounted } from 'vue';
 import { Store } from './store';
 
 // Components
-import AuthManager from './components/AuthManager.vue'; // Kept your original component name
+import AuthManager from './components/AuthManager.vue'; 
 import DashboardManager from './components/DashboardManager.vue';
-import SuperDashboard from './components/SuperDashboard.vue'; // The new Command Center
+import SuperDashboard from './components/SuperDashboard.vue'; 
 
 const currentUser = computed(() => Store.state.currentUser);
 const selectedCompany = computed(() => Store.state.selectedCompany);
 const toast = computed(() => Store.state.notification);
 
-// --- VIEW LOGIC ---
+// --- VIEW LOGIC (Returning strings to match your original structure) ---
 const currentView = computed(() => {
     // 1. Not Logged In -> Show Login Screen
     if (!currentUser.value) return 'auth';
@@ -33,17 +33,28 @@ onMounted(() => {
 <template>
   <div class="font-sans text-gray-900 bg-gray-50 min-h-screen">
     
-    <div v-if="currentView === 'auth'" class="flex items-center justify-center h-screen bg-gradient-to-br from-slate-900 to-slate-800">
-      <AuthManager />
-    </div>
+    <Transition name="fade">
+        <div v-if="Store.state.isLoading" class="spinner-overlay">
+            <div class="spinner mb-4"></div>
+            <div class="text-slate-400 font-bold tracking-widest text-sm animate-pulse">LOADING</div>
+        </div>
+    </Transition>
 
-    <div v-else-if="currentView === 'super'">
-      <SuperDashboard />
-    </div>
+    <Transition name="page-fade" mode="out-in">
+        
+        <div v-if="currentView === 'auth'" key="auth" class="flex items-center justify-center h-screen bg-gradient-to-br from-slate-900 to-slate-800">
+            <AuthManager />
+        </div>
 
-    <div v-else>
-      <DashboardManager />
-    </div>
+        <div v-else-if="currentView === 'super'" key="super">
+            <SuperDashboard />
+        </div>
+
+        <div v-else key="dashboard">
+            <DashboardManager />
+        </div>
+
+    </Transition>
 
     <Transition name="toast">
       <div v-if="toast && toast.show" 
@@ -62,14 +73,44 @@ onMounted(() => {
 </template>
 
 <style>
-/* Toast Animation */
+/* --- PAGE TRANSITIONS --- */
+.page-fade-enter-active,
+.page-fade-leave-active {
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.page-fade-enter-from,
+.page-fade-leave-to {
+    opacity: 0;
+    transform: translateY(10px);
+}
+
+/* --- TOAST ANIMATION --- */
 .toast-enter-active,
-.toast-leave-active {
-  transition: all 0.3s ease;
-}
+.toast-leave-active { transition: all 0.3s ease; }
 .toast-enter-from,
-.toast-leave-to {
-  opacity: 0;
-  transform: translateY(20px);
+.toast-leave-to { opacity: 0; transform: translateY(20px); }
+
+/* --- SPINNER & FADE --- */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+.spinner-overlay {
+    position: fixed;
+    inset: 0;
+    background: #ffffff;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 }
+.spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid #e2e8f0;
+    border-top-color: #10b981;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

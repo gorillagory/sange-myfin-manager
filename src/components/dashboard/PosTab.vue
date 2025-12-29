@@ -1,229 +1,183 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import { Store } from '../../store';
 
-const products = computed(() => Store.state.products);
-const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
-const taxRate = computed(() => Store.state.selectedCompany?.preferences?.tax || 0);
+// --- SUB COMPONENTS ---
+import PosProductGrid from './pos/PosProductGrid.vue';
+import PosCart from './pos/PosCart.vue';
+import PosPaymentModal from './pos/PosPaymentModal.vue';
+import PosOrderModal from './pos/PosOrderModal.vue';
+import PosSuccessModal from './pos/PosSuccessModal.vue';
 
+// --- STATE ---
 const cart = ref([]);
-const activeCategory = ref('All');
-const categories = ['All', 'Food', 'Beverage', 'Retail', 'Service'];
+const heldCarts = ref([]); 
+const holdNameInput = ref('');
+const activeCompany = computed(() => Store.state.selectedCompany || {});
+const products = computed(() => Store.state.products.filter(p => p.company_id === activeCompany.value.id));
+const categories = computed(() => ['All', ...new Set(products.value.map(p => p.category || 'General'))]);
 
-// Variant Selector State
-const showVariantModal = ref(false);
-const selectedProduct = ref(null);
-
-// --- SEARCH & FILTER ---
-const searchQuery = ref('');
-const filteredProducts = computed(() => {
-    return products.value.filter(p => {
-        const matchCat = activeCategory.value === 'All' || p.category === activeCategory.value;
-        const matchSearch = p.name.toLowerCase().includes(searchQuery.value.toLowerCase());
-        return matchCat && matchSearch;
-    });
+// --- RECENT SALES COMPUTED PROPERTY ---
+const recentSales = computed(() => {
+    // Get sales from today only
+    const today = new Date().toDateString();
+    return Store.state.transactions
+        .filter(t => 
+            t.company_id === activeCompany.value.id && 
+            t.status === 'Cleared' && // Only completed sales
+            (t.type === 'Invoice' || t.number.startsWith('POS')) && // Invoices or POS
+            new Date(t.date).toDateString() === today
+        )
+        .sort((a, b) => new Date(b.date) - new Date(a.date)); // Newest first
 });
 
+// --- MODAL CONTROLS ---
+const showPayment = ref(false);
+const showHistory = ref(false);
+const showHold = ref(false);
+const showSuccess = ref(false);
+const showVariant = ref(false);
+const lastChange = ref(0);
+
 // --- CART LOGIC ---
-function addToCart(product) {
-    if (product.variants && product.variants.length > 0) {
-        // Trigger Modal
-        selectedProduct.value = product;
-        showVariantModal.value = true;
+const totals = computed(() => {
+    const sub = cart.value.reduce((sum, item) => sum + (item.price * item.qty), 0);
+    const tax = sub * ((activeCompany.value.preferences?.taxRate || 0) / 100);
+    return { sub, tax, total: sub + tax };
+});
+
+const selectedProductForVariants = ref(null);
+
+function handleAddToCart(product) {
+    if (product.variants?.length > 0) {
+        selectedProductForVariants.value = product;
+        showVariant.value = true;
     } else {
-        // Simple Add
-        if(product.stock <= 0) return Store.notify("Out of Stock!", "error");
-        
-        const existing = cart.value.find(i => i.id === product.id && !i.variant);
-        if (existing) {
-            if(existing.qty >= product.stock) return Store.notify("Max stock reached", "warning");
-            existing.qty++;
-        } else {
-            cart.value.push({
-                id: product.id,
-                name: product.name,
-                price: product.price,
-                qty: 1,
-                variant: null,
-                maxStock: product.stock
-            });
-        }
+        addItem(product);
     }
 }
 
-function addVariantToCart(variant) {
-    if(variant.stock <= 0) return Store.notify("Variant Out of Stock", "error");
-
-    const existing = cart.value.find(i => i.id === selectedProduct.value.id && i.variant?.name === variant.name);
-    
-    if (existing) {
-        if(existing.qty >= variant.stock) return Store.notify("Max stock reached", "warning");
-        existing.qty++;
-    } else {
-        cart.value.push({
-            id: selectedProduct.value.id,
-            name: `${selectedProduct.value.name} (${variant.name})`,
-            price: variant.price,
-            qty: 1,
-            variant: variant, // Store full variant object for tracking
-            maxStock: variant.stock
-        });
-    }
-    showVariantModal.value = false;
+function addItem(item) {
+    const existing = cart.value.find(i => i.name === item.name && i.price === item.price);
+    existing ? existing.qty++ : cart.value.push({ ...item, qty: 1 });
 }
 
-function removeFromCart(index) {
-    cart.value.splice(index, 1);
+function addVariant(v) {
+    addItem({ ...selectedProductForVariants.value, name: `${selectedProductForVariants.value.name} (${v.name})`, price: v.price });
+    showVariant.value = false;
 }
 
-// --- CHECKOUT ---
-const subtotal = computed(() => cart.value.reduce((sum, i) => sum + (i.price * i.qty), 0));
-const taxAmount = computed(() => subtotal.value * (taxRate.value / 100));
-const total = computed(() => subtotal.value + taxAmount.value);
+// --- ACTIONS ---
+function confirmHoldCart() {
+    heldCarts.value.push({ name: holdNameInput.value || `Order #${heldCarts.value.length+1}`, time: new Date(), items: [...cart.value], total: totals.value.total });
+    cart.value = [];
+    showHold.value = false;
+    Store.notify("Order Parked");
+}
 
-async function checkout() {
-    if (cart.value.length === 0) return;
-    
-    const transaction = {
+async function handleCompleteSale({ method, received, change }) {
+    const tx = {
+        id: Date.now().toString(),
+        company_id: activeCompany.value.id,
         date: new Date().toISOString(),
-        items: cart.value.map(i => ({ 
-            productId: i.id, 
-            desc: i.name, 
-            price: i.price, 
-            qty: i.qty,
-            variant: i.variant ? i.variant.name : null 
-        })),
-        subtotal: subtotal.value,
-        tax: taxAmount.value,
-        total: total.value,
-        status: 'Paid',
-        paymentMethod: 'Cash'
+        type: 'Invoice',
+        number: 'POS-' + Date.now().toString().slice(-6),
+        status: 'Cleared',
+        items: cart.value.map(i => ({ desc: i.name, qty: i.qty, price: i.price, unit: 'Unit' })),
+        subtotal: totals.value.sub,
+        tax: totals.value.tax,
+        total: totals.value.total,
+        paymentMethod: method,
+        history: [{ date: new Date().toISOString(), action: `POS Sale (${method})`, user: Store.state.currentUser?.username }]
     };
 
-    // 1. Record Sale
-    await Store.financeModule.addTransaction(Store, transaction);
+    await Store.addTransaction(tx);
     
-    // 2. Deduct Stock (Inventory Logic)
-    await Store.inventoryModule.deductStock(Store, transaction.items);
-    
-    // 3. Reset
+    lastChange.value = change;
     cart.value = [];
-    Store.notify("Payment Successful!");
+    showPayment.value = false;
+    showSuccess.value = true; 
+}
+
+function restoreCart(index) {
+    cart.value = heldCarts.value[index].items;
+    heldCarts.value.splice(index, 1);
+    showHistory.value = false;
+}
+
+function printReceipt(tx) {
+    console.log("Printing receipt for", tx.number);
+    Store.notify("Printing Receipt...");
 }
 </script>
 
 <template>
-    <div class="h-full flex gap-6">
+    <div class="h-full flex flex-col lg:flex-row gap-4">
         
-        <div class="flex-grow flex flex-col">
-            <div class="flex gap-4 mb-4">
-                <input v-model="searchQuery" placeholder="Search products..." class="bg-white dark:bg-slate-800 border dark:border-slate-700 p-3 rounded-lg flex-grow outline-none dark:text-white shadow-sm">
-                <div class="flex gap-2">
-                    <button v-for="cat in categories" :key="cat" 
-                        @click="activeCategory = cat"
-                        class="px-4 py-2 rounded-lg text-sm font-bold transition shadow-sm border"
-                        :class="activeCategory === cat ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-200'">
-                        {{ cat }}
-                    </button>
-                </div>
-            </div>
+        <PosProductGrid :products="products" :categories="categories" @add-to-cart="handleAddToCart" />
 
-            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 overflow-y-auto flex-grow pr-2">
-                <div v-for="p in filteredProducts" :key="p.id" 
-                    @click="addToCart(p)"
-                    class="bg-white dark:bg-slate-800 p-4 rounded-xl shadow border dark:border-slate-700 cursor-pointer hover:shadow-lg transition relative group overflow-hidden h-32 flex flex-col justify-between">
-                    
-                    <div>
-                        <div class="font-bold text-slate-800 dark:text-white leading-tight mb-1">{{ p.name }}</div>
-                        <div class="text-xs text-gray-500">{{ p.category }}</div>
-                    </div>
-                    
-                    <div class="flex justify-between items-end">
-                        <div class="font-bold text-emerald-600 dark:text-emerald-400">
-                             <span v-if="p.variants?.length" class="text-xs text-slate-400">From</span> 
-                             {{ currency }} {{ p.variants?.length ? Math.min(...p.variants.map(v=>v.price)) : p.price }}
-                        </div>
-                        
-                        <div v-if="!p.variants?.length">
-                            <span v-if="p.stock <= 0" class="bg-red-100 text-red-600 text-[10px] font-bold px-2 py-1 rounded">SOLD OUT</span>
-                            <span v-else-if="p.stock <= 5" class="bg-orange-100 text-orange-600 text-[10px] font-bold px-2 py-1 rounded">LOW: {{ p.stock }}</span>
-                        </div>
-                         <div v-else>
-                            <span class="bg-purple-100 text-purple-600 text-[10px] font-bold px-2 py-1 rounded">{{ p.variants.length }} Options</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="w-full lg:w-96 flex flex-col gap-4">
+            <PosCart 
+                :cart="cart" 
+                :heldCount="heldCarts.length" 
+                :totals="totals"
+                @remove-item="(i) => cart.splice(i, 1)"
+                @clear-cart="cart = []"
+                @hold-order="() => { holdNameInput = ''; showHold = true; }"
+                @open-payment="showPayment = true"
+                @open-history="showHistory = true"
+            />
         </div>
 
-        <div class="w-96 bg-white dark:bg-slate-800 rounded-xl shadow-xl border dark:border-slate-700 flex flex-col h-full">
-            <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 rounded-t-xl">
-                <h3 class="font-bold text-lg dark:text-white">Current Order</h3>
-                <p class="text-xs text-gray-500">{{ cart.length }} items</p>
-            </div>
+        <Transition name="slide-up">
+            <PosPaymentModal v-if="showPayment" 
+                :total="totals.total" :company="activeCompany" 
+                @close="showPayment = false" @complete="handleCompleteSale" 
+            />
+        </Transition>
 
-            <div class="flex-grow overflow-y-auto p-4 space-y-3">
-                <div v-for="(item, idx) in cart" :key="idx" class="flex justify-between items-center group">
-                    <div>
-                        <div class="font-bold text-sm dark:text-white">{{ item.name }}</div>
-                        <div class="text-xs text-gray-400">{{ currency }} {{ item.price }} x {{ item.qty }}</div>
+        <Transition name="scale">
+            <PosOrderModal v-if="showHistory" 
+                :heldCarts="heldCarts" 
+                :recentSales="recentSales"
+                :isCartEmpty="cart.length === 0"
+                @close="showHistory = false" 
+                @restore="restoreCart" 
+                @delete-hold="(i) => heldCarts.splice(i, 1)"
+                @print-receipt="printReceipt"
+            />
+        </Transition>
+
+        <Transition name="scale">
+            <PosSuccessModal v-if="showSuccess" :change="lastChange" @close="showSuccess = false" @print="printReceipt" />
+        </Transition>
+
+        <Transition name="scale">
+            <div v-if="showVariant" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showVariant = false">
+                <div class="bg-white dark:bg-slate-800 rounded-xl p-6 w-96 shadow-2xl">
+                    <h3 class="font-bold text-lg mb-4 text-slate-800 dark:text-white">{{ selectedProductForVariants?.name }}</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button v-for="v in selectedProductForVariants?.variants" :key="v.name" @click="addVariant(v)" class="p-3 border dark:border-slate-600 rounded-lg hover:bg-emerald-50 dark:hover:bg-slate-700 text-left">
+                            <div class="font-bold text-slate-700 dark:text-white">{{ v.name }}</div>
+                            <div class="text-sm text-gray-500">RM {{ Number(v.price).toFixed(2) }}</div>
+                        </button>
                     </div>
-                    <div class="flex items-center gap-3">
-                        <div class="font-bold text-slate-700 dark:text-gray-300">{{ currency }} {{ item.price * item.qty }}</div>
-                        <button @click="removeFromCart(idx)" class="text-red-300 hover:text-red-500"><i class="fas fa-times-circle"></i></button>
+                </div>
+            </div>
+        </Transition>
+
+        <Transition name="scale">
+            <div v-if="showHold" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="showHold = false">
+                <div class="bg-white dark:bg-slate-800 rounded-xl p-6 w-80 shadow-2xl">
+                    <h3 class="font-bold mb-4 text-slate-800 dark:text-white">Park Order</h3>
+                    <input v-model="holdNameInput" class="w-full border-b-2 border-emerald-500 bg-transparent py-2 text-lg font-bold outline-none text-slate-800 dark:text-white" placeholder="Order Reference" autofocus>
+                    <div class="flex justify-end gap-3 mt-4">
+                        <button @click="showHold = false" class="text-gray-400 font-bold">Cancel</button>
+                        <button @click="confirmHoldCart" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold">Park</button>
                     </div>
                 </div>
-                
-                <div v-if="cart.length === 0" class="text-center py-10 opacity-30">
-                    <i class="fas fa-shopping-cart text-4xl mb-2"></i>
-                    <p>Cart Empty</p>
-                </div>
             </div>
-
-            <div class="p-6 bg-slate-50 dark:bg-slate-900 border-t dark:border-slate-700 rounded-b-xl">
-                <div class="flex justify-between text-sm mb-2 text-gray-500">
-                    <span>Subtotal</span>
-                    <span>{{ currency }} {{ subtotal.toFixed(2) }}</span>
-                </div>
-                <div class="flex justify-between text-sm mb-4 text-gray-500">
-                    <span>Tax ({{ taxRate }}%)</span>
-                    <span>{{ currency }} {{ taxAmount.toFixed(2) }}</span>
-                </div>
-                <div class="flex justify-between text-2xl font-bold text-slate-800 dark:text-white mb-6">
-                    <span>Total</span>
-                    <span>{{ currency }} {{ total.toFixed(2) }}</span>
-                </div>
-                
-                <button @click="checkout" :disabled="cart.length === 0" 
-                    class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-400 text-white py-4 rounded-xl font-bold shadow-lg transition text-lg">
-                    Charge {{ currency }} {{ total.toFixed(2) }}
-                </button>
-            </div>
-        </div>
-
-        <div v-if="showVariantModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 backdrop-blur-sm">
-            <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl p-6 w-full max-w-sm animate-bounce-in">
-                <h3 class="font-bold text-xl mb-4 dark:text-white">{{ selectedProduct?.name }}</h3>
-                <p class="text-sm text-gray-500 mb-4">Select an option:</p>
-                
-                <div class="grid grid-cols-1 gap-3">
-                    <button v-for="v in selectedProduct?.variants" :key="v.name"
-                        @click="addVariantToCart(v)"
-                        :disabled="v.stock <= 0"
-                        class="flex justify-between items-center p-4 border rounded-lg hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group disabled:opacity-50 disabled:cursor-not-allowed">
-                        <span class="font-bold dark:text-white">{{ v.name }}</span>
-                        <div class="text-right">
-                            <div class="font-bold text-emerald-600">{{ currency }} {{ v.price }}</div>
-                            <div class="text-[10px]" :class="v.stock > 0 ? 'text-gray-400' : 'text-red-500'">
-                                {{ v.stock > 0 ? `Qty: ${v.stock}` : 'Sold Out' }}
-                            </div>
-                        </div>
-                    </button>
-                </div>
-                
-                <button @click="showVariantModal = false" class="mt-4 w-full text-gray-500 py-2">Cancel</button>
-            </div>
-        </div>
+        </Transition>
 
     </div>
 </template>

@@ -1,18 +1,27 @@
 import { collection, addDoc, deleteDoc, doc, updateDoc } from "firebase/firestore";
-// THE MISSING IMPORT WAS HERE:
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { db, storage } from '../firebase'; 
 
 export const financeModule = {
+    // --- TRANSACTIONS ---
     async addTransaction(store, transaction) {
         try {
-            // Force status if not provided
             if(!transaction.status) transaction.status = 'Paid';
-            
-            // Force company_id
             transaction.company_id = store.state.selectedCompany?.id;
 
-            await addDoc(collection(db, "transactions"), transaction);
+            // Use the ID if provided (for overwrites), otherwise auto-gen
+            if (transaction.id) {
+                // Ensure we don't overwrite if it doesn't exist, or use setDoc logic if you prefer
+                // For now, let's treat add as unique. 
+                // If you want to force specific IDs, use setDoc from firestore import
+                const { id, ...data } = transaction;
+                await import("firebase/firestore").then(({ setDoc }) => 
+                    setDoc(doc(db, "transactions", id), data)
+                );
+            } else {
+                await addDoc(collection(db, "transactions"), transaction);
+            }
+            
             store.logActivity('New Sale', `Recorded sale: ${transaction.total}`);
             store.notify("Transaction Added");
         } catch (error) {
@@ -27,25 +36,36 @@ export const financeModule = {
             await updateDoc(doc(db, "transactions", id), data);
             store.notify("Transaction Updated");
         } catch (error) {
-            store.notify("Update failed", "error");
+            store.notify("Update failed: " + error.message, "error");
         }
     },
 
+    // CRITICAL FIX: Delete Logic
     async deleteTransaction(store, id) {
-        if (!store.canDelete()) return store.notify("Access Denied", "error");
+        // 1. Permission Check
+        if (!store.canDelete()) {
+            throw new Error("Access Denied: Only Admins can delete.");
+        }
+
+        // 2. Validation
+        if (!id) {
+            throw new Error("Invalid Transaction ID");
+        }
+
+        // 3. Perform Delete
+        // We do NOT catch errors here. We let them bubble up to the Component.
         await deleteDoc(doc(db, "transactions", id));
-        store.notify("Transaction Deleted");
+        
+        // 4. Success (Component will handle notification)
     },
 
-    // --- EXPENSES WITH FILE UPLOAD ---
+    // --- EXPENSES ---
     async addExpense(store, { file, ...expenseData }) {
         try {
             let receiptData = null;
 
-            // 1. Upload File (if exists)
             if (file) {
                 const uniqueName = `receipts/${Date.now()}_${file.name}`;
-                // This line caused your error because storageRef wasn't imported
                 const fileRef = storageRef(storage, uniqueName);
                 
                 const snapshot = await uploadBytes(fileRef, file);
@@ -53,20 +73,18 @@ export const financeModule = {
 
                 receiptData = {
                     url: url,
-                    path: uniqueName, // Needed for deletion later
+                    path: uniqueName,
                     type: file.type,
                     name: file.name
                 };
             }
 
-            // 2. Prepare Data
             const cleanExp = JSON.parse(JSON.stringify(expenseData));
-            delete cleanExp.id;
+            delete cleanExp.id; // Let Firestore gen ID
             
             cleanExp.company_id = store.state.selectedCompany?.id;
-            cleanExp.receipt = receiptData; // Attach the file metadata
+            cleanExp.receipt = receiptData;
 
-            // 3. Save to Firestore
             await addDoc(collection(db, "expenses"), cleanExp);
             
             store.logActivity('Expense', `Recorded: ${expenseData.description} (${expenseData.amount})`);
@@ -78,23 +96,25 @@ export const financeModule = {
     },
 
     async deleteExpense(store, expense) {
-        if (!store.canDelete()) return store.notify("Access Denied", "error");
-
-        try {
-            // 1. Delete File from Storage (if exists)
-            if (expense.receipt && expense.receipt.path) {
-                const fileRef = storageRef(storage, expense.receipt.path);
-                await deleteObject(fileRef).catch(err => console.log("File maybe already gone:", err));
-            }
-
-            // 2. Delete Record from Firestore
-            // Handle both object input and ID input for backward compatibility
-            const id = expense.id || expense;
-            await deleteDoc(doc(db, "expenses", id));
-            store.notify("Expense Removed");
-        } catch (e) {
-            store.notify("Delete failed: " + e.message, "error");
+        if (!store.canDelete()) {
+            throw new Error("Access Denied: Only Admins can delete.");
         }
+
+        const id = expense.id || expense;
+        if (!id) throw new Error("Invalid Expense ID");
+
+        // 1. Delete File (Best effort)
+        if (expense.receipt && expense.receipt.path) {
+            try {
+                const fileRef = storageRef(storage, expense.receipt.path);
+                await deleteObject(fileRef);
+            } catch (err) {
+                console.warn("Receipt file not found or already deleted");
+            }
+        }
+
+        // 2. Delete Doc
+        await deleteDoc(doc(db, "expenses", id));
     },
 
     // --- CLIENTS ---
