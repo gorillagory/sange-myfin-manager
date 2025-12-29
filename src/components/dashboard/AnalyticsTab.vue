@@ -1,154 +1,187 @@
 <script setup>
 import { computed } from 'vue';
 import { Store } from '../../store';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend,
-  ArcElement
-} from 'chart.js';
-import { Line, Bar, Doughnut } from 'vue-chartjs';
 
-// Register Chart components
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend, ArcElement);
-
-// --- DATA SOURCE ---
+// 1. DATA SOURCES
 const transactions = computed(() => Store.state.transactions);
-const activeCompany = computed(() => Store.state.selectedCompany || {});
-const currency = computed(() => activeCompany.value.preferences?.currency || 'RM');
+const expenses = computed(() => Store.state.expenses);
+const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 
-// --- 1. REVENUE TREND (Line Chart) ---
-const trendData = computed(() => {
-    // Group by Month (Last 6 months)
-    const months = {};
-    const today = new Date();
-    for (let i = 5; i >= 0; i--) {
-        const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-        const key = d.toLocaleString('default', { month: 'short' });
-        months[key] = 0;
+// --- HELPER FUNCTIONS ---
+const isSameDay = (d1, d2) => {
+    const date1 = new Date(d1); const date2 = new Date(d2);
+    return date1.getDate() === date2.getDate() && date1.getMonth() === date2.getMonth() && date1.getFullYear() === date2.getFullYear();
+};
+const formatMoney = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// 2. FINANCIAL ENGINE (Today vs Yesterday)
+function getDailyStats(targetDate) {
+    // A. Revenue (Money In)
+    const sales = transactions.value.filter(t => t.status === 'Paid' && isSameDay(t.date, targetDate));
+    const revenue = sales.reduce((sum, t) => sum + Number(t.total), 0);
+    
+    // B. Expenses (Money Out)
+    const costs = expenses.value.filter(e => isSameDay(e.date, targetDate));
+    const expenseTotal = costs.reduce((sum, e) => sum + Number(e.amount), 0);
+
+    return { 
+        revenue, 
+        expense: expenseTotal, 
+        profit: revenue - expenseTotal,
+        count: sales.length 
+    };
+}
+
+const today = computed(() => getDailyStats(new Date()));
+const yesterday = computed(() => {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    return getDailyStats(d);
+});
+
+// Growth Calculation (Profit Growth)
+const profitGrowth = computed(() => {
+    if (yesterday.value.profit === 0) return today.value.profit > 0 ? 100 : 0;
+    return ((today.value.profit - yesterday.value.profit) / Math.abs(yesterday.value.profit)) * 100;
+});
+
+// 3. CHART ENGINE (Last 7 Days Net Profit)
+const weeklyChart = computed(() => {
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        
+        // Revenue
+        const rev = transactions.value
+            .filter(t => t.status === 'Paid' && t.date.startsWith(dateStr))
+            .reduce((sum, t) => sum + Number(t.total), 0);
+            
+        // Expenses
+        const exp = expenses.value
+            .filter(e => e.date === dateStr)
+            .reduce((sum, e) => sum + Number(e.amount), 0);
+
+        const profit = rev - exp;
+        
+        days.push({ 
+            day: d.toLocaleDateString('en-US', { weekday: 'short' }), 
+            date: dateStr, 
+            profit: profit,
+            isNegative: profit < 0
+        });
     }
-
-    transactions.value.forEach(t => {
-        if (t.type === 'Invoice' || t.type === 'Invoice (POS)') { // POS usually saves as Invoice type
-            const d = new Date(t.date);
-            const key = d.toLocaleString('default', { month: 'short' });
-            if (months[key] !== undefined) months[key] += Number(t.total);
-        }
-    });
-
-    return {
-        labels: Object.keys(months),
-        datasets: [{
-            label: 'Total Revenue',
-            backgroundColor: '#10b981',
-            borderColor: '#10b981',
-            data: Object.values(months),
-            tension: 0.4
-        }]
-    };
-});
-
-// --- 2. SALES BY CATEGORY (Hardware vs Service vs POS) ---
-const categoryData = computed(() => {
-    const stats = { 'Hardware': 0, 'Service': 0, 'POS Walk-in': 0, 'Other': 0 };
     
-    transactions.value.forEach(t => {
-        // Look inside items to find type
-        if (t.items && t.items.length > 0) {
-            t.items.forEach(item => {
-                const type = item.type || (t.number.startsWith('POS') ? 'POS Walk-in' : 'Other');
-                const amt = Number(item.price) * Number(item.qty);
-                
-                // Normalize keys
-                if (type.toLowerCase().includes('hardware')) stats['Hardware'] += amt;
-                else if (type.toLowerCase().includes('service')) stats['Service'] += amt;
-                else if (t.number.startsWith('POS')) stats['POS Walk-in'] += amt;
-                else stats['Other'] += amt;
-            });
-        }
-    });
-
-    return {
-        labels: Object.keys(stats),
-        datasets: [{
-            backgroundColor: ['#3b82f6', '#8b5cf6', '#10b981', '#9ca3af'],
-            data: Object.values(stats)
-        }]
-    };
+    // Normalization for Bar Height (Handle negatives gracefully)
+    const maxVal = Math.max(...days.map(d => Math.abs(d.profit))) || 1;
+    return days.map(d => ({ ...d, height: (Math.abs(d.profit) / maxVal) * 100 }));
 });
 
-// --- 3. TOP PRODUCTS (Bar Chart) ---
-const productData = computed(() => {
-    const productStats = {};
-    
-    transactions.value.forEach(t => {
-        if (t.items) {
-            t.items.forEach(i => {
-                if (!productStats[i.desc]) productStats[i.desc] = 0;
-                productStats[i.desc] += i.qty;
-            });
-        }
+// 4. TOP PRODUCTS
+const topProducts = computed(() => {
+    const tally = {};
+    transactions.value.filter(t => t.status === 'Paid').forEach(tx => {
+        tx.items.forEach(item => {
+            if (!tally[item.desc]) tally[item.desc] = { name: item.desc, qty: 0, revenue: 0 };
+            tally[item.desc].qty += item.qty;
+            tally[item.desc].revenue += (item.price * item.qty);
+        });
     });
-
-    // Sort and take Top 5
-    const sorted = Object.entries(productStats).sort((a,b) => b[1] - a[1]).slice(0, 5);
-
-    return {
-        labels: sorted.map(x => x[0].substring(0, 15) + '...'), // Truncate names
-        datasets: [{
-            label: 'Units Sold',
-            backgroundColor: '#f43f5e',
-            data: sorted.map(x => x[1])
-        }]
-    };
+    return Object.values(tally).sort((a, b) => b.qty - a.qty).slice(0, 5);
 });
-
-const chartOptions = { responsive: true, maintainAspectRatio: false };
 </script>
 
 <template>
-    <div class="h-full overflow-y-auto no-print">
-        <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-6">Business Intelligence</h2>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-emerald-500">
-                <div class="text-gray-500 text-sm font-bold uppercase">Total Revenue (All Time)</div>
-                <div class="text-3xl font-bold text-slate-800 dark:text-white mt-2">{{ currency }} {{ transactions.reduce((sum, t) => sum + (t.type === 'Invoice' ? Number(t.total) : 0), 0).toLocaleString() }}</div>
-            </div>
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-blue-500">
-                <div class="text-gray-500 text-sm font-bold uppercase">Invoices Issued</div>
-                <div class="text-3xl font-bold text-slate-800 dark:text-white mt-2">{{ transactions.length }}</div>
-            </div>
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-purple-500">
-                <div class="text-gray-500 text-sm font-bold uppercase">Avg. Sale Value</div>
-                <div class="text-3xl font-bold text-slate-800 dark:text-white mt-2">{{ currency }} {{ (transactions.length ? (transactions.reduce((sum, t) => sum + Number(t.total), 0) / transactions.length) : 0).toFixed(0) }}</div>
+    <div class="space-y-6">
+        <div class="flex justify-between items-end">
+            <div>
+                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Business Intelligence</h2>
+                <p class="text-sm text-gray-500">P&L Overview for <span class="font-bold text-emerald-600">{{ new Date().toLocaleDateString() }}</span></p>
             </div>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow h-80">
-                <h3 class="font-bold text-slate-700 dark:text-white mb-4">Revenue Trend (6 Months)</h3>
-                <Line :data="trendData" :options="chartOptions" />
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-emerald-500 relative overflow-hidden group">
+                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-wallet text-6xl"></i></div>
+                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Gross Revenue</div>
+                <div class="text-2xl font-bold text-slate-800 dark:text-white mt-1">{{ currency }} {{ formatMoney(today.revenue) }}</div>
+                <div class="mt-2 text-xs text-emerald-600 font-bold flex items-center gap-1">
+                    <i class="fas fa-arrow-up"></i> {{ today.count }} Transactions
+                </div>
             </div>
 
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow h-80">
-                <h3 class="font-bold text-slate-700 dark:text-white mb-4">Sales Mix (Hardware vs Service)</h3>
-                <div class="h-64 flex justify-center">
-                    <Doughnut :data="categoryData" :options="chartOptions" />
+            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-red-500 relative overflow-hidden group">
+                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-file-invoice text-6xl"></i></div>
+                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Expenses</div>
+                <div class="text-2xl font-bold text-red-500 mt-1">{{ currency }} {{ formatMoney(today.expense) }}</div>
+                <div class="mt-2 text-xs text-red-400 font-bold opacity-80">
+                    Money Out Today
+                </div>
+            </div>
+
+            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 relative overflow-hidden group"
+                 :class="today.profit >= 0 ? 'border-blue-500' : 'border-orange-500'">
+                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-piggy-bank text-6xl"></i></div>
+                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Net Profit</div>
+                <div class="text-3xl font-bold mt-1" :class="today.profit >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-500'">
+                    {{ currency }} {{ formatMoney(today.profit) }}
+                </div>
+                <div class="mt-2 text-xs font-bold flex items-center gap-1" :class="profitGrowth >= 0 ? 'text-emerald-500' : 'text-red-500'">
+                    <i class="fas" :class="profitGrowth >= 0 ? 'fa-chart-line' : 'fa-chart-line-down'"></i>
+                    <span>{{ Math.abs(profitGrowth).toFixed(0) }}% vs Yesterday</span>
                 </div>
             </div>
         </div>
 
-        <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow h-96">
-            <h3 class="font-bold text-slate-700 dark:text-white mb-4">Top 5 Best Sellers</h3>
-            <Bar :data="productData" :options="chartOptions" />
-        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 bg-white dark:bg-slate-800 p-6 rounded-xl shadow border dark:border-slate-700 flex flex-col">
+                <h3 class="font-bold text-slate-700 dark:text-white mb-6">7-Day Net Profit Trend</h3>
+                
+                <div class="flex-grow flex items-end justify-between gap-3 h-64 pb-2 border-b dark:border-slate-700">
+                    <div v-for="bar in weeklyChart" :key="bar.date" class="w-full flex flex-col justify-end group cursor-default relative h-full">
+                        
+                        <div class="absolute bottom-1/2 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap z-20 font-bold mb-2">
+                            {{ currency }} {{ formatMoney(bar.profit) }}
+                        </div>
+                        
+                        <div class="h-full flex flex-col justify-end relative">
+                            <div v-if="!bar.isNegative" class="w-full bg-blue-100 dark:bg-blue-900/30 rounded-t-sm relative overflow-hidden transition-all duration-500 group-hover:bg-blue-200" 
+                                 :style="{ height: bar.height + '%' }">
+                                <div class="absolute bottom-0 left-0 w-full bg-blue-500 transition-all duration-1000" style="height: 100%"></div>
+                            </div>
+                            
+                            <div v-else class="w-full bg-red-100 dark:bg-red-900/30 rounded-t-sm relative overflow-hidden transition-all duration-500 group-hover:bg-red-200" 
+                                 :style="{ height: bar.height + '%' }">
+                                <div class="absolute bottom-0 left-0 w-full bg-red-500 transition-all duration-1000" style="height: 100%"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-wider">{{ bar.day }}</div>
+                    </div>
+                </div>
+            </div>
 
+            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border dark:border-slate-700">
+                <h3 class="font-bold text-slate-700 dark:text-white mb-4">Top Performers</h3>
+                <div class="space-y-3">
+                    <div v-for="(prod, i) in topProducts" :key="i" class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-slate-700/30">
+                        <div class="flex items-center gap-3">
+                            <div class="w-6 h-6 rounded bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold text-xs">
+                                {{ i+1 }}
+                            </div>
+                            <div>
+                                <div class="font-bold text-xs text-slate-800 dark:text-white line-clamp-1">{{ prod.name }}</div>
+                                <div class="text-[10px] text-gray-400">{{ prod.qty }} Sold</div>
+                            </div>
+                        </div>
+                        <div class="font-bold text-xs text-slate-600 dark:text-gray-300">{{ currency }} {{ formatMoney(prod.revenue) }}</div>
+                    </div>
+                    
+                    <div v-if="topProducts.length === 0" class="text-center py-10 opacity-50">
+                        <i class="fas fa-chart-bar text-4xl mb-2"></i>
+                        <p class="text-xs">No sales yet.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 </template>

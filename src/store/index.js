@@ -64,6 +64,7 @@ export const Store = {
 
         // Listeners for Operational Data
         onSnapshot(getQuery("transactions"), (snap) => this.state.transactions = snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        onSnapshot(getQuery("expenses"), (snap) => this.state.expenses = snap.docs.map(d => ({ id: d.id, ...d.data() })));
         onSnapshot(getQuery("clients"), (snap) => this.state.clients = snap.docs.map(d => ({ id: d.id, ...d.data() })));
         onSnapshot(getQuery("products"), (snap) => this.state.products = snap.docs.map(d => ({ id: d.id, ...d.data() })));
         
@@ -92,6 +93,10 @@ export const Store = {
     addTransaction(t) { return financeModule.addTransaction(this, t); },
     updateTransaction(t) { return financeModule.updateTransaction(this, t); },
     deleteTransaction(id) { return financeModule.deleteTransaction(this, id); },
+
+    addExpense(e) { return financeModule.addExpense(this, e); },
+    deleteExpense(data) { return financeModule.deleteExpense(this, data); },
+
     addClient(c) { return financeModule.addClient(this, c); },
     deleteClient(id) { return financeModule.deleteClient(this, id); },
 

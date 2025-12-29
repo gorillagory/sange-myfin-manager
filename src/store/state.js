@@ -4,6 +4,7 @@ export const state = reactive({
     companies: [],
     selectedCompany: null,
     transactions: [],
+    expenses: [],
     clients: [],
     products: [],
     users: [],
