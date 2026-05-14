@@ -1,6 +1,8 @@
 <script setup>
 const props = defineProps(['form', 'company', 'prefs', 'clients', 'isPdf', 'calculations', 'products']);
-const emit = defineEmits(['removeItem', 'addItem']);
+const emit = defineEmits(['removeItem', 'addItem', 'saveDefaultNotes']);
+const clientName = () => props.clients.find(c => c.id === props.form.client_id)?.name || 'Unknown';
+const docTitle = () => props.form.type === 'Quote' ? props.prefs.labels.quote : props.prefs.labels.invoice;
 </script>
 
 <template>
@@ -11,31 +13,48 @@ const emit = defineEmits(['removeItem', 'addItem']);
             PAID
         </div>
 
-        <table class="w-full mb-6 border-collapse" width="100%">
+        <table class="w-full mb-8 border-collapse" width="100%">
             <tbody>
                 <tr>
-                    <td class="align-top" width="60%">
+                    <td class="align-top" width="54%">
                         <img v-if="company.logo && prefs.showLogo" :src="company.logo" class="h-20 w-auto object-contain mb-2">
-                        <h1 class="text-3xl font-bold underline decoration-2 underline-offset-4 mb-2" :style="{ color: prefs.primaryColor, textDecorationColor: prefs.primaryColor }">
-                            {{ form.type === 'Quote' ? prefs.labels.quote : prefs.labels.invoice }}
+                        <h1 class="text-4xl font-black underline decoration-2 underline-offset-4 mb-2" :style="{ color: prefs.primaryColor, textDecorationColor: prefs.primaryColor }">
+                            {{ docTitle() }}
                         </h1>
+                        <div class="font-sans text-xs uppercase tracking-widest text-gray-500 font-bold">{{ form.status || 'Pending' }}</div>
                     </td>
-                    <td class="align-top text-right" width="40%">
+                    <td class="align-top text-right" width="46%">
                         <div class="font-bold text-xl">{{ company.name }}</div>
                         <div class="text-sm font-sans text-gray-600 mt-1 whitespace-pre-line">{{ company.address1 || company.address }}</div>
-                        <div class="font-bold text-lg mt-2 font-mono"># {{ form.number }}</div>
+                        <div v-if="company.phone" class="text-sm font-sans text-gray-600">{{ company.phone }}</div>
+                        <div v-if="company.email" class="text-sm font-sans text-gray-600">{{ company.email }}</div>
                     </td>
                 </tr>
             </tbody>
         </table>
 
-        <div class="mb-6 relative z-10">
-            <span class="font-bold mr-2 text-sm uppercase text-gray-500 font-sans">{{ prefs.labels.billTo }}:</span> 
-             <span v-if="isPdf" class="font-bold text-xl">{{ props.clients.find(c => c.id === form.client_id)?.name || 'Unknown' }}</span>
-             <select v-else v-model="form.client_id" class="bg-transparent font-bold text-xl w-1/2 outline-none border-b border-dotted border-gray-400">
-                <option value="" disabled>Select...</option>
-                <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
-            </select>
+        <div class="mb-6 relative z-10 border-y border-gray-300 py-4">
+            <table class="w-full">
+                <tbody>
+                    <tr>
+                        <td width="60%" class="align-top">
+                            <div class="font-bold mr-2 text-xs uppercase text-gray-500 font-sans mb-1">{{ prefs.labels.billTo }}</div> 
+                            <span v-if="isPdf" class="font-bold text-xl">{{ clientName() }}</span>
+                            <select v-else v-model="form.client_id" class="bg-transparent font-bold text-xl w-full outline-none border-b border-dotted border-gray-400">
+                                <option value="" disabled>Select...</option>
+                                <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
+                            </select>
+                            <div v-if="form.project" class="mt-2 text-xs font-sans font-bold text-gray-600">
+                                <span class="uppercase tracking-wider text-gray-400 mr-1">Project</span>{{ form.project }}
+                            </div>
+                        </td>
+                        <td width="40%" class="align-top text-right font-sans text-sm">
+                            <div><span class="font-bold text-gray-500 uppercase text-[10px]">Date</span> <span v-if="isPdf">{{ form.date }}</span><input v-else v-model="form.date" type="date" class="bg-transparent outline-none text-right"></div>
+                            <div class="mt-1"><span class="font-bold text-gray-500 uppercase text-[10px]">Reference</span> {{ form.number }}</div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
 
         <table class="w-full mb-2 border-collapse table-fixed relative z-10" width="100%">
@@ -86,7 +105,7 @@ const emit = defineEmits(['removeItem', 'addItem']);
         </div>
 
         <div class="flex justify-end mt-8 relative z-10">
-            <div class="w-72 bg-slate-50 p-4 border border-gray-100">
+            <div class="w-80">
                 <div class="flex justify-between text-sm mb-1 text-gray-600 font-sans"><span>Subtotal</span><span>{{ prefs.currency }} {{ calculations.subtotal }}</span></div>
                 <div class="flex justify-between text-sm mb-1 text-gray-600 items-center font-sans">
                     <div class="flex items-center gap-1"><span>Discount</span><div v-if="!isPdf" class="flex bg-white border rounded px-1"><input v-model="form.discount" type="number" class="w-10 text-right text-xs outline-none bg-transparent" placeholder="0"><span class="text-xs">%</span></div><span v-else>({{ form.discount || 0 }}%)</span></div>
@@ -96,13 +115,17 @@ const emit = defineEmits(['removeItem', 'addItem']);
                     <div class="flex items-center gap-1"><span>Tax</span><div v-if="!isPdf" class="flex bg-white border rounded px-1"><input v-model="form.taxRate" type="number" class="w-10 text-right text-xs outline-none bg-transparent" placeholder="0"><span class="text-xs">%</span></div><span v-else>({{ form.taxRate || 0 }}%)</span></div>
                     <span>{{ prefs.currency }} {{ calculations.tax }}</span>
                 </div>
-                <div class="flex justify-between font-bold text-xl text-slate-900"><span>Total</span><span>{{ prefs.currency }} {{ calculations.grandTotal }}</span></div>
+                <div class="flex justify-between font-black text-2xl text-slate-900 pt-3 border-t-2 border-slate-900"><span>Total</span><span>{{ prefs.currency }} {{ calculations.grandTotal }}</span></div>
             </div>
         </div>
 
-        <div class="mt-4 pt-4 text-sm border-t border-dotted border-gray-400 relative z-10">
-            <div class="flex items-center gap-2 mb-1"><span class="font-bold font-sans text-xs uppercase text-gray-500">Date:</span> <span v-if="isPdf">{{ form.date }}</span><input v-else v-model="form.date" type="date" class="bg-transparent outline-none"></div>
-            <div v-if="isPdf" class="whitespace-pre-wrap italic mt-2">{{ form.notes }}</div><textarea v-else v-model="form.notes" class="w-full bg-transparent mt-2 italic resize-none overflow-hidden outline-none" rows="1" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Terms..."></textarea>
+        <div class="mt-8 pt-5 text-sm border-t border-dotted border-gray-400 relative z-10 avoid-break">
+            <div class="flex justify-between items-center mb-2">
+                <div class="font-bold font-sans text-xs uppercase text-gray-500 tracking-widest">Terms & Conditions</div>
+                <button v-if="!isPdf" @click="$emit('saveDefaultNotes')" class="font-sans text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded">Save Default</button>
+            </div>
+            <div v-if="isPdf" class="whitespace-pre-wrap italic mt-2 leading-relaxed">{{ form.notes }}</div>
+            <textarea v-else v-model="form.notes" class="w-full bg-slate-50 border border-gray-200 mt-2 italic resize-none overflow-hidden outline-none p-3 rounded" rows="3" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Terms..."></textarea>
         </div>
     </div>
 </template>

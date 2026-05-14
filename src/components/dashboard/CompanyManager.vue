@@ -1,13 +1,12 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed } from 'vue';
 import { Store } from '../../store';
-import jsQR from 'jsqr';
-import QRCode from 'qrcode';
+import { useStorage } from '../../composables/useStorage';
 
-// We only care about the Active Company now
+const { optimizeImage, extractQRCode } = useStorage();
+
 const activeCompany = computed(() => Store.state.selectedCompany);
 const currentUser = computed(() => Store.state.currentUser);
-
 const showModal = ref(false);
 
 const companyForm = ref({ 
@@ -15,36 +14,11 @@ const companyForm = ref({
     preferences: { currency: 'RM', tax: 0 } 
 });
 
-// Load the active company data into the form modal when needed
 function prepareEdit() {
     if (!activeCompany.value) return;
     companyForm.value = JSON.parse(JSON.stringify(activeCompany.value));
     if (!companyForm.value.preferences) companyForm.value.preferences = { currency: 'RM', tax: 0 };
     showModal.value = true;
-}
-
-// --- IMAGE ENGINE ---
-function processImage(file, isLogo = false) {
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                const MAX_SIZE = 400;
-                let w = img.width, h = img.height;
-                if (w > h) { if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; } } 
-                else { if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; } }
-                canvas.width = w; canvas.height = h;
-                ctx.drawImage(img, 0, 0, w, h);
-                const outputFormat = isLogo ? 'image/jpeg' : 'image/png';
-                resolve(canvas.toDataURL(outputFormat, 0.8));
-            };
-            img.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
-    });
 }
 
 async function handleFileUpload(event, field) {
@@ -53,33 +27,23 @@ async function handleFileUpload(event, field) {
 
     if (field === 'logo') {
         try {
-            companyForm.value.logo = await processImage(file, true);
+            companyForm.value.logo = await optimizeImage(file, true);
             Store.notify("Logo optimized!");
-        } catch (e) { Store.notify("Error processing logo", "error"); }
+        } catch (e) { 
+            Store.notify("Error processing logo", "error"); 
+        }
     }
 
     if (field === 'qrCode') {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-                const cvs = document.createElement('canvas');
-                const ctx = cvs.getContext('2d');
-                cvs.width = img.width; cvs.height = img.height;
-                ctx.drawImage(img, 0, 0);
-                const code = jsQR(ctx.getImageData(0, 0, img.width, img.height).data, img.width, img.height);
-                if (code) {
-                    QRCode.toDataURL(code.data, { width: 400, margin: 1 }, (err, url) => {
-                        if (!err) { companyForm.value.qrCode = url; Store.notify("QR Code extracted!"); }
-                        else processImage(file).then(res => companyForm.value.qrCode = res);
-                    });
-                } else {
-                    processImage(file).then(res => { companyForm.value.qrCode = res; Store.notify("Using optimized image.", "warning"); });
-                }
-            };
-            img.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
+        const qrResult = await extractQRCode(file);
+        if (qrResult.success) {
+            companyForm.value.qrCode = qrResult.url;
+            Store.notify("QR Code extracted!");
+        } else {
+            // Fallback to regular optimized image if no QR detected
+            companyForm.value.qrCode = await optimizeImage(file);
+            Store.notify("Using optimized image.", "warning");
+        }
     }
 }
 
@@ -91,15 +55,15 @@ async function saveCompany() {
         await Store.updateCompany(companyForm.value);
         showModal.value = false;
         Store.notify("Company Profile Updated");
-    } catch (e) { Store.notify("Save failed: " + e.message, "error"); }
+    } catch (e) { 
+        Store.notify("Save failed: " + e.message, "error"); 
+    }
 }
 
 async function deleteCompany() {
-    // Only Super Admin should see the button to invoke this
     if (confirm("WARNING: This will delete the company and access for all its staff. Continue?")) { 
-        await Store.deleteCompany(activeCompany.value.id); 
+        await Store.deleteCompany(activeCompany.value.id);
         Store.notify("Company Deleted");
-        // Logic to redirect Super Admin back to HQ is handled by store listener reacting to deletion
     }
 }
 </script>
@@ -112,7 +76,7 @@ async function deleteCompany() {
                 <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Settings & Configuration</h2>
                 <p class="text-gray-500 text-sm">Manage profile for <span class="font-bold text-emerald-600">{{ activeCompany?.name }}</span></p>
             </div>
-            </div>
+        </div>
 
         <div class="max-w-4xl mx-auto bg-white dark:bg-slate-800 rounded-xl shadow border dark:border-slate-700 p-8">
              

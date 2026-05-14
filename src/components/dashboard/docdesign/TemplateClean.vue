@@ -1,6 +1,11 @@
 <script setup>
 const props = defineProps(['form', 'company', 'prefs', 'clients', 'isPdf', 'calculations', 'products']);
-const emit = defineEmits(['removeItem', 'addItem']);
+const emit = defineEmits(['removeItem', 'addItem', 'saveDefaultNotes']);
+
+// Helper format for strict 1,000,000.00 styling inside the template rows
+const formatRowMoney = (n) => Number(n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const clientName = () => props.clients.find(c => c.id === props.form.client_id)?.name || 'Unknown';
+const docTitle = () => props.form.type === 'Quote' ? props.prefs.labels.quote : props.prefs.labels.invoice;
 </script>
 
 <template>
@@ -11,48 +16,66 @@ const emit = defineEmits(['removeItem', 'addItem']);
             PAID
         </div>
 
-        <table class="w-full mb-6 border-collapse" width="100%">
+        <table class="w-full mb-8 border-collapse" width="100%">
             <tbody>
                 <tr>
-                    <td class="align-top" width="60%">
+                    <td class="align-top" width="52%">
                         <img v-if="company.logo && prefs.showLogo" :src="company.logo" class="h-24 w-auto object-contain mb-4">
                         
-                        <h1 class="text-3xl font-bold tracking-widest uppercase leading-none mb-1" :style="{ color: prefs.primaryColor }">
-                            {{ form.type === 'Quote' ? prefs.labels.quote : prefs.labels.invoice }}
+                        <h1 class="text-4xl font-black tracking-widest uppercase leading-none mb-2" :style="{ color: prefs.primaryColor }">
+                            {{ docTitle() }}
                         </h1>
-                        <div class="font-mono text-gray-500 font-bold text-lg"># {{ form.number }}</div>
+                        <div class="text-[10px] uppercase tracking-wider text-slate-400 font-black">{{ form.status || 'Pending' }}</div>
                     </td>
 
-                    <td class="align-top text-right" width="40%">
+                    <td class="align-top text-right" width="48%">
                         <div class="font-bold text-xl text-slate-900">{{ company.name }}</div>
                         <div class="text-sm opacity-75 whitespace-pre-line leading-tight mt-1 text-slate-600">
                             {{ company.address1 || company.address }}
                         </div>
                         <div v-if="company.phone" class="text-sm text-slate-600 mt-1">{{ company.phone }}</div>
+                        <div v-if="company.email" class="text-sm text-slate-600">{{ company.email }}</div>
+                        <div v-if="company.registration" class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-2">Reg: {{ company.registration }}</div>
                     </td>
                 </tr>
             </tbody>
         </table>
 
-        <div class="mb-8 pb-2 relative z-10">
-            <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-0.5">{{ prefs.labels.billTo }}</div>
-            <div v-if="isPdf" class="font-bold text-lg text-slate-800 leading-tight">
-                {{ props.clients.find(c => c.id === form.client_id)?.name || 'Unknown' }}
+        <div class="grid grid-cols-2 gap-8 mb-8 relative z-10 border-y border-slate-200 py-4">
+            <div>
+                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">{{ prefs.labels.billTo }}</div>
+                <div v-if="isPdf" class="font-black text-lg text-slate-800 leading-tight">{{ clientName() }}</div>
+                <select v-else v-model="form.client_id" class="w-full bg-transparent font-black text-lg border-b border-gray-300 outline-none pb-1">
+                    <option value="" disabled>Select Client...</option>
+                    <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
+                </select>
+                <div v-if="form.project" class="mt-2 text-xs font-bold text-slate-500">
+                    <span class="uppercase tracking-wider text-gray-400 mr-1">Project</span>{{ form.project }}
+                </div>
             </div>
-             <select v-else v-model="form.client_id" class="w-full bg-transparent font-bold text-lg border-b border-gray-300 outline-none pb-1">
-                <option value="" disabled>Select Client...</option>
-                <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
-            </select>
+            <div>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                        <div class="text-[10px] font-bold uppercase tracking-wider text-gray-400">Date Issued</div>
+                        <span v-if="isPdf" class="font-mono font-bold">{{ form.date }}</span>
+                        <input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono font-bold w-full">
+                    </div>
+                    <div>
+                        <div class="text-[10px] font-bold uppercase tracking-wider text-gray-400">Reference</div>
+                        <div class="font-mono font-bold">{{ form.number }}</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <table class="w-full mb-2 border-collapse table-fixed relative z-10" width="100%">
             <thead>
-                <tr>
-                    <th class="py-2 text-left text-xs font-bold uppercase tracking-wider text-slate-500" width="45%">Description</th> 
-                    <th class="py-2 text-center text-xs font-bold uppercase tracking-wider text-slate-500" width="10%">Unit</th>
-                    <th class="py-2 text-center text-xs font-bold uppercase tracking-wider text-slate-500" width="10%">Qty</th>
-                    <th class="py-2 text-right text-xs font-bold uppercase tracking-wider text-slate-500" width="17%">Price</th>
-                    <th class="py-2 text-right text-xs font-bold uppercase tracking-wider text-slate-500" width="18%">Total</th>
+                <tr class="border-y border-slate-300">
+                    <th class="py-3 text-left text-xs font-black uppercase tracking-wider text-slate-600" width="45%">Description</th> 
+                    <th class="py-3 text-center text-xs font-black uppercase tracking-wider text-slate-600" width="10%">Unit</th>
+                    <th class="py-3 text-center text-xs font-black uppercase tracking-wider text-slate-600" width="10%">Qty</th>
+                    <th class="py-3 text-right text-xs font-black uppercase tracking-wider text-slate-600" width="17%">Price</th>
+                    <th class="py-3 text-right text-xs font-black uppercase tracking-wider text-slate-600" width="18%">Total</th>
                     <th v-if="!isPdf" class="w-8" width="5%"></th>
                 </tr>
             </thead>
@@ -72,10 +95,10 @@ const emit = defineEmits(['removeItem', 'addItem']);
                         <div v-if="isPdf">{{ Number(item.qty) }}</div><input v-else v-model="item.qty" type="number" class="w-full text-center bg-transparent outline-none">
                     </td>
                     <td class="py-2 align-top text-right whitespace-nowrap text-slate-600">
-                        <div v-if="isPdf">{{ Number(item.price).toLocaleString('en-US', {minimumFractionDigits: 2}) }}</div><input v-else v-model="item.price" type="number" class="w-full text-right bg-transparent outline-none">
+                        <div v-if="isPdf">{{ formatRowMoney(item.price) }}</div><input v-else v-model="item.price" type="number" class="w-full text-right bg-transparent outline-none">
                     </td>
                     <td class="py-2 align-top text-right font-bold whitespace-nowrap text-slate-800">
-                        {{ (item.qty * item.price).toLocaleString('en-US', {minimumFractionDigits: 2}) }}
+                        {{ formatRowMoney(item.qty * item.price) }}
                     </td>
                     <td v-if="!isPdf" class="text-center align-top opacity-0 group-hover:opacity-100 transition-opacity">
                         <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><i class="fas fa-times"></i></button>
@@ -93,7 +116,7 @@ const emit = defineEmits(['removeItem', 'addItem']);
         </div>
 
         <div class="flex justify-end mt-8 relative z-10">
-            <div class="w-72">
+            <div class="w-80">
                 <div class="flex justify-between text-slate-500 mb-1 text-sm"><span>Subtotal</span><span class="font-mono">{{ prefs.currency }} {{ calculations.subtotal }}</span></div>
                 <div class="flex justify-between text-slate-500 mb-1 text-sm items-center">
                     <div class="flex items-center gap-1"><span>Discount</span><div v-if="!isPdf" class="flex items-center bg-gray-100 rounded px-1"><input v-model="form.discount" type="number" class="w-10 bg-transparent text-right font-bold text-xs outline-none" placeholder="0"><span class="text-xs">%</span></div><span v-else class="text-xs">({{ form.discount || 0 }}%)</span></div>
@@ -103,15 +126,20 @@ const emit = defineEmits(['removeItem', 'addItem']);
                     <div class="flex items-center gap-1"><span>Tax</span><div v-if="!isPdf" class="flex items-center bg-gray-100 rounded px-1"><input v-model="form.taxRate" type="number" class="w-10 bg-transparent text-right font-bold text-xs outline-none" placeholder="0"><span class="text-xs">%</span></div><span v-else class="text-xs">({{ form.taxRate || 0 }}%)</span></div>
                     <span class="font-mono">+ {{ prefs.currency }} {{ calculations.tax }}</span>
                 </div>
-                <div class="flex justify-between font-bold text-xl text-slate-800 pt-2 border-t border-slate-200"><span>Total</span><span>{{ prefs.currency }} {{ calculations.grandTotal }}</span></div>
+                <div class="flex justify-between font-black text-2xl text-slate-800 pt-3 border-t-2 border-slate-800"><span>Total</span><span>{{ prefs.currency }} {{ calculations.grandTotal }}</span></div>
             </div>
         </div>
 
-        <div class="mt-8 text-xs text-gray-500 relative z-10">
-             <div class="flex items-center gap-2 mb-1"><span class="font-bold uppercase tracking-wider text-[10px] text-gray-400">Date Issued:</span> <span v-if="isPdf" class="font-mono">{{ form.date }}</span><input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono"></div>
-            <div class="font-bold uppercase tracking-wider text-[10px] text-gray-400 mb-0.5">Notes / Terms:</div>
-            <div v-if="isPdf" class="whitespace-pre-wrap italic leading-relaxed text-[11px]">{{ form.notes }}</div>
-            <textarea v-else v-model="form.notes" class="w-full bg-transparent italic resize-none overflow-hidden outline-none" rows="1" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Payment terms, bank details, etc..."></textarea>
+        <div class="mt-8 text-xs text-gray-500 relative z-10 avoid-break border-t border-slate-200 pt-5">
+            <div class="flex justify-between items-center mb-2 max-w-2xl">
+                <div class="font-black uppercase tracking-wider text-[12px] text-slate-900">Terms & Conditions</div>
+                <button v-if="!isPdf" @click="$emit('saveDefaultNotes')" class="text-[10px] font-bold text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded cursor-pointer transition flex items-center shadow-sm">
+                    <i class="fas fa-save mr-1"></i> Save as Default
+                </button>
+            </div>
+            
+            <div v-if="isPdf" class="whitespace-pre-wrap leading-relaxed text-[11px] max-w-2xl">{{ form.notes }}</div>
+            <textarea v-else v-model="form.notes" class="w-full max-w-2xl bg-slate-50 resize-none overflow-hidden outline-none border border-slate-200 hover:border-gray-300 p-3 rounded transition" rows="3" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Payment terms, bank account details, etc..."></textarea>
         </div>
     </div>
 </template>

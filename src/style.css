@@ -61,6 +61,88 @@
 
 /* --- PDF GENERATION ENGINE --- */
 
+#invoice-print-area.pdf-mode {
+    padding: 18px 26px !important;
+    font-size: 10.5px !important;
+    line-height: 1.28 !important;
+    color: #172033 !important;
+}
+
+.pdf-mode .doc-clean,
+.pdf-mode .doc-corporate,
+.pdf-mode .doc-modern {
+    font-size: 10.5px !important;
+    line-height: 1.28 !important;
+}
+
+.pdf-mode h1,
+.pdf-mode .text-5xl,
+.pdf-mode .text-4xl {
+    font-size: 25px !important;
+    line-height: 1 !important;
+    letter-spacing: 0.08em !important;
+}
+
+.pdf-mode .text-3xl {
+    font-size: 20px !important;
+    line-height: 1.1 !important;
+}
+
+.pdf-mode .text-2xl {
+    font-size: 17px !important;
+    line-height: 1.15 !important;
+}
+
+.pdf-mode .text-xl,
+.pdf-mode .text-lg {
+    font-size: 12px !important;
+    line-height: 1.2 !important;
+}
+
+.pdf-mode .text-sm {
+    font-size: 9.5px !important;
+    line-height: 1.25 !important;
+}
+
+.pdf-mode .text-xs,
+.pdf-mode .text-\[11px\],
+.pdf-mode .text-\[10px\] {
+    font-size: 8px !important;
+    line-height: 1.2 !important;
+}
+
+.pdf-mode .font-black,
+.pdf-mode .font-bold,
+.pdf-mode .font-extrabold {
+    font-weight: 700 !important;
+}
+
+.pdf-mode img,
+.pdf-mode .h-24,
+.pdf-mode .h-20 {
+    max-height: 64px !important;
+}
+
+.pdf-mode .mb-8 { margin-bottom: 14px !important; }
+.pdf-mode .mb-6 { margin-bottom: 10px !important; }
+.pdf-mode .mb-4 { margin-bottom: 8px !important; }
+.pdf-mode .mt-8 { margin-top: 14px !important; }
+.pdf-mode .mt-6 { margin-top: 10px !important; }
+.pdf-mode .mt-4 { margin-top: 8px !important; }
+.pdf-mode .p-5 { padding: 10px !important; }
+.pdf-mode .p-4 { padding: 8px !important; }
+.pdf-mode .p-3 { padding: 6px !important; }
+.pdf-mode .py-3 { padding-top: 6px !important; padding-bottom: 6px !important; }
+.pdf-mode .py-2 { padding-top: 5px !important; padding-bottom: 5px !important; }
+.pdf-mode .px-3 { padding-left: 7px !important; padding-right: 7px !important; }
+.pdf-mode .gap-8 { gap: 14px !important; }
+.pdf-mode .gap-6 { gap: 10px !important; }
+.pdf-mode .gap-3 { gap: 6px !important; }
+.pdf-mode .rounded-lg { border-radius: 5px !important; }
+.pdf-mode .rounded { border-radius: 4px !important; }
+.pdf-mode .tracking-widest { letter-spacing: 0.08em !important; }
+.pdf-mode .tracking-wider { letter-spacing: 0.04em !important; }
+
 /* 1. STRICT HIDING */
 .pdf-mode .no-print { display: none !important; }
 
@@ -228,4 +310,13 @@
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+/* --- PDF PAGE BREAK PROTECTIONS --- */
+.pdf-mode tr {
+    page-break-inside: avoid !important;
+}
+
+.pdf-mode .avoid-break {
+    page-break-inside: avoid !important;
 }

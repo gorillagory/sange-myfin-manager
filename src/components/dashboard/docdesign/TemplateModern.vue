@@ -1,6 +1,8 @@
 <script setup>
 const props = defineProps(['form', 'company', 'prefs', 'clients', 'isPdf', 'calculations', 'products']);
-const emit = defineEmits(['removeItem', 'addItem']);
+const emit = defineEmits(['removeItem', 'addItem', 'saveDefaultNotes']);
+const clientName = () => props.clients.find(c => c.id === props.form.client_id)?.name || 'Unknown';
+const docTitle = () => props.form.type === 'Quote' ? props.prefs.labels.quote : props.prefs.labels.invoice;
 </script>
 
 <template>
@@ -11,31 +13,49 @@ const emit = defineEmits(['removeItem', 'addItem']);
             PAID
         </div>
 
-        <table class="w-full mb-6 border-collapse" width="100%">
+        <table class="w-full mb-8 border-collapse" width="100%">
             <tbody>
                 <tr :style="{ borderBottom: '4px solid ' + prefs.primaryColor }">
                     <td class="align-bottom pb-4" width="50%">
                         <img v-if="company.logo && prefs.showLogo" :src="company.logo" class="h-24 w-auto object-contain">
+                        <div class="font-black text-slate-900 mt-2">{{ company.name }}</div>
+                        <div class="text-xs text-slate-500 whitespace-pre-line">{{ company.address1 || company.address }}</div>
                     </td>
                     <td class="align-bottom text-right pb-4" width="50%">
                         <h1 class="text-5xl font-bold uppercase leading-none" :style="{ color: prefs.primaryColor }">
-                            {{ form.type === 'Quote' ? prefs.labels.quote : prefs.labels.invoice }}
+                            {{ docTitle() }}
                         </h1>
-                        <div class="font-bold text-gray-400 mt-1 text-xl"># {{ form.number }}</div>
+                        <div class="mt-2 inline-block text-[10px] uppercase tracking-wider font-black text-gray-500">{{ form.status || 'Pending' }}</div>
                     </td>
                 </tr>
             </tbody>
         </table>
 
-        <div class="mb-6 pl-4 border-l-4 relative z-10" :style="{ borderColor: prefs.primaryColor }">
-            <div class="text-xs font-bold uppercase tracking-wider mb-0.5" :style="{ color: prefs.primaryColor }">{{ prefs.labels.billTo }}</div>
-            <div v-if="isPdf" class="font-bold text-xl text-slate-800 leading-tight">
-                {{ props.clients.find(c => c.id === form.client_id)?.name || 'Unknown' }}
+        <div class="grid grid-cols-2 gap-6 mb-6 relative z-10 border-y border-gray-200 py-4">
+            <div class="pl-4 border-l-4" :style="{ borderColor: prefs.primaryColor }">
+                <div class="text-xs font-bold uppercase tracking-wider mb-0.5" :style="{ color: prefs.primaryColor }">{{ prefs.labels.billTo }}</div>
+                <div v-if="isPdf" class="font-black text-xl text-slate-800 leading-tight">{{ clientName() }}</div>
+                <select v-else v-model="form.client_id" class="w-full bg-transparent font-black text-xl outline-none">
+                    <option value="" disabled>Select Client...</option>
+                    <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
+                </select>
+                <div v-if="form.project" class="mt-2 text-xs font-bold text-slate-500">
+                    <span class="uppercase tracking-wider text-gray-400 mr-1">Project</span>{{ form.project }}
+                </div>
             </div>
-             <select v-else v-model="form.client_id" class="w-full bg-transparent font-bold text-xl outline-none">
-                <option value="" disabled>Select Client...</option>
-                <option v-for="c in clients" :value="c.id">{{ c.name }}</option>
-            </select>
+            <div class="text-sm">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="text-[10px] font-black uppercase tracking-wider text-gray-400">Date</div>
+                        <span v-if="isPdf" class="font-mono font-bold">{{ form.date }}</span>
+                        <input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono font-bold w-full">
+                    </div>
+                    <div>
+                        <div class="text-[10px] font-black uppercase tracking-wider text-gray-400">Reference</div>
+                        <div class="font-bold truncate">{{ form.number }}</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <table class="w-full mb-2 border-collapse table-fixed relative z-10" width="100%">
@@ -86,7 +106,7 @@ const emit = defineEmits(['removeItem', 'addItem']);
         </div>
 
         <div class="flex justify-end mt-8 relative z-10">
-            <div class="w-80 bg-gray-50 p-4 rounded-sm">
+            <div class="w-80 border-l-4 pl-4" :style="{ borderColor: prefs.primaryColor }">
                 <div class="flex justify-between text-slate-500 mb-1 text-sm"><span>Subtotal</span><span class="font-mono">{{ prefs.currency }} {{ calculations.subtotal }}</span></div>
                 <div class="flex justify-between text-slate-500 mb-1 text-sm items-center">
                     <div class="flex items-center gap-1"><span>Discount</span><div v-if="!isPdf" class="flex items-center bg-white border rounded px-1"><input v-model="form.discount" type="number" class="w-10 bg-transparent text-right font-bold text-xs outline-none" placeholder="0"><span class="text-xs">%</span></div><span v-else class="text-xs">({{ form.discount || 0 }}%)</span></div>
@@ -100,11 +120,13 @@ const emit = defineEmits(['removeItem', 'addItem']);
             </div>
         </div>
 
-        <div class="mt-4 pt-4 text-xs text-gray-500 border-t border-dotted border-gray-300 relative z-10">
-             <div class="flex items-center gap-2 mb-1"><span class="font-bold uppercase tracking-wider text-[10px] text-gray-400">Date:</span> <span v-if="isPdf" class="font-mono">{{ form.date }}</span><input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono"></div>
-            <div class="font-bold uppercase tracking-wider text-[10px] text-gray-400 mb-0.5">Notes:</div>
-            <div v-if="isPdf" class="whitespace-pre-wrap italic leading-relaxed text-[11px]">{{ form.notes }}</div>
-            <textarea v-else v-model="form.notes" class="w-full bg-transparent italic resize-none overflow-hidden outline-none" rows="1" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Terms..."></textarea>
+        <div class="mt-8 pt-5 text-xs text-gray-500 border-t border-dotted border-gray-300 relative z-10 avoid-break">
+            <div class="flex justify-between items-center mb-2">
+                <div class="font-black uppercase tracking-wider text-[11px] text-slate-900">Terms & Conditions</div>
+                <button v-if="!isPdf" @click="$emit('saveDefaultNotes')" class="text-[10px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded">Save Default</button>
+            </div>
+            <div v-if="isPdf" class="whitespace-pre-wrap leading-relaxed text-[11px]">{{ form.notes }}</div>
+            <textarea v-else v-model="form.notes" class="w-full bg-gray-50 border border-gray-200 resize-none overflow-hidden outline-none p-3 rounded" rows="3" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Terms..."></textarea>
         </div>
     </div>
 </template>

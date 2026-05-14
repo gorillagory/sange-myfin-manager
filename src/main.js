@@ -1,8 +1,10 @@
 import { createApp } from 'vue'
 import './style.css'
 import App from './App.vue'
-import { Store } from './store' // Ensure Store is imported if needed globally, usually not needed here but good practice
+import router from './router'
+import { Store } from './store' 
 
 Store.init();
-
-createApp(App).mount('#app')
+const app = createApp(App)
+app.use(router)
+app.mount('#app')

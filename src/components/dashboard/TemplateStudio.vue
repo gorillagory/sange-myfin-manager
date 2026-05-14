@@ -4,32 +4,40 @@ import { Store } from '../../store';
 
 const activeCompany = computed(() => Store.state.selectedCompany || {});
 
-// Default Config
 const config = ref({
-    baseTheme: 'clean', // clean, corporate, modern
-    primaryColor: '#10b981', // Emerald default
-    fontFamily: 'sans', // sans, serif, mono
-    labels: {
-        invoice: 'INVOICE',
-        quote: 'QUOTE',
-        billTo: 'Bill To',
-        total: 'Total'
-    },
-    showLogo: true
+    baseTheme: 'clean', primaryColor: '#10b981', fontFamily: 'sans', 
+    labels: { invoice: 'INVOICE', quote: 'QUOTE', billTo: 'Bill To', total: 'Total' },
+    showLogo: true,
+    defaultNotes: ''
 });
 
-// Load existing preferences if they exist
 watch(activeCompany, (newVal) => {
     if (newVal && newVal.preferences) {
         config.value = { ...config.value, ...newVal.preferences };
     }
 }, { immediate: true });
 
-function save() {
-    Store.saveCompanyStyle(JSON.parse(JSON.stringify(config.value)));
+function save() { Store.saveCompanyStyle(JSON.parse(JSON.stringify(config.value))); }
+
+const defaultTerms = [
+    {
+        label: 'Standard',
+        text: 'Payment is due within 14 days from the document date.\nPlease reference the document number when making payment.\nAll goods and services remain subject to company approval and fulfilment terms.'
+    },
+    {
+        label: 'Quote',
+        text: 'This quote is valid for 30 days from the issue date.\nPrices, availability, and delivery timelines may change after the validity period.\nWork will begin after written approval or confirmed purchase order.'
+    },
+    {
+        label: 'Deposit',
+        text: 'A 50% deposit is required before work begins.\nThe remaining balance is due upon completion or before final delivery.\nAny changes requested after approval may affect final pricing and completion dates.'
+    }
+];
+
+function applyDefaultTerms(text) {
+    config.value.defaultNotes = text;
 }
 
-// Live Preview Helper
 const previewStyle = computed(() => {
     return {
         '--doc-color': config.value.primaryColor,
@@ -39,7 +47,7 @@ const previewStyle = computed(() => {
 </script>
 
 <template>
-    <div class="flex flex-col lg:flex-row gap-6 h-[calc(100vh-100px)] no-print">
+    <div class="flex flex-col lg:flex-row gap-6 h-full lg:h-[calc(100vh-100px)] no-print w-full">
         
         <div class="w-full lg:w-1/3 bg-white dark:bg-slate-800 p-6 rounded-lg shadow overflow-y-auto">
             <h2 class="text-2xl font-bold mb-6 dark:text-white">Template Studio</h2>
@@ -48,40 +56,50 @@ const previewStyle = computed(() => {
                 <div>
                     <label class="block text-sm font-bold text-gray-500 mb-2">Structure</label>
                     <div class="grid grid-cols-3 gap-2">
-                        <button @click="config.baseTheme='clean'" :class="config.baseTheme==='clean' ? 'ring-2 ring-emerald-500 bg-gray-100' : 'border'" class="p-2 rounded text-xs">Clean</button>
-                        <button @click="config.baseTheme='corporate'" :class="config.baseTheme==='corporate' ? 'ring-2 ring-emerald-500 bg-gray-100' : 'border'" class="p-2 rounded text-xs">Corp</button>
-                        <button @click="config.baseTheme='modern'" :class="config.baseTheme==='modern' ? 'ring-2 ring-emerald-500 bg-gray-100' : 'border'" class="p-2 rounded text-xs">Modern</button>
+                        <button @click="config.baseTheme='clean'" :class="config.baseTheme==='clean' ? 'ring-2 ring-emerald-500 bg-gray-100 dark:bg-slate-700 dark:text-white' : 'border dark:border-slate-600 dark:text-gray-400'" class="p-2 rounded text-xs transition">Clean</button>
+                        <button @click="config.baseTheme='corporate'" :class="config.baseTheme==='corporate' ? 'ring-2 ring-emerald-500 bg-gray-100 dark:bg-slate-700 dark:text-white' : 'border dark:border-slate-600 dark:text-gray-400'" class="p-2 rounded text-xs transition">Corp</button>
+                        <button @click="config.baseTheme='modern'" :class="config.baseTheme==='modern' ? 'ring-2 ring-emerald-500 bg-gray-100 dark:bg-slate-700 dark:text-white' : 'border dark:border-slate-600 dark:text-gray-400'" class="p-2 rounded text-xs transition">Modern</button>
                     </div>
                 </div>
 
                 <div>
                     <label class="block text-sm font-bold text-gray-500 mb-2">Brand Color</label>
                     <div class="flex gap-2 items-center">
-                        <input type="color" v-model="config.primaryColor" class="h-10 w-10 border-none cursor-pointer">
-                        <input type="text" v-model="config.primaryColor" class="border p-2 rounded w-full dark:bg-slate-700 dark:text-white uppercase">
+                        <input type="color" v-model="config.primaryColor" class="h-10 w-10 border-none cursor-pointer p-0 bg-transparent rounded">
+                        <input type="text" v-model="config.primaryColor" class="border p-2 rounded w-full dark:bg-slate-700 dark:border-slate-600 dark:text-white uppercase">
                     </div>
                 </div>
 
                 <div>
                     <label class="block text-sm font-bold text-gray-500 mb-2">Rename Labels</label>
                     <div class="space-y-2">
-                        <input v-model="config.labels.invoice" placeholder="Invoice Title" class="w-full border p-2 rounded text-sm">
-                        <input v-model="config.labels.billTo" placeholder="Bill To Label" class="w-full border p-2 rounded text-sm">
+                        <input v-model="config.labels.invoice" placeholder="Invoice Title" class="w-full border p-2 rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                        <input v-model="config.labels.billTo" placeholder="Bill To Label" class="w-full border p-2 rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white">
                     </div>
                 </div>
 
                 <div class="flex items-center gap-2">
-                    <input type="checkbox" v-model="config.showLogo" id="logoToggle" class="h-4 w-4">
-                    <label for="logoToggle" class="dark:text-white">Show Company Logo</label>
+                    <input type="checkbox" v-model="config.showLogo" id="logoToggle" class="h-4 w-4 accent-emerald-500">
+                    <label for="logoToggle" class="dark:text-white select-none cursor-pointer">Show Company Logo</label>
                 </div>
 
-                <button @click="save" class="w-full bg-slate-900 text-white py-3 rounded font-bold hover:bg-slate-700">Save Template</button>
+                <div>
+                    <label class="block text-sm font-bold text-gray-500 mb-2">Default Terms</label>
+                    <div class="grid grid-cols-3 gap-2 mb-3">
+                        <button v-for="preset in defaultTerms" :key="preset.label" @click="applyDefaultTerms(preset.text)" class="border dark:border-slate-600 dark:text-gray-300 hover:border-emerald-500 hover:text-emerald-600 p-2 rounded text-xs font-bold transition">
+                            {{ preset.label }}
+                        </button>
+                    </div>
+                    <textarea v-model="config.defaultNotes" rows="5" class="w-full border p-3 rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white leading-relaxed" placeholder="Terms, payment details, account notes..."></textarea>
+                </div>
+
+                <button @click="save" class="w-full bg-slate-900 dark:bg-emerald-600 text-white py-3 rounded font-bold hover:bg-slate-700 dark:hover:bg-emerald-500 transition shadow-lg">Save Template</button>
             </div>
         </div>
 
-        <div class="w-full lg:w-2/3 bg-gray-100 dark:bg-slate-900 flex items-center justify-center p-8 overflow-hidden">
+        <div class="w-full lg:w-2/3 bg-gray-100 dark:bg-slate-900 flex items-start justify-start lg:items-center lg:justify-center p-4 lg:p-8 overflow-x-auto overflow-y-auto rounded-lg">
             
-            <div class="bg-white w-[500px] min-h-[700px] shadow-2xl p-8 text-xs relative transform scale-90 origin-top" :style="previewStyle">
+            <div class="bg-white min-w-[500px] w-[500px] min-h-[700px] shadow-2xl p-8 text-xs relative transform lg:scale-90 origin-top-left lg:origin-center flex-shrink-0" :style="previewStyle">
                 
                 <div v-if="config.baseTheme === 'clean'" class="text-slate-700">
                     <div class="flex justify-between border-b-2 pb-4 mb-4" :style="{ borderColor: config.primaryColor }">
@@ -89,9 +107,7 @@ const previewStyle = computed(() => {
                             <div v-if="config.showLogo" class="h-8 w-8 bg-gray-200 mb-2 rounded"></div>
                             <h1 class="text-2xl font-bold tracking-widest uppercase" :style="{ color: config.primaryColor }">{{ config.labels.invoice }}</h1>
                         </div>
-                        <div class="text-right">
-                            <div class="font-bold">{{ activeCompany.name || 'Your Company' }}</div>
-                        </div>
+                        <div class="text-right"><div class="font-bold">{{ activeCompany.name || 'Your Company' }}</div></div>
                     </div>
                     <div class="mb-4">
                         <div class="text-[10px] font-bold uppercase text-gray-400">{{ config.labels.billTo }}</div>
@@ -101,13 +117,15 @@ const previewStyle = computed(() => {
                         <thead :style="{ color: config.primaryColor }" class="border-b font-bold text-left"><tr><th class="py-2">Item</th><th class="text-right">Total</th></tr></thead>
                         <tbody><tr class="border-b"><td class="py-2">Web Development</td><td class="text-right">100.00</td></tr></tbody>
                     </table>
+                    <div class="border-t pt-3 mt-6">
+                        <div class="text-[10px] font-bold uppercase text-gray-400 mb-1">Terms & Conditions</div>
+                        <div class="whitespace-pre-wrap text-[10px] text-gray-500">{{ config.defaultNotes || 'Payment terms appear here.' }}</div>
+                    </div>
                 </div>
 
                 <div v-if="config.baseTheme === 'modern'" class="font-sans">
                     <div class="flex flex-row-reverse justify-between border-b-4 pb-4 mb-4" :style="{ borderColor: config.primaryColor }">
-                        <div class="text-right">
-                            <h1 class="text-4xl font-bold" :style="{ color: config.primaryColor }">{{ config.labels.invoice }}</h1>
-                        </div>
+                        <div class="text-right"><h1 class="text-4xl font-bold" :style="{ color: config.primaryColor }">{{ config.labels.invoice }}</h1></div>
                         <div><div v-if="config.showLogo" class="h-10 w-10 bg-gray-200 rounded"></div></div>
                     </div>
                      <div class="bg-gray-50 p-2 mb-4 rounded border-l-4" :style="{ borderColor: config.primaryColor }">
@@ -117,18 +135,26 @@ const previewStyle = computed(() => {
                         <thead class="text-white" :style="{ backgroundColor: config.primaryColor }"><tr><th class="p-2 text-left">Item</th><th class="p-2 text-right">Total</th></tr></thead>
                         <tbody><tr class="border-b"><td class="p-2">Services</td><td class="p-2 text-right">100.00</td></tr></tbody>
                     </table>
+                    <div class="border-t pt-3 mt-6">
+                        <div class="text-[10px] font-bold uppercase text-gray-400 mb-1">Terms & Conditions</div>
+                        <div class="whitespace-pre-wrap text-[10px] text-gray-500">{{ config.defaultNotes || 'Payment terms appear here.' }}</div>
+                    </div>
                 </div>
 
                 <div v-if="config.baseTheme === 'corporate'" class="font-serif">
                      <div class="bg-slate-50 border p-4 mb-4 flex justify-between items-center">
                         <h1 class="text-2xl font-bold underline" :style="{ color: config.primaryColor }">{{ config.labels.invoice }}</h1>
-                        <div class="font-bold">{{ activeCompany.name }}</div>
+                        <div class="font-bold">{{ activeCompany.name || 'Company Name' }}</div>
                     </div>
                     <div class="mb-4"><span class="font-bold">{{ config.labels.billTo }}:</span> Client Name</div>
                     <table class="w-full mb-4">
                         <thead class="text-white" :style="{ backgroundColor: config.primaryColor }"><tr><th class="p-2 text-left">Item</th><th class="p-2 text-right">Total</th></tr></thead>
                         <tbody><tr class="border-b"><td class="p-2">Consulting</td><td class="p-2 text-right">100.00</td></tr></tbody>
                     </table>
+                    <div class="border-t border-dotted pt-3 mt-6">
+                        <div class="text-[10px] font-bold uppercase text-gray-400 mb-1">Terms & Conditions</div>
+                        <div class="whitespace-pre-wrap text-[10px] text-gray-500">{{ config.defaultNotes || 'Payment terms appear here.' }}</div>
+                    </div>
                 </div>
 
             </div>

@@ -13,10 +13,11 @@ export function usePdfGenerator() {
                 if (!element) return;
 
                 const opt = {
-                    margin: 15, // Standard A4 Margin (mm)
+                    margin: [6, 6, 6, 6],
                     filename: fileName,
                     image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+                    html2canvas: { scale: 2, useCORS: true, scrollY: 0, backgroundColor: '#ffffff' },
+                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
                     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
                 };
 
