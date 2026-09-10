@@ -16,26 +16,30 @@ import {
 
 // --- IMPORT MODULES ---
 import { state } from './state';
-import { financeModule } from './finance';    
+import { financeModule } from './finance';
 import { inventoryModule } from './inventory';
+import { companiesModule } from './companies'; // <--- NEW IMPORT
+import { authModule } from './auth';           // <--- NEW IMPORT
 
 // --- MAIN STORE OBJECT ---
 export const Store = reactive({
     state,
     
-    // --- EXPOSE MODULES (So PosTab can find them) ---
+    // --- EXPOSE MODULES ---
     financeModule,
     inventoryModule,
+    companiesModule,
+    authModule,
 
-    // --- AUTHENTICATION ---
+    // --- AUTHENTICATION (Core) ---
     async login(email, password) {
         try {
-            this.state.isLoading = true; // Show spinner during login
+            this.state.isLoading = true;
             await signInWithEmailAndPassword(auth, email, password);
             this.notify("Welcome back!", "success");
             return true;
         } catch (error) {
-            this.state.isLoading = false; // Stop spinner on error
+            this.state.isLoading = false;
             this.notify("Login failed: " + error.message, "error");
             return false;
         }
@@ -43,40 +47,29 @@ export const Store = reactive({
 
     async logout() {
         await signOut(auth);
-        
-        // SMOOTH RESET (Instead of window.reload)
         this.state.currentUser = null;
         this.state.selectedCompany = null;
-        
-        // Clear sensitive data arrays
         this.state.transactions = [];
         this.state.expenses = [];
         this.state.clients = [];
-        
-        // Optional: Redirect to login if using router, but v-if in App.vue handles it
     },
 
     // --- INITIALIZATION ---
     init() {
         onAuthStateChanged(auth, async (user) => {
             if (user) {
-                // 1. Fetch User Profile
                 const userDoc = await getDocs(query(collection(db, "users"), where("email", "==", user.email)));
                 if (!userDoc.empty) {
                     this.state.currentUser = { id: userDoc.docs[0].id, ...userDoc.docs[0].data() };
-                    
                     if(this.state.currentUser.preferences) {
                         this.state.preferences = this.state.currentUser.preferences;
                     }
-
                     this.startListeners();
                 }
             } else {
                 this.state.currentUser = null;
             }
-            
-            // CRITICAL: Stop loading once Auth Check is done (Logged in OR Logged out)
-            setTimeout(() => { this.state.isLoading = false; }, 800); // Small delay for smoothness
+            setTimeout(() => { this.state.isLoading = false; }, 800);
         });
     },
 
@@ -91,8 +84,8 @@ export const Store = reactive({
                 if (myCo) this.selectCompany(myCo);
             }
         });
-
-        // Listen for Users (Global list, filtered later)
+        
+        // Listen for Users
         onSnapshot(collection(db, "users"), (snap) => {
             this.state.users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         });
@@ -107,48 +100,53 @@ export const Store = reactive({
 
     startCompanyDataListeners(companyId) {
         const getQuery = (col) => query(collection(db, col), where("company_id", "==", companyId));
-
-        // Listen for Products
+        
         onSnapshot(getQuery("products"), (snap) => {
-            // FIX: Spread data first, then overwrite ID with Firestore Key
             this.state.products = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         });
-
-        // Listen for Transactions
         onSnapshot(getQuery("transactions"), (snap) => {
-            // FIX: Spread data first, then overwrite ID with Firestore Key
             this.state.transactions = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         });
-
-        // Listen for Expenses
         onSnapshot(getQuery("expenses"), (snap) => {
-            // FIX: Spread data first, then overwrite ID with Firestore Key
             this.state.expenses = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         });
-
-        // Listen for Clients
         onSnapshot(getQuery("clients"), (snap) => {
-            // FIX: Spread data first, then overwrite ID with Firestore Key
             this.state.clients = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         });
     },
 
     // --- SHORTCUT WRAPPERS ---
     
-    // Transactions (Invoices/Quotes)
+    // 1. Transactions
     addTransaction(t) { return financeModule.addTransaction(this, t); },
-    updateTransaction(t) { return financeModule.updateTransaction(this, t); }, // <--- ADDED THIS
-    deleteTransaction(id) { return financeModule.deleteTransaction(this, id); }, // <--- ADDED THIS
+    updateTransaction(t) { return financeModule.updateTransaction(this, t); },
+    deleteTransaction(id) { return financeModule.deleteTransaction(this, id); },
+    assignProject(data) { return financeModule.assignProject(this, data); },
 
-    // Inventory
+    // 2. Inventory
     addProduct(p) { return inventoryModule.addProduct(this, p); },
     updateProduct(p) { return inventoryModule.updateProduct(this, p); },
     deleteProduct(id) { return inventoryModule.deleteProduct(this, id); },
     
-    // Expenses (Added these to ensure Expense Tab works too)
+    // 3. Expenses
     addExpense(e) { return financeModule.addExpense(this, e); },
     deleteExpense(data) { return financeModule.deleteExpense(this, data); },
-    
+
+    // 4. Clients
+    addClient(c) { return financeModule.addClient(this, c); },
+    deleteClient(id) { return financeModule.deleteClient(this, id); },
+
+    // 5. Companies (THE FIX)
+    addCompany(c) { return companiesModule.addCompany(this, c); },
+    updateCompany(c) { return companiesModule.updateCompany(this, c); },
+    deleteCompany(id) { return companiesModule.deleteCompany(this, id); },
+
+    // 6. Users (Auth Module)
+    addUser(u) { return authModule.addUser(this, u); },
+    updateUser(u) { return authModule.updateUser(this, u); },
+    deleteUser(id) { return authModule.deleteUser(this, id); },
+    updateSelf(data) { return authModule.updateSelf(this, data); },
+
     // --- UTILS ---
     notify(msg, type = 'success') {
         this.state.notification = { show: true, message: msg, type };
@@ -156,8 +154,8 @@ export const Store = reactive({
     },
 
     logActivity(action, details) {
-        // Simple console log for now, can be expanded to Firestore later
         console.log(`[ACTIVITY] ${action}: ${details}`);
+        // Optional: Save to Firestore 'activities' collection here
     },
 
     canDelete() {
@@ -165,7 +163,12 @@ export const Store = reactive({
     },
 
     updatePreferences(prefs) {
-        this.state.preferences = { ...this.state.preferences, ...prefs };
-        // Ideally save to Firestore user profile here
+        // Use the module version to ensure it saves to Firestore
+        return companiesModule.updatePreferences(this, prefs);
+    },
+    
+    saveCompanyStyle(style) {
+        // Alias for updatePreferences specifically for template studio
+        return this.updatePreferences(style);
     }
 });

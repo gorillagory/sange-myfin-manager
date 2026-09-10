@@ -229,3 +229,12 @@
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* --- PDF PAGE BREAK PROTECTIONS --- */
+.pdf-mode tr {
+    page-break-inside: avoid !important;
+}
+
+.pdf-mode .avoid-break {
+    page-break-inside: avoid !important;
+}

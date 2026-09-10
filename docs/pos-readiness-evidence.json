@@ -1,0 +1,202 @@
+{
+  "generatedAt": "2026-09-09T19:25:31.919Z",
+  "scope": "Source-level characterization using in-memory Vue and Firestore doubles; no live writes, browser or emulator.",
+  "meaning": "REPRODUCED confirms the reported defect. This is not a POS acceptance test suite.",
+  "sourceFiles": [
+    "src/components/dashboard/PosTab.vue",
+    "src/store/finance.js",
+    "src/store/index.js",
+    "src/store/companies.js",
+    "src/components/dashboard/AnalyticsTab.vue",
+    "src/components/dashboard/ExpensesTab.vue",
+    "src/components/dashboard/finance/SalesTab.vue",
+    "src/components/dashboard/pos/PosPaymentModal.vue",
+    "src/components/dashboard/pos/PosProductGrid.vue",
+    "src/components/dashboard/pos/PosSuccessModal.vue"
+  ],
+  "observations": [
+    {
+      "id": "POS-01",
+      "title": "Rejected save still clears cart and shows success",
+      "result": "REPRODUCED",
+      "evidence": {
+        "records": 0,
+        "cartItems": 0,
+        "successShown": true,
+        "notifications": [
+          [
+            "Error saving: simulated permission-denied",
+            "error"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "POS-02",
+      "title": "Sale writes no inventory and drops item identity and tender details",
+      "result": "REPRODUCED",
+      "evidence": {
+        "writeTargets": [
+          "transactions/1788981931885"
+        ],
+        "itemFields": [
+          "desc",
+          "qty",
+          "price",
+          "unit"
+        ],
+        "transactionFields": [
+          "company_id",
+          "date",
+          "type",
+          "number",
+          "status",
+          "items",
+          "subtotal",
+          "tax",
+          "total",
+          "paymentMethod",
+          "history"
+        ]
+      }
+    },
+    {
+      "id": "POS-03",
+      "title": "Success receipt handler throws without a transaction",
+      "result": "REPRODUCED",
+      "evidence": "The success modal emits no payload; printReceipt reads tx.number."
+    },
+    {
+      "id": "POS-04",
+      "title": "Analytics excludes a completed POS sale",
+      "result": "REPRODUCED",
+      "evidence": {
+        "savedStatus": "Cleared",
+        "savedTotal": 10,
+        "reportedRevenue": 0
+      }
+    },
+    {
+      "id": "POS-05",
+      "title": "Two terminals in the same millisecond overwrite one sale",
+      "result": "REPRODUCED",
+      "evidence": {
+        "attemptedSales": 2,
+        "savedDocuments": 1,
+        "writeTargets": [
+          "transactions/1800000000123",
+          "transactions/1800000000123"
+        ]
+      }
+    },
+    {
+      "id": "POS-06",
+      "title": "Receipt number can repeat after 16 minutes 40 seconds",
+      "result": "REPRODUCED",
+      "evidence": {
+        "elapsedSeconds": 1000,
+        "receiptNumbers": [
+          "POS-000123",
+          "POS-000123"
+        ]
+      }
+    },
+    {
+      "id": "POS-07",
+      "title": "Repeated completion while saving creates duplicate sales",
+      "result": "REPRODUCED",
+      "evidence": {
+        "cartSubmissions": 2,
+        "savedDocuments": 2
+      }
+    },
+    {
+      "id": "POS-08",
+      "title": "Distinct product IDs merge when name and price match",
+      "result": "REPRODUCED",
+      "evidence": {
+        "inputProductIds": [
+          "product-a",
+          "product-b"
+        ],
+        "cartLines": 1,
+        "retainedId": "product-a"
+      }
+    },
+    {
+      "id": "POS-09",
+      "title": "Cash matching the displayed rounded total can be rejected",
+      "result": "REPRODUCED",
+      "evidence": {
+        "displayedTotal": "0.05",
+        "comparedTotal": 0.053000000000000005,
+        "cashReceived": 0.05
+      }
+    },
+    {
+      "id": "POS-10",
+      "title": "Catalog SKU cannot be found by the POS code search",
+      "result": "REPRODUCED",
+      "evidence": {
+        "sku": "RET-1234",
+        "searchMatches": 0
+      }
+    },
+    {
+      "id": "POS-11",
+      "title": "Expense UI saves to a different collection from its list",
+      "result": "REPRODUCED",
+      "evidence": {
+        "writtenCollection": "transactions",
+        "listedCollection": "expenses",
+        "savedAmount": 12,
+        "savedTotal": null
+      }
+    },
+    {
+      "id": "POS-12",
+      "title": "Company switches retain old listeners and allow stale data to win",
+      "result": "REPRODUCED",
+      "evidence": {
+        "listeners": 8,
+        "unsubscribed": 0,
+        "selectedCompany": "shop-b",
+        "latestProductsCompany": "shop-a"
+      }
+    },
+    {
+      "id": "POS-13",
+      "title": "Saving appearance can replace the entire company preferences map",
+      "result": "REPRODUCED",
+      "evidence": {
+        "previousKeys": [
+          "taxRate",
+          "currency",
+          "baseTheme"
+        ],
+        "replacementKeys": [
+          "theme"
+        ]
+      }
+    },
+    {
+      "id": "POS-14",
+      "title": "Out-of-stock items can be sold",
+      "result": "REPRODUCED",
+      "evidence": {
+        "initialStock": 0,
+        "savedSales": 1
+      }
+    },
+    {
+      "id": "POS-15",
+      "title": "Tax on an existing POS sale is lost when resaved through Sales",
+      "result": "REPRODUCED",
+      "evidence": {
+        "originalTotal": 10.6,
+        "resavedTotal": 10,
+        "originalTaxRateField": null
+      }
+    }
+  ]
+}

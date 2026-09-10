@@ -2,133 +2,137 @@
 import { ref, computed, onMounted } from 'vue';
 import { Store } from '../store';
 
-import OverviewTab from './dashboard/OverviewTab.vue';
-import ExpensesTab from './dashboard/ExpensesTab.vue';
-import SalesTab from './dashboard/SalesTab.vue';
-import ContactsTab from './dashboard/ContactsTab.vue';
-import TemplateStudio from './dashboard/TemplateStudio.vue';
-import ActivityTab from './dashboard/ActivityTab.vue';
-import UserManager from './dashboard/UserManager.vue';
-import CompanyManager from './dashboard/CompanyManager.vue';
-import ProductsTab from './dashboard/ProductsTab.vue';
-import PosTab from './dashboard/PosTab.vue';
-import AnalyticsTab from './dashboard/AnalyticsTab.vue';
-import UserProfile from './dashboard/UserProfile.vue';
-
-const currentTab = ref('overview');
-const tempPrefs = ref({ theme: 'light', docTemplate: 'clean' });
-
 const currentUser = computed(() => Store.state.currentUser);
 const activeCompany = computed(() => Store.state.selectedCompany || {});
 
+// Mobile Menu State
+const mobileMenuOpen = ref(false);
+
 // PERMISSIONS
 const isSuperUser = computed(() => currentUser.value && currentUser.value.role === 'super');
-// isAdmin = Super OR Company Manager (Can edit settings/users)
 const isAdmin = computed(() => ['super', 'company_admin'].includes(currentUser.value?.role));
-// isStaff = Regular Employee (Restricted)
-const isStaff = computed(() => currentUser.value?.role === 'company_user');
 
 function logoutToMenu() { Store.selectCompany(null); }
 function fullLogout() { Store.logout(); }
-function switchTab(tab) { currentTab.value = tab; }
+function closeMobileMenu() { mobileMenuOpen.value = false; }
 
-function saveSettings() { 
-    Store.updatePreferences(tempPrefs.value); 
-    applyTheme(tempPrefs.value.theme); 
-    Store.notify("Settings Saved!"); 
-}
 function applyTheme(theme) {
     const html = document.documentElement;
-    const isDark = theme === 'dark' || (theme === 'auto' && new Date().getHours() >= 19) || (theme === 'auto' && new Date().getHours() < 7);
-    if (isDark) html.classList.add('dark'); else html.classList.remove('dark');
+    const isDark = theme === 'dark' || (theme === 'auto' && new Date().getHours() >= 19) ||
+    (theme === 'auto' && new Date().getHours() < 7);
+    if (isDark) html.classList.add('dark');
+    else html.classList.remove('dark');
 }
+
 onMounted(() => { 
     if(Store.state.preferences) {
-        tempPrefs.value = { ...Store.state.preferences }; 
-        applyTheme(tempPrefs.value.theme); 
+        applyTheme(Store.state.preferences.theme || 'light'); 
     }
 });
 </script>
 
 <template>
-    <div class="flex flex-col h-screen">
-        <nav class="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shadow-lg no-print flex-shrink-0">
-            <div class="flex items-center gap-4">
-                <div class="font-bold text-xl text-emerald-400">MyFin <span class="text-white text-sm font-normal opacity-70">| {{ activeCompany.name }}</span></div>
-                <button v-if="isSuperUser" @click="logoutToMenu" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1 rounded transition"><i class="fas fa-exchange-alt mr-1"></i> Switch</button>
+    <div class="flex flex-col h-screen overflow-hidden">
+        
+        <transition name="fade">
+            <div v-if="mobileMenuOpen" @click="closeMobileMenu" class="fixed inset-0 bg-black/60 z-[90] md:hidden backdrop-blur-sm"></div>
+        </transition>
+
+        <nav class="bg-slate-900 text-white px-4 sm:px-6 py-3 flex justify-between items-center shadow-lg no-print flex-shrink-0 relative z-[80]">
+            <div class="flex items-center gap-3">
+                <button @click="mobileMenuOpen = !mobileMenuOpen" class="md:hidden text-slate-300 hover:text-white p-1">
+                    <i class="fas fa-bars text-xl"></i>
+                </button>
+
+                <div class="font-bold text-lg sm:text-xl text-emerald-400 truncate max-w-[150px] sm:max-w-xs">
+                    MyFin <span class="text-white text-xs sm:text-sm font-normal opacity-70 hidden sm:inline">| {{ activeCompany.name }}</span>
+                </div>
+                
+                <button v-if="isSuperUser" @click="logoutToMenu" class="bg-slate-700 hover:bg-slate-600 text-[10px] sm:text-xs px-2 py-1 rounded transition whitespace-nowrap">
+                    <i class="fas fa-exchange-alt sm:mr-1"></i> <span class="hidden sm:inline">Switch</span>
+                </button>
             </div>
             <div class="flex items-center gap-3">
                 <div class="text-right hidden sm:block">
                     <div class="text-xs font-bold text-emerald-500 uppercase">{{ currentUser?.role === 'company_user' ? 'Staff' : currentUser?.role }}</div>
                     <div class="text-xs opacity-50">{{ currentUser?.username }}</div>
                 </div>
-                <button @click="fullLogout" class="text-red-400 hover:text-red-300 text-xs px-3 py-1 border border-red-900 rounded bg-red-900 bg-opacity-20 transition">Logout</button>
+                <button @click="fullLogout" class="text-red-400 hover:text-red-300 text-xs px-3 py-1.5 border border-red-900 rounded bg-red-900 bg-opacity-20 transition whitespace-nowrap">Logout</button>
             </div>
         </nav>
 
-        <div class="flex flex-grow overflow-hidden">
-            <aside class="w-64 bg-slate-800 text-slate-300 hidden md:flex flex-col no-print border-r border-slate-700">
+        <div class="flex flex-grow overflow-hidden relative">
+            
+            <aside 
+                :class="mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'"
+                class="absolute md:relative z-[100] md:z-0 w-64 h-full bg-slate-800 text-slate-300 flex flex-col no-print border-r border-slate-700 transition-transform duration-300 ease-in-out md:translate-x-0">
+                
+                <div class="p-4 flex justify-between items-center md:hidden border-b border-slate-700">
+                    <span class="font-bold text-white truncate">{{ activeCompany.name }}</span>
+                    <button @click="closeMobileMenu" class="text-slate-400 hover:text-white"><i class="fas fa-times text-xl"></i></button>
+                </div>
+
                 <nav class="p-4 space-y-2 flex-grow overflow-y-auto">
-                    <a @click="switchTab('overview')" :class="{'bg-slate-700 text-white': currentTab === 'overview'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-chart-pie w-6"></i> Dashboard</a>
-                    <a @click="switchTab('pos')" :class="{'bg-slate-700 text-white': currentTab === 'pos'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-cash-register w-6"></i> POS Terminal</a>
-                    <a @click="switchTab('analytics')" :class="{'bg-slate-700 text-white': currentTab === 'analytics'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-chart-line w-6"></i> Analytics</a>
-                    <a @click="switchTab('contacts')" :class="{'bg-slate-700 text-white': currentTab === 'contacts'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-address-book w-6"></i> Contacts</a>
+                    
+                    <router-link to="/overview" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-chart-pie w-6"></i> Dashboard
+                    </router-link>
+                    <router-link to="/pos" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-cash-register w-6"></i> POS Terminal
+                    </router-link>
+                    <router-link to="/analytics" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-chart-line w-6"></i> Analytics
+                    </router-link>
+                    <router-link to="/contacts" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-address-book w-6"></i> Contacts
+                    </router-link>
                     
                     <div class="text-xs uppercase font-bold text-slate-500 mt-4 mb-2 px-4">Finance</div>
-                    <a @click="switchTab('sales')" :class="{'bg-slate-700 text-white': currentTab === 'sales'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-file-invoice-dollar w-6"></i> Sales</a>
-                    <a @click="switchTab('expenses')" :class="{'bg-slate-700 text-white': currentTab === 'expenses'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-receipt w-6"></i> Expenses</a>
-                    <a @click="switchTab('products')" :class="{'bg-slate-700 text-white': currentTab === 'products'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-box w-6"></i> Products</a>
+                    
+                    <router-link to="/sales" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-file-invoice-dollar w-6"></i> Sales
+                    </router-link>
+                    <router-link to="/expenses" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-receipt w-6"></i> Expenses
+                    </router-link>
+                    <router-link to="/products" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                        <i class="fas fa-box w-6"></i> Products
+                    </router-link>
                     
                     <div v-if="isAdmin">
                         <div class="text-xs uppercase font-bold text-slate-500 mt-4 mb-2 px-4">Administration</div>
                         
-                        <a @click="switchTab('companies')" :class="{'bg-slate-700 text-white': currentTab === 'companies'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-building w-6"></i> Settings</a>
-                        
-                        <a @click="switchTab('users')" :class="{'bg-slate-700 text-white': currentTab === 'users'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-users-cog w-6"></i> Staff</a>
-                        
-                        <a @click="switchTab('activity')" :class="{'bg-slate-700 text-white': currentTab === 'activity'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-shield-alt w-6"></i> Audit Log</a>
-                        <a @click="switchTab('templates')" :class="{'bg-slate-700 text-white': currentTab === 'templates'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-paint-brush w-6"></i> Templates</a>
-                        <a @click="switchTab('settings')" :class="{'bg-slate-700 text-white': currentTab === 'settings'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition"><i class="fas fa-cog w-6"></i> Preferences</a>
+                        <router-link to="/companies" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                            <i class="fas fa-building w-6"></i> Settings
+                        </router-link>
+                        <router-link to="/users" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                            <i class="fas fa-users-cog w-6"></i> Staff
+                        </router-link>
+                        <router-link to="/activity" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                            <i class="fas fa-shield-alt w-6"></i> Audit Log
+                        </router-link>
+                        <router-link to="/templates" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                            <i class="fas fa-paint-brush w-6"></i> Templates
+                        </router-link>
+                        <router-link to="/settings" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700" active-class="bg-slate-700 text-white font-bold">
+                            <i class="fas fa-cog w-6"></i> Preferences
+                        </router-link>
                     </div>
                 </nav>
 
                 <div class="mt-auto border-t border-slate-700 p-4">
-                    <a @click="switchTab('profile')" :class="{'bg-slate-700 text-white': currentTab === 'profile'}" class="block px-4 py-2 rounded cursor-pointer hover:bg-slate-700 transition mb-2">
+                    <router-link to="/profile" @click="closeMobileMenu" class="block px-4 py-2 rounded transition hover:bg-slate-700 mb-2" active-class="bg-slate-700 text-white font-bold">
                         <i class="fas fa-user-circle w-6"></i> My Profile
-                    </a>
-                    </div>
+                    </router-link>
+                </div>
             </aside>
             
-            <main class="flex-grow p-6 overflow-y-auto bg-gray-100 dark:bg-slate-900 transition-colors duration-300">
-                <OverviewTab v-if="currentTab === 'overview'" />
-                <PosTab v-if="currentTab === 'pos'" />
-                <AnalyticsTab v-if="currentTab === 'analytics'" />
-                <ContactsTab v-if="currentTab === 'contacts'" />
-                <SalesTab    v-if="currentTab === 'sales'" />
-                <ExpensesTab v-if="currentTab === 'expenses'" />
-                <ProductsTab v-if="currentTab === 'products'" />
-                
-                <CompanyManager v-if="currentTab === 'companies' && isAdmin" />
-                <UserManager    v-if="currentTab === 'users' && isAdmin" />
-                
-                <ActivityTab v-if="currentTab === 'activity' && isAdmin" />
-                <TemplateStudio v-if="currentTab === 'templates' && isAdmin" />
-                
-                <UserProfile v-if="currentTab === 'profile'" />
-
-                <div v-if="currentTab === 'settings' && isAdmin" class="no-print max-w-4xl mx-auto">
-                    <h2 class="text-3xl font-bold text-slate-800 dark:text-white mb-8 border-b dark:border-slate-700 pb-4">System Preferences</h2>
-                     <div class="bg-white dark:bg-slate-800 p-6 rounded-lg shadow-lg border dark:border-slate-700">
-                        <h3 class="font-bold text-lg mb-4 dark:text-white"><i class="fas fa-moon text-indigo-500"></i> App Appearance</h3>
-                        <div class="space-y-3">
-                            <label class="flex items-center gap-3 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="light"> Light Mode</label>
-                            <label class="flex items-center gap-3 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="dark"> Dark Mode</label>
-                            <label class="flex items-center gap-3 dark:text-gray-300"><input type="radio" v-model="tempPrefs.theme" value="auto"> Auto (System)</label>
-                        </div>
-                     </div>
-                     <button @click="saveSettings" class="mt-4 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded">Save Preferences</button>
-                </div>
-
+            <main class="flex-grow overflow-y-auto overflow-x-hidden bg-gray-100 dark:bg-slate-900 transition-colors duration-300 relative w-full">
+                <router-view v-slot="{ Component }">
+                    <transition name="fade" mode="out-in">
+                        <component :is="Component" />
+                    </transition>
+                </router-view>
             </main>
         </div>
     </div>

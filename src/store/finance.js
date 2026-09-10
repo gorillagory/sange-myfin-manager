@@ -1,6 +1,5 @@
-import { collection, addDoc, deleteDoc, doc, updateDoc } from "firebase/firestore";
-import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
-import { db, storage } from '../firebase'; 
+import { collection, addDoc, deleteDoc, doc, updateDoc, writeBatch, setDoc } from "firebase/firestore";
+import { db } from '../firebase';
 
 export const financeModule = {
     // --- TRANSACTIONS ---
@@ -9,15 +8,9 @@ export const financeModule = {
             if(!transaction.status) transaction.status = 'Paid';
             transaction.company_id = store.state.selectedCompany?.id;
 
-            // Use the ID if provided (for overwrites), otherwise auto-gen
             if (transaction.id) {
-                // Ensure we don't overwrite if it doesn't exist, or use setDoc logic if you prefer
-                // For now, let's treat add as unique. 
-                // If you want to force specific IDs, use setDoc from firestore import
                 const { id, ...data } = transaction;
-                await import("firebase/firestore").then(({ setDoc }) => 
-                    setDoc(doc(db, "transactions", id), data)
-                );
+                await setDoc(doc(db, "transactions", id), data);
             } else {
                 await addDoc(collection(db, "transactions"), transaction);
             }
@@ -40,95 +33,86 @@ export const financeModule = {
         }
     },
 
-    // CRITICAL FIX: Delete Logic
     async deleteTransaction(store, id) {
-        // 1. Permission Check
-        if (!store.canDelete()) {
-            throw new Error("Access Denied: Only Admins can delete.");
-        }
-
-        // 2. Validation
-        if (!id) {
-            throw new Error("Invalid Transaction ID");
-        }
-
-        // 3. Perform Delete
-        // We do NOT catch errors here. We let them bubble up to the Component.
+        if (!store.canDelete()) throw new Error("Access Denied: Only Admins can delete.");
+        if (!id) throw new Error("Invalid Transaction ID");
         await deleteDoc(doc(db, "transactions", id));
+    },
+
+    // --- PROJECT BATCHING ---
+    // Safe, atomic updates using Firestore writeBatch
+    async assignProject(store, { ids, projectName }) {
+        if (!ids || !ids.length) return;
         
-        // 4. Success (Component will handle notification)
+        try {
+            const batch = writeBatch(db);
+            ids.forEach(id => {
+                const ref = doc(db, "transactions", id);
+                batch.update(ref, { project: projectName });
+            });
+            await batch.commit();
+            store.notify(`Assigned ${ids.length} items to "${projectName}"`);
+        } catch (e) {
+            store.notify("Project assignment failed: " + e.message, "error");
+        }
     },
 
     // --- EXPENSES ---
-    async addExpense(store, { file, ...expenseData }) {
+    // Notice: All Firebase Storage logic has been removed. 
+    // The UI handles the upload via useStorage.js and passes the final URL here.
+    async addExpense(store, expenseData) {
         try {
-            let receiptData = null;
-
-            if (file) {
-                const uniqueName = `receipts/${Date.now()}_${file.name}`;
-                const fileRef = storageRef(storage, uniqueName);
-                
-                const snapshot = await uploadBytes(fileRef, file);
-                const url = await getDownloadURL(snapshot.ref);
-
-                receiptData = {
-                    url: url,
-                    path: uniqueName,
-                    type: file.type,
-                    name: file.name
-                };
-            }
-
             const cleanExp = JSON.parse(JSON.stringify(expenseData));
-            delete cleanExp.id; // Let Firestore gen ID
-            
+            const id = cleanExp.id;
+            delete cleanExp.id;
             cleanExp.company_id = store.state.selectedCompany?.id;
-            cleanExp.receipt = receiptData;
 
-            await addDoc(collection(db, "expenses"), cleanExp);
+            if (id) {
+                // If ID exists, we are updating an existing expense
+                await setDoc(doc(db, "expenses", id), cleanExp);
+            } else {
+                // Otherwise, create new
+                await addDoc(collection(db, "expenses"), cleanExp);
+            }
             
-            store.logActivity('Expense', `Recorded: ${expenseData.description} (${expenseData.amount})`);
-            store.notify("Expense Recorded");
+            store.logActivity('Expense', `Recorded: ${cleanExp.description} (${cleanExp.amount})`);
+            // Notification is handled by the UI component now to prevent double-toasting
         } catch (e) {
             console.error(e);
             store.notify("Error: " + e.message, "error");
+            throw e; // Throw so the UI can catch and stop the loading spinner
         }
     },
 
-    async deleteExpense(store, expense) {
-        if (!store.canDelete()) {
-            throw new Error("Access Denied: Only Admins can delete.");
-        }
-
-        const id = expense.id || expense;
-        if (!id) throw new Error("Invalid Expense ID");
-
-        // 1. Delete File (Best effort)
-        if (expense.receipt && expense.receipt.path) {
-            try {
-                const fileRef = storageRef(storage, expense.receipt.path);
-                await deleteObject(fileRef);
-            } catch (err) {
-                console.warn("Receipt file not found or already deleted");
-            }
-        }
-
-        // 2. Delete Doc
-        await deleteDoc(doc(db, "expenses", id));
+    async deleteExpense(store, expenseId) {
+        if (!store.canDelete()) throw new Error("Access Denied: Only Admins can delete.");
+        if (!expenseId) throw new Error("Invalid Expense ID");
+        
+        // Notice: File deletion is handled by ExpensesTab.vue BEFORE calling this.
+        await deleteDoc(doc(db, "expenses", expenseId));
     },
 
     // --- CLIENTS ---
     async addClient(store, client) {
         try {
-            client.company_id = store.state.selectedCompany?.id;
-            await addDoc(collection(db, "clients"), client);
-            store.notify("Client Added");
-        } catch (e) { store.notify("Error: " + e.message, "error"); }
+            const cleanClient = JSON.parse(JSON.stringify(client));
+            const id = cleanClient.id;
+            delete cleanClient.id;
+            cleanClient.company_id = store.state.selectedCompany?.id;
+
+            if (id) {
+                await setDoc(doc(db, "clients", id), cleanClient);
+            } else {
+                await addDoc(collection(db, "clients"), cleanClient);
+            }
+        } catch (e) { 
+            store.notify("Error: " + e.message, "error"); 
+            throw e;
+        }
     },
 
     async deleteClient(store, id) {
         if (!store.canDelete()) return store.notify("Access Denied", "error");
         await deleteDoc(doc(db, "clients", id));
-        store.notify("Client Removed");
     }
 };

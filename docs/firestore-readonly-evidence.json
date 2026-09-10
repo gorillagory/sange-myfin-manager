@@ -1,0 +1,334 @@
+{
+  "checkedAt": "2026-09-09T19:32:28.520Z",
+  "project": "myfinmanager-1d2da",
+  "database": "(default)",
+  "readOnly": true,
+  "collections": {
+    "companies": {
+      "totalDocuments": 8,
+      "sampledDocuments": 8,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "preferences.currency",
+        "preferences.tax",
+        "preferences.taxRate",
+        "qrCode",
+        "qrCodeUrl"
+      ],
+      "fieldTypes": {
+        "preferences": {
+          "mapValue": 7
+        },
+        "qrCode": {
+          "stringValue": 2,
+          "nullValue": 5
+        }
+      },
+      "withQrCode": 2,
+      "withQrCodeUrl": 0,
+      "withTaxField": 7,
+      "withTaxRateField": 0
+    },
+    "users": {
+      "totalDocuments": 7,
+      "sampledDocuments": 7,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "role",
+        "company_id"
+      ],
+      "fieldTypes": {
+        "role": {
+          "stringValue": 7
+        },
+        "company_id": {
+          "stringValue": 7
+        }
+      },
+      "missingCompanyId": 0,
+      "roles": {
+        "super": 1,
+        "company_admin": 4,
+        "company_user": 2
+      }
+    },
+    "products": {
+      "totalDocuments": 7,
+      "sampledDocuments": 7,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "company_id",
+        "sku",
+        "code",
+        "price",
+        "cost",
+        "stock",
+        "unit",
+        "trackStock",
+        "hasVariants",
+        "variants"
+      ],
+      "fieldTypes": {
+        "trackStock": {
+          "booleanValue": 4
+        },
+        "hasVariants": {
+          "booleanValue": 4
+        },
+        "unit": {
+          "stringValue": 7
+        },
+        "cost": {
+          "integerValue": 4
+        },
+        "company_id": {
+          "stringValue": 7
+        },
+        "price": {
+          "integerValue": 7
+        },
+        "variants": {
+          "arrayValue": 4
+        },
+        "sku": {
+          "stringValue": 4
+        },
+        "stock": {
+          "integerValue": 4
+        },
+        "code": {
+          "stringValue": 3
+        }
+      },
+      "missingCompanyId": 0,
+      "withSku": 4,
+      "withCode": 3,
+      "withVariants": 4,
+      "variantCount": 12,
+      "variantsWithStableId": 0,
+      "variantFieldNames": [
+        "cost",
+        "name",
+        "price",
+        "stock"
+      ],
+      "negativeStock": 0
+    },
+    "transactions": {
+      "totalDocuments": 50,
+      "sampledDocuments": 50,
+      "sampleLimit": 100,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "company_id",
+        "date",
+        "type",
+        "status",
+        "items",
+        "subtotal",
+        "total",
+        "tax",
+        "taxRate",
+        "discount",
+        "amount",
+        "paymentMethod",
+        "number",
+        "schemaVersion",
+        "cashierId",
+        "registerId",
+        "shiftId"
+      ],
+      "fieldTypes": {
+        "date": {
+          "stringValue": 50
+        },
+        "taxRate": {
+          "integerValue": 40
+        },
+        "number": {
+          "stringValue": 48
+        },
+        "total": {
+          "integerValue": 39,
+          "doubleValue": 10
+        },
+        "company_id": {
+          "stringValue": 50
+        },
+        "type": {
+          "stringValue": 49
+        },
+        "items": {
+          "arrayValue": 49
+        },
+        "status": {
+          "stringValue": 50
+        },
+        "discount": {
+          "integerValue": 39
+        },
+        "subtotal": {
+          "integerValue": 30,
+          "doubleValue": 1
+        },
+        "paymentMethod": {
+          "stringValue": 8
+        },
+        "tax": {
+          "integerValue": 8
+        },
+        "amount": {
+          "integerValue": 1
+        }
+      },
+      "missingCompanyId": 0,
+      "statuses": {
+        "Pending": 14,
+        "Paid": 3,
+        "Converted": 17,
+        "Cleared": 16
+      },
+      "types": {
+        "Payment Voucher": 2,
+        "Quote": 18,
+        "Invoice": 28,
+        "Expense": 1,
+        "(missing)": 1
+      },
+      "paymentMethods": {
+        "(missing)": 42,
+        "Cash": 8
+      },
+      "lineItemCount": 79,
+      "lineItemsWithProductId": 2,
+      "lineItemFieldNames": [
+        "desc",
+        "price",
+        "productId",
+        "qty",
+        "unit",
+        "variant"
+      ],
+      "withTaxButNoTaxRate": 0,
+      "withAmountButNoTotal": 1,
+      "duplicateNumberGroups": 0
+    },
+    "expenses": {
+      "totalDocuments": 3,
+      "sampledDocuments": 3,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "company_id",
+        "date",
+        "amount",
+        "total",
+        "type",
+        "receiptPath"
+      ],
+      "fieldTypes": {
+        "date": {
+          "stringValue": 3
+        },
+        "amount": {
+          "integerValue": 3
+        },
+        "company_id": {
+          "stringValue": 3
+        },
+        "receiptPath": {
+          "stringValue": 3
+        }
+      },
+      "missingCompanyId": 0
+    },
+    "clients": {
+      "totalDocuments": 12,
+      "sampledDocuments": 12,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "company_id",
+        "type"
+      ],
+      "fieldTypes": {
+        "company_id": {
+          "stringValue": 12
+        },
+        "type": {
+          "stringValue": 12
+        }
+      },
+      "missingCompanyId": 0
+    },
+    "activities": {
+      "totalDocuments": 23,
+      "sampledDocuments": 23,
+      "sampleLimit": 30,
+      "sampleComplete": true,
+      "sampleOrder": "Default document-ID order; not necessarily recent.",
+      "projectedFields": [
+        "company_id",
+        "date",
+        "action"
+      ],
+      "fieldTypes": {
+        "date": {
+          "stringValue": 23
+        },
+        "company_id": {
+          "stringValue": 21,
+          "nullValue": 2
+        },
+        "action": {
+          "stringValue": 23
+        }
+      },
+      "missingCompanyId": 0
+    }
+  },
+  "errors": [],
+  "configuration": {
+    "locationId": "asia-southeast1",
+    "type": "FIRESTORE_NATIVE",
+    "concurrencyMode": "PESSIMISTIC",
+    "pointInTimeRecoveryEnablement": "POINT_IN_TIME_RECOVERY_DISABLED",
+    "deleteProtectionState": "DELETE_PROTECTION_DISABLED",
+    "databaseEdition": "STANDARD"
+  },
+  "backupScheduleCount": 0,
+  "deployedRules": [
+    {
+      "service": "cloud.firestore",
+      "updatedAt": "2026-05-14T14:02:24.641653Z",
+      "files": [
+        {
+          "name": "firestore.rules",
+          "sha256": "9b8c04446f4d7fe4b19f36807c79a56fc2a8882467e92752ffffe83f335fd0a9",
+          "unconditionalReadWrite": true,
+          "hasAuthenticationCondition": false,
+          "matchesLocalFirestoreRules": true
+        }
+      ]
+    }
+  ],
+  "topLevelCollections": [
+    "activities",
+    "clients",
+    "companies",
+    "expenses",
+    "products",
+    "transactions",
+    "users"
+  ],
+  "collectionInventoryTruncated": false
+}

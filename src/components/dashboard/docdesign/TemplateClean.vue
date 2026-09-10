@@ -1,6 +1,9 @@
 <script setup>
 const props = defineProps(['form', 'company', 'prefs', 'clients', 'isPdf', 'calculations', 'products']);
-const emit = defineEmits(['removeItem', 'addItem']);
+const emit = defineEmits(['removeItem', 'addItem', 'saveDefaultNotes']);
+
+// Helper format for strict 1,000,000.00 styling inside the template rows
+const formatRowMoney = (n) => Number(n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 </script>
 
 <template>
@@ -21,6 +24,13 @@ const emit = defineEmits(['removeItem', 'addItem']);
                             {{ form.type === 'Quote' ? prefs.labels.quote : prefs.labels.invoice }}
                         </h1>
                         <div class="font-mono text-gray-500 font-bold text-lg"># {{ form.number }}</div>
+                        
+                        <div v-if="isPdf && form.project" class="text-sm font-bold text-slate-600 mt-2 bg-slate-100 inline-block px-2 py-1 rounded">
+                            Project: {{ form.project }}
+                        </div>
+                        <div v-else-if="!isPdf" class="mt-2 w-64">
+                            <input v-model="form.project" class="w-full bg-transparent border-b border-gray-300 outline-none text-sm font-bold text-slate-600 pb-1" placeholder="+ Assign Project Name...">
+                        </div>
                     </td>
 
                     <td class="align-top text-right" width="40%">
@@ -72,10 +82,10 @@ const emit = defineEmits(['removeItem', 'addItem']);
                         <div v-if="isPdf">{{ Number(item.qty) }}</div><input v-else v-model="item.qty" type="number" class="w-full text-center bg-transparent outline-none">
                     </td>
                     <td class="py-2 align-top text-right whitespace-nowrap text-slate-600">
-                        <div v-if="isPdf">{{ Number(item.price).toLocaleString('en-US', {minimumFractionDigits: 2}) }}</div><input v-else v-model="item.price" type="number" class="w-full text-right bg-transparent outline-none">
+                        <div v-if="isPdf">{{ formatRowMoney(item.price) }}</div><input v-else v-model="item.price" type="number" class="w-full text-right bg-transparent outline-none">
                     </td>
                     <td class="py-2 align-top text-right font-bold whitespace-nowrap text-slate-800">
-                        {{ (item.qty * item.price).toLocaleString('en-US', {minimumFractionDigits: 2}) }}
+                        {{ formatRowMoney(item.qty * item.price) }}
                     </td>
                     <td v-if="!isPdf" class="text-center align-top opacity-0 group-hover:opacity-100 transition-opacity">
                         <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><i class="fas fa-times"></i></button>
@@ -107,11 +117,22 @@ const emit = defineEmits(['removeItem', 'addItem']);
             </div>
         </div>
 
-        <div class="mt-8 text-xs text-gray-500 relative z-10">
-             <div class="flex items-center gap-2 mb-1"><span class="font-bold uppercase tracking-wider text-[10px] text-gray-400">Date Issued:</span> <span v-if="isPdf" class="font-mono">{{ form.date }}</span><input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono"></div>
-            <div class="font-bold uppercase tracking-wider text-[10px] text-gray-400 mb-0.5">Notes / Terms:</div>
-            <div v-if="isPdf" class="whitespace-pre-wrap italic leading-relaxed text-[11px]">{{ form.notes }}</div>
-            <textarea v-else v-model="form.notes" class="w-full bg-transparent italic resize-none overflow-hidden outline-none" rows="1" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Payment terms, bank details, etc..."></textarea>
+        <div class="mt-8 text-xs text-gray-500 relative z-10 avoid-break">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="font-bold uppercase tracking-wider text-[10px] text-gray-400">Date Issued:</span> 
+                <span v-if="isPdf" class="font-mono">{{ form.date }}</span>
+                <input v-else v-model="form.date" type="date" class="bg-transparent outline-none font-mono">
+            </div>
+            
+            <div class="flex justify-between items-center mb-0.5 max-w-lg">
+                <div class="font-extrabold uppercase tracking-wider text-[12px] text-slate-900">Notes / Terms / Account Details:</div>
+                <button v-if="!isPdf" @click="$emit('saveDefaultNotes')" class="text-[10px] font-bold text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded cursor-pointer transition flex items-center shadow-sm">
+                    <i class="fas fa-save mr-1"></i> Save as Default
+                </button>
+            </div>
+            
+            <div v-if="isPdf" class="whitespace-pre-wrap italic leading-relaxed text-[11px] max-w-lg">{{ form.notes }}</div>
+            <textarea v-else v-model="form.notes" class="w-full max-w-lg bg-transparent italic resize-none overflow-hidden outline-none border border-transparent hover:border-gray-200 p-1 rounded transition" rows="2" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Payment terms, bank account details, etc..."></textarea>
         </div>
     </div>
 </template>
