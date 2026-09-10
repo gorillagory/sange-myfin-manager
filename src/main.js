@@ -11,4 +11,11 @@ const app = createApp(App)
 app.component('LegacyIcon', LegacyIcon);
 app.use(router)
 app.mount('#app')
-if (import.meta.env.PROD && 'serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => Store.notify('Offline app setup could not complete. Keep this page open during testing.', 'warning'))); }
+if (import.meta.env.PROD) {
+    Store.state.offlineStatus = 'Preparing offline app…';
+    if (!('serviceWorker' in navigator)) Store.state.offlineStatus = 'Offline app unavailable in this browser';
+    else navigator.serviceWorker.register('/sw.js')
+        .then(() => navigator.serviceWorker.ready)
+        .then(() => { Store.state.offlineStatus = 'Offline app ready on this device'; })
+        .catch(() => { Store.state.offlineStatus = 'Offline app setup failed. Reload online to retry.'; });
+}

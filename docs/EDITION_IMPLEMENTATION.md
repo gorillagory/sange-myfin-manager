@@ -76,6 +76,7 @@ firebase emulators:start --only auth,firestore,storage --project demo-myfin-edit
 node scripts/seed-edition-emulator.mjs
 npm run test:firebase
 npm run build
+node --test tests/service-worker.test.mjs
 ```
 
 The fixture script is hard-coded to loopback addresses and `demo-myfin-edition`.
@@ -115,6 +116,16 @@ readiness assessment still need to be established before relying on it for tradi
   checked read-only. No test users or test sales were written to production.
 - Updated vulnerable dependencies, including the PDF libraries, and checked PDF
   export afterward. `npm audit` reports zero known vulnerabilities.
+- Four generated-service-worker tests verify installation, network-error and
+  gateway-error fallback, and exclusion of Firebase traffic/outgoing writes.
+- The app now registers its offline shell immediately and displays device cache
+  readiness. The embedded test browser showed cache readiness but a blank page on
+  automated navigation after stopping the local web server. A full offline browser
+  restart is therefore **not confirmed**; test it on the shop browser before use.
+
+Hosting, Firestore rules and Storage rules were released successfully. The hosted
+HTML matched the release build; `/sw.js` returned HTTP 200 with `no-cache`, and an
+anonymous production Firestore request was denied with HTTP 403.
 
 The production Firebase project is `myfinmanager-1d2da`; the application uses its
 existing Authentication, Firestore and default Storage bucket. Deploy with

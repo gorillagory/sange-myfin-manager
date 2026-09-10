@@ -45,7 +45,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut));
         <div v-if="Store.state.dataError" class="ed-notice error" role="alert"><Icon name="alert" /><div><strong>Some data could not be loaded</strong>{{ Store.state.dataError }} <button class="ed-link" @click="Store.selectCompany(null)">Return to store selection</button></div></div>
         <div v-if="Store.state.dataLoading" class="ed-notice" role="status">Loading your store records…</div>
         <router-view v-slot="{ Component }"><component :is="Component" :key="company.id" :class="{'ed-legacy':!['/overview','/pos','/settings','/activity','/expenses'].includes(route.path)}" /></router-view>
-        <footer class="ed-footer"><span>MYFIN / EDITION</span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
+        <footer class="ed-footer"><span>MYFIN / EDITION<span v-if="Store.state.offlineStatus"> · {{ Store.state.offlineStatus }}</span></span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
       </main>
     </div>
     <Modal v-if="search" title="Find your next step" @close="search=false"><label class="ed-field"><span>Search pages</span><input v-model="query" placeholder="Checkout, inventory, settings…" autofocus></label><div style="margin-top:16px"><button v-for="item in matches" :key="item[0]" class="ed-row" style="width:100%;text-align:left;background:none" @click="go(item[0])"><span class="ed-actions"><Icon :name="item[2]" />{{ item[1] }}</span><Icon name="arrow" /></button><p v-if="!matches.length" class="ed-muted">No matching pages.</p></div></Modal>

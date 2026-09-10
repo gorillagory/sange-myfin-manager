@@ -17,6 +17,7 @@ export const state = reactive({
     fromCache: true,
     dataLoading: false,
     dataError: '',
+    offlineStatus: '',
     pendingSales: [],
     syncing: false
 });
