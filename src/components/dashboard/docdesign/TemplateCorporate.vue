@@ -71,7 +71,7 @@ const emit = defineEmits(['removeItem', 'addItem']);
                         {{ (item.qty * item.price).toLocaleString('en-US', {minimumFractionDigits: 2}) }}
                     </td>
                     <td v-if="!isPdf" class="text-center align-top opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><i class="fas fa-times"></i></button>
+                        <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><LegacyIcon class="fas fa-times" /></button>
                     </td>
                 </tr>
             </tbody>

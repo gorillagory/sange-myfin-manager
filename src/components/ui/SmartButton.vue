@@ -33,12 +33,12 @@ function handleClick() {
         :title="state === 'idle' ? (label || 'Action') : 'Click again to confirm'">
         
         <span v-if="state === 'idle'">
-            <i v-if="icon" :class="icon"></i>
+            <LegacyIcon v-if="icon" :class="icon" />
             <span v-if="label" class="ml-1">{{ label }}</span>
         </span>
         
         <span v-else class="flex items-center animate-pulse">
-            <i class="fas fa-exclamation-circle mr-1"></i>
+            <LegacyIcon class="fas fa-exclamation-circle mr-1" />
             {{ confirmLabel }}
         </span>
     </button>

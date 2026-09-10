@@ -26,19 +26,21 @@ function openModal(client = null) {
     clientModal.value = true;
 }
 
-function saveClient() {
+async function saveClient() {
+    try {
     if (!clientForm.value.name) return Store.notify("Name Required", "error");
     
     // Store.addClient uses .set() which creates OR overwrites, so it handles both Add and Edit
-    Store.addClient(JSON.parse(JSON.stringify(clientForm.value)));
+    await Store.addClient(JSON.parse(JSON.stringify(clientForm.value)));
     
     clientModal.value = false;
     Store.notify(isEditing.value ? "Contact Updated" : "Contact Saved");
+    } catch(e) { Store.notify(e.message, "error"); }
 }
 
-function deleteClient(id) {
+async function deleteClient(id) {
     if (confirm("Delete this contact?")) {
-        Store.deleteClient(id);
+        try { await Store.deleteClient(id); } catch(e) { return Store.notify(e.message, "error"); }
         Store.notify("Contact Deleted");
     }
 }
@@ -49,7 +51,7 @@ function deleteClient(id) {
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Contacts</h2>
             <button @click="openModal()" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm hover:bg-emerald-700 shadow transition">
-                <i class="fas fa-plus mr-2"></i>New Contact
+                <LegacyIcon class="fas fa-plus mr-2" />New Contact
             </button>
         </div>
         
@@ -74,10 +76,10 @@ function deleteClient(id) {
                         <td class="p-4">{{ cl.phone }}</td>
                         <td class="p-4 text-right">
                             <button @click="openModal(cl)" class="text-blue-500 hover:text-blue-700 mr-3 transition" title="Edit">
-                                <i class="fas fa-edit"></i>
+                                <LegacyIcon class="fas fa-edit" />
                             </button>
                             <button @click="deleteClient(cl.id)" class="text-red-400 hover:text-red-600 transition" title="Delete">
-                                <i class="fas fa-trash"></i>
+                                <LegacyIcon class="fas fa-trash" />
                             </button>
                         </td>
                     </tr>
@@ -97,11 +99,11 @@ function deleteClient(id) {
                 <div class="grid grid-cols-2 gap-2">
                     <label class="block p-2 border rounded text-center cursor-pointer transition" :class="clientForm.type === 'Client' ? 'bg-blue-50 border-blue-500 text-blue-800' : 'dark:border-slate-600 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700'">
                         <input type="radio" v-model="clientForm.type" value="Client" class="hidden"> 
-                        <i class="fas fa-user mr-1"></i> Client
+                        <LegacyIcon class="fas fa-user mr-1" /> Client
                     </label>
                     <label class="block p-2 border rounded text-center cursor-pointer transition" :class="clientForm.type === 'Supplier' ? 'bg-orange-50 border-orange-500 text-orange-800' : 'dark:border-slate-600 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700'">
                         <input type="radio" v-model="clientForm.type" value="Supplier" class="hidden"> 
-                        <i class="fas fa-truck mr-1"></i> Supplier
+                        <LegacyIcon class="fas fa-truck mr-1" /> Supplier
                     </label>
                 </div>
 

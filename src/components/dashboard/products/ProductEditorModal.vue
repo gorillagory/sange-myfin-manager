@@ -4,6 +4,7 @@ import { useProductLogic } from '../../../composables/useProductLogic';
 
 const props = defineProps({
     show: Boolean,
+    busy: Boolean,
     product: Object,
     categories: Array,
     currency: String
@@ -57,7 +58,7 @@ function handleGenerateSKU() {
 
 function addVariant() {
     if(!newVar.value.name) return;
-    form.value.variants.push({ ...newVar.value });
+    form.value.variants.push({ ...newVar.value, id: crypto.randomUUID() });
     newVar.value = { name: '', price: 0, cost: 0, stock: 0 }; 
 }
 
@@ -66,7 +67,7 @@ function removeVariant(index) {
 }
 
 function triggerSave() {
-    emit('save', form.value);
+    if (!props.busy) emit('save', form.value);
 }
 </script>
 
@@ -76,7 +77,7 @@ function triggerSave() {
             
             <div class="flex justify-between items-center mb-6">
                 <h3 class="font-bold text-xl text-slate-800 dark:text-white">{{ form.id ? 'Edit Item' : 'New Item' }}</h3>
-                <button @click="$emit('close')" class="text-gray-400 hover:text-red-500"><i class="fas fa-times"></i></button>
+                <button @click="$emit('close')" class="text-gray-400 hover:text-red-500"><LegacyIcon class="fas fa-times" /></button>
             </div>
 
             <div class="space-y-4">
@@ -90,7 +91,7 @@ function triggerSave() {
                         <div class="flex">
                             <input v-model="form.sku" class="w-full border p-2 rounded-l dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none font-mono text-sm uppercase">
                             <button @click="handleGenerateSKU" class="bg-gray-200 dark:bg-slate-600 px-3 rounded-r hover:bg-gray-300 transition" title="Auto Generate">
-                                <i class="fas fa-magic text-gray-600 dark:text-gray-300"></i>
+                                <LegacyIcon class="fas fa-magic text-gray-600 dark:text-gray-300" />
                             </button>
                         </div>
                     </div>
@@ -116,7 +117,7 @@ function triggerSave() {
                 </div>
 
                 <div v-if="form.category === 'Service'" class="bg-blue-50 dark:bg-blue-900/20 p-3 rounded text-xs text-blue-600 dark:text-blue-300 flex items-center gap-2">
-                    <i class="fas fa-info-circle"></i> Service items do not require stock tracking.
+                    <LegacyIcon class="fas fa-info-circle" /> Service items do not require stock tracking.
                 </div>
 
                 <div class="flex items-center gap-3 py-2 border-t border-b dark:border-slate-700">
@@ -155,7 +156,7 @@ function triggerSave() {
                                 <span>{{ currency }} {{ v.price }}</span>
                                 <span v-if="form.trackStock">Qty: {{ v.stock }}</span>
                             </div>
-                            <button @click="removeVariant(idx)" class="text-red-400 hover:text-red-600"><i class="fas fa-times"></i></button>
+                            <button @click="removeVariant(idx)" class="text-red-400 hover:text-red-600"><LegacyIcon class="fas fa-times" /></button>
                         </div>
                     </div>
                 </div>
@@ -163,7 +164,7 @@ function triggerSave() {
 
             <div class="mt-6 flex justify-end gap-3">
                 <button @click="$emit('close')" class="px-4 py-2 text-gray-500 font-bold hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition">Cancel</button>
-                <button @click="triggerSave" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold shadow-lg transition">Save Item</button>
+                <button :disabled="busy" @click="triggerSave" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold shadow-lg transition">Save Item</button>
             </div>
         </div>
     </div>

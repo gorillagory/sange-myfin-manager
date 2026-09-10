@@ -13,6 +13,7 @@ export const companiesModule = {
         const cleanCo = JSON.parse(JSON.stringify(company));
         const id = cleanCo.id;
         delete cleanCo.id;
+        if (cleanCo.preferences && Object.hasOwn(cleanCo.preferences, 'tax')) cleanCo.preferences.taxRate = Number(cleanCo.preferences.tax);
         await updateDoc(doc(db, "companies", id), cleanCo);
         store.logActivity('Update Company', `Updated: ${company.name}`);
     },
@@ -26,11 +27,12 @@ export const companiesModule = {
         store.startListeners(); // Refresh data for new company
     },
 
-    updatePreferences(store, prefs) {
-        store.state.preferences = prefs;
-        if (store.state.selectedCompany) {
-             const coRef = doc(db, "companies", store.state.selectedCompany.id);
-             updateDoc(coRef, { preferences: prefs });
-        }
+    async updatePreferences(store, prefs) {
+        if (!store.state.selectedCompany) throw new Error('Choose a store first.');
+        const clean = JSON.parse(JSON.stringify(prefs));
+        const fields = Object.fromEntries(Object.entries(clean).map(([key, value]) => [`preferences.${key}`, value]));
+        await updateDoc(doc(db, 'companies', store.state.selectedCompany.id), fields);
+        store.state.preferences = { ...store.state.selectedCompany.preferences, ...clean };
+        store.logActivity('Update preferences', 'Updated store preferences');
     }
 };

@@ -107,7 +107,7 @@ const format = (n) => (props.currency || 'RM') + ' ' + n.toLocaleString('en-US',
                 
                 <div v-if="mode === 'view'">
                     <label class="text-xs font-bold text-gray-500 uppercase mb-2 block">Active Project</label>
-                    <div class="font-black text-xl text-emerald-600 truncate"><i class="fas fa-folder-open mr-2"></i>{{ title }}</div>
+                    <div class="font-black text-xl text-emerald-600 truncate"><LegacyIcon class="fas fa-folder-open mr-2" />{{ title }}</div>
                     <p class="text-xs text-gray-400 mt-1">
                         Displaying <strong>booked</strong> revenue and <strong>active</strong> pipeline only.
                     </p>

@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function profile() { return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data; }
+    function member(company) { return request.auth != null && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) && (profile().role == 'super' || profile().company_id == company); }
+    match /receipts/{company}/{file=**} {
+      allow read: if member(company);
+      allow create, update: if member(company) && request.resource.size <= 5 * 1024 * 1024 && (request.resource.contentType.matches('image/.*') || request.resource.contentType == 'application/pdf');
+      allow delete: if member(company);
+    }
+    match /{path=**} { allow read, write: if false; }
+  }
+}

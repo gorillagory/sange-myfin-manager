@@ -1,7 +1,7 @@
 import { auth, db } from '../firebase';
 import { 
     signInWithEmailAndPassword, signOut, onAuthStateChanged, 
-    getAuth, createUserWithEmailAndPassword, updatePassword // <--- Added this
+    getAuth, createUserWithEmailAndPassword, updatePassword, connectAuthEmulator, deleteUser
 } from "firebase/auth";
 import { doc, onSnapshot, setDoc, deleteDoc, updateDoc } from "firebase/firestore"; // Added updateDoc
 import { initializeApp, getApp, getApps } from "firebase/app";
@@ -51,23 +51,26 @@ export const authModule = {
         const { password, ...profile } = userData;
         if (!password) { store.notify("Password required", "error"); return false; }
 
+        let secondaryAuth, createdUser;
         try {
-            let secondaryApp = getApps().length > 1 ? getApps()[1] : initializeApp(getApp().options, "Secondary");
-            const secondaryAuth = getAuth(secondaryApp);
+            const secondaryApp = getApps().find(app => app.name === 'Secondary') || initializeApp(getApp().options, "Secondary");
+            secondaryAuth = getAuth(secondaryApp);
+            if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === 'true' && !secondaryAuth.emulatorConfig) connectAuthEmulator(secondaryAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
             const cred = await createUserWithEmailAndPassword(secondaryAuth, profile.email, password);
+            createdUser = cred.user;
             
             const cleanUser = JSON.parse(JSON.stringify(profile));
             delete cleanUser.id;
             await setDoc(doc(db, "users", cred.user.uid), cleanUser);
-            await signOut(secondaryAuth);
             
             store.logActivity('Create User', `Created: ${profile.username}`);
             store.notify("User Created!");
             return true;
         } catch (error) {
+            if (createdUser) await deleteUser(createdUser).catch(() => {});
             store.notify(error.code === 'auth/email-already-in-use' ? "Email taken" : error.message, "error");
             return false;
-        }
+        } finally { if (secondaryAuth) await signOut(secondaryAuth).catch(() => {}); }
     },
 
     async updateUser(store, user) {
@@ -98,7 +101,7 @@ export const authModule = {
 
             // 2. Update Firestore Profile
             if (username) {
-                await updateDoc(doc(db, "users", user.uid), { username });
+                await updateDoc(doc(db, "users", store.state.currentUser.id), { username });
                 store.state.currentUser.username = username; // Local update
             }
 

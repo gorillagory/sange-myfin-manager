@@ -1,4 +1,4 @@
-import { collection, addDoc, deleteDoc, doc, updateDoc, writeBatch, setDoc } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, updateDoc, writeBatch, setDoc, getDoc, runTransaction } from "firebase/firestore";
 import { db } from '../firebase';
 
 export const financeModule = {
@@ -17,26 +17,48 @@ export const financeModule = {
             
             store.logActivity('New Sale', `Recorded sale: ${transaction.total}`);
             store.notify("Transaction Added");
+            return transaction;
         } catch (error) {
             console.error(error);
             store.notify("Error saving: " + error.message, "error");
+            throw error;
         }
     },
 
     async updateTransaction(store, transaction) {
         try {
             const { id, ...data } = transaction;
+            const saved = await getDoc(doc(db, "transactions", id));
+            if (saved.data()?.source === "pos") throw new Error("Posted POS sales cannot be edited. Open the receipt instead.");
             await updateDoc(doc(db, "transactions", id), data);
             store.notify("Transaction Updated");
         } catch (error) {
             store.notify("Update failed: " + error.message, "error");
+            throw error;
         }
     },
 
     async deleteTransaction(store, id) {
         if (!store.canDelete()) throw new Error("Access Denied: Only Admins can delete.");
         if (!id) throw new Error("Invalid Transaction ID");
+        const saved = await getDoc(doc(db, "transactions", id));
+        if (saved.data()?.source === "pos") throw new Error("Posted POS sales cannot be deleted.");
         await deleteDoc(doc(db, "transactions", id));
+    },
+
+    async convertQuote(store, quote) {
+        const id = crypto.randomUUID().replaceAll('-', '').slice(0, 20);
+        return runTransaction(db, async tx => {
+            const ref = doc(db, 'transactions', quote.id);
+            const snapshot = await tx.get(ref);
+            if (!snapshot.exists() || snapshot.data().company_id !== store.state.selectedCompany.id) throw new Error('Quote not found.');
+            const data = snapshot.data();
+            if (data.status === 'Converted') return data.convertedTo;
+            if (data.type !== 'Quote') throw new Error('Only a quote can be converted.');
+            tx.set(doc(db, 'transactions', id), { ...data, type: 'Invoice', number: 'INV-' + id.toUpperCase(), status: 'Pending', date: new Date().toISOString(), quoteId: quote.id });
+            tx.update(ref, { status: 'Converted', convertedTo: id });
+            return id;
+        });
     },
 
     // --- PROJECT BATCHING ---
@@ -112,7 +134,7 @@ export const financeModule = {
     },
 
     async deleteClient(store, id) {
-        if (!store.canDelete()) return store.notify("Access Denied", "error");
+        if (!store.canDelete()) throw new Error("Only a manager can delete contacts.");
         await deleteDoc(doc(db, "clients", id));
     }
 };

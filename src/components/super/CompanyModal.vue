@@ -80,7 +80,7 @@ async function handleFileUpload(event, field) {
         <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl text-white overflow-hidden">
             <div class="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800">
                 <h3 class="font-bold text-xl text-emerald-400">{{ isEdit ? 'Edit Entity' : 'Launch New Entity' }}</h3>
-                <button @click="$emit('close')" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+                <button @click="$emit('close')" class="text-slate-400 hover:text-white"><LegacyIcon class="fas fa-times" /></button>
             </div>
             
             <div class="p-8 space-y-6 max-h-[70vh] overflow-y-auto">

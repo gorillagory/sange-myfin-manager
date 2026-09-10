@@ -32,7 +32,7 @@ const filteredProducts = computed(() => {
     <div class="flex-grow flex flex-col bg-white dark:bg-slate-800 rounded-xl shadow border dark:border-slate-700 overflow-hidden">
         <div class="p-4 border-b dark:border-slate-700 flex gap-2">
             <div class="relative flex-grow">
-                <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                <LegacyIcon class="fas fa-search absolute left-3 top-3 text-gray-400" />
                 <input v-model="searchQuery" placeholder="Search Products..." class="w-full bg-gray-100 dark:bg-slate-900 border-none rounded-lg pl-10 pr-4 py-2 outline-none transition focus:ring-2 focus:ring-emerald-500/20">
             </div>
             <select v-model="selectedCategory" class="bg-gray-100 dark:bg-slate-900 rounded-lg px-4 py-2 outline-none text-sm font-bold cursor-pointer hover:bg-gray-200 transition">

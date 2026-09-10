@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue';
+import { computed } from 'vue';
 import { Store } from './store';
 
 // Components
@@ -22,16 +22,14 @@ const currentView = computed(() => {
     }
     
     // 3. Regular User OR Company Selected -> Show Workspace
-    return 'dashboard';
+    return selectedCompany.value ? 'dashboard' : 'unassigned';
 });
 
-onMounted(() => {
-    Store.init();
-});
+
 </script>
 
 <template>
-  <div class="font-sans text-gray-900 bg-gray-50 min-h-screen">
+  <div class="edition-app min-h-screen">
     
     <Transition name="fade">
         <div v-if="Store.state.isLoading" class="spinner-overlay">
@@ -42,7 +40,7 @@ onMounted(() => {
 
     <Transition name="page-fade" mode="out-in">
         
-        <div v-if="currentView === 'auth'" key="auth" class="flex items-center justify-center h-screen bg-gradient-to-br from-slate-900 to-slate-800">
+        <div v-if="currentView === 'auth'" key="auth" class="edition-app">
             <AuthManager />
         </div>
 
@@ -50,6 +48,9 @@ onMounted(() => {
             <SuperDashboard />
         </div>
 
+        <div v-else-if="currentView === 'unassigned'" key="unassigned" class="ed-empty" style="min-height:100vh;display:grid;place-content:center;gap:20px">
+            <h1>Waiting for your workspace.</h1><p>Your store may still be loading. If it stays unavailable, ask your administrator to check your access.</p><button class="ed-btn" @click="Store.logout()">Sign out</button>
+        </div>
         <div v-else key="dashboard">
             <DashboardManager />
         </div>
@@ -58,10 +59,10 @@ onMounted(() => {
 
     <Transition name="toast">
       <div v-if="toast && toast.show" 
-           class="fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-xl z-[9999] flex items-center gap-3 text-white transform transition-all duration-300"
-           :class="toast.type === 'error' ? 'bg-red-600' : 'bg-slate-800'">
+           class="ed-toast" role="status"
+           :class="toast.type === 'error' ? 'error' : ''">
            
-           <i class="fas" :class="toast.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'"></i>
+           <LegacyIcon class="fas" :class="toast.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'" />
            <div>
              <div class="font-bold text-sm uppercase opacity-75">{{ toast.type === 'error' ? 'Error' : 'Success' }}</div>
              <div class="font-bold">{{ toast.message }}</div>

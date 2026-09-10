@@ -84,7 +84,7 @@ async function deleteCompany() {
                  <div class="mb-4 relative inline-block group">
                      <div class="h-32 w-32 mx-auto rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border-4 border-white dark:border-slate-600 shadow-lg">
                          <img v-if="activeCompany?.logo" :src="activeCompany.logo" class="h-full w-full object-contain">
-                         <i v-else class="fas fa-building text-4xl text-gray-300"></i>
+                         <LegacyIcon v-else class="fas fa-building text-4xl text-gray-300" />
                      </div>
                  </div>
                  
@@ -97,15 +97,15 @@ async function deleteCompany() {
                      <h4 class="font-bold text-gray-400 text-xs uppercase mb-4 border-b dark:border-slate-700 pb-2">Contact Details</h4>
                      <div class="space-y-4">
                          <div class="flex gap-3">
-                             <div class="w-8 text-center"><i class="fas fa-map-marker-alt text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-map-marker-alt text-gray-400" /></div>
                              <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.address || 'No Address Provided' }}</div>
                          </div>
                          <div class="flex gap-3">
-                             <div class="w-8 text-center"><i class="fas fa-phone text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-phone text-gray-400" /></div>
                              <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.phone || 'No Phone' }}</div>
                          </div>
                          <div class="flex gap-3">
-                             <div class="w-8 text-center"><i class="fas fa-envelope text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-envelope text-gray-400" /></div>
                              <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.email || 'No Email' }}</div>
                          </div>
                      </div>
@@ -115,18 +115,18 @@ async function deleteCompany() {
                      <h4 class="font-bold text-gray-400 text-xs uppercase mb-4 border-b dark:border-slate-700 pb-2">Financial Settings</h4>
                      <div class="space-y-4">
                          <div class="flex gap-3 items-center">
-                             <div class="w-8 text-center"><i class="fas fa-coins text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-coins text-gray-400" /></div>
                              <div class="text-slate-700 dark:text-gray-300 text-sm">Currency: <span class="font-bold">{{ activeCompany?.preferences?.currency || 'RM' }}</span></div>
                          </div>
                          <div class="flex gap-3 items-center">
-                             <div class="w-8 text-center"><i class="fas fa-percent text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-percent text-gray-400" /></div>
                              <div class="text-slate-700 dark:text-gray-300 text-sm">Tax Rate: <span class="font-bold">{{ activeCompany?.preferences?.tax || 0 }}%</span></div>
                          </div>
                          <div class="flex gap-3 items-start">
-                             <div class="w-8 text-center"><i class="fas fa-qrcode text-gray-400"></i></div>
+                             <div class="w-8 text-center"><LegacyIcon class="fas fa-qrcode text-gray-400" /></div>
                              <div>
                                  <div class="text-slate-700 dark:text-gray-300 text-sm mb-1">DuitNow QR:</div>
-                                 <span v-if="activeCompany?.qrCode" class="text-emerald-600 font-bold text-xs"><i class="fas fa-check-circle mr-1"></i> Active</span>
+                                 <span v-if="activeCompany?.qrCode" class="text-emerald-600 font-bold text-xs"><LegacyIcon class="fas fa-check-circle mr-1" /> Active</span>
                                  <span v-else class="text-gray-400 text-xs">Not Configured</span>
                              </div>
                          </div>
@@ -136,14 +136,14 @@ async function deleteCompany() {
 
              <div class="flex justify-center">
                  <button @click="prepareEdit" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-bold shadow-lg transition flex items-center gap-2">
-                     <i class="fas fa-edit"></i> Edit Configuration
+                     <LegacyIcon class="fas fa-edit" /> Edit Configuration
                  </button>
              </div>
         </div>
 
         <div v-if="showModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 backdrop-blur-sm">
             <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl h-[90vh] overflow-hidden flex flex-col">
-                <div class="p-6 border-b dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-900"><h3 class="font-bold text-xl text-slate-800 dark:text-white">Edit Company</h3><button @click="showModal = false" class="text-gray-400 hover:text-red-500 text-xl"><i class="fas fa-times"></i></button></div>
+                <div class="p-6 border-b dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-900"><h3 class="font-bold text-xl text-slate-800 dark:text-white">Edit Company</h3><button @click="showModal = false" class="text-gray-400 hover:text-red-500 text-xl"><LegacyIcon class="fas fa-times" /></button></div>
                 
                 <div class="flex-grow overflow-y-auto p-8 space-y-6">
                     <div class="grid grid-cols-2 gap-4">
@@ -156,7 +156,7 @@ async function deleteCompany() {
                         <div>
                             <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Company Logo</label>
                             <div class="flex items-center gap-3">
-                                <div class="h-16 w-16 border rounded bg-white flex items-center justify-center overflow-hidden"><img v-if="companyForm.logo" :src="companyForm.logo" class="h-full w-full object-contain"><i v-else class="fas fa-image text-gray-300"></i></div>
+                                <div class="h-16 w-16 border rounded bg-white flex items-center justify-center overflow-hidden"><img v-if="companyForm.logo" :src="companyForm.logo" class="h-full w-full object-contain"><LegacyIcon v-else class="fas fa-image text-gray-300" /></div>
                                 <label class="cursor-pointer bg-white dark:bg-slate-700 border dark:border-slate-600 hover:bg-gray-100 px-3 py-1 rounded text-xs font-bold shadow-sm">Change<input type="file" accept="image/*" class="hidden" @change="(e) => handleFileUpload(e, 'logo')"></label>
                             </div>
                         </div>
@@ -165,8 +165,8 @@ async function deleteCompany() {
                             <div class="flex items-center gap-3">
                                 <div class="h-16 w-16 border rounded bg-white flex items-center justify-center overflow-hidden relative group">
                                     <img v-if="companyForm.qrCode" :src="companyForm.qrCode" class="h-full w-full object-cover">
-                                    <i v-else class="fas fa-qrcode text-gray-300"></i>
-                                    <button v-if="companyForm.qrCode" @click="companyForm.qrCode = null" class="absolute inset-0 bg-black bg-opacity-50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition"><i class="fas fa-trash"></i></button>
+                                    <LegacyIcon v-else class="fas fa-qrcode text-gray-300" />
+                                    <button v-if="companyForm.qrCode" @click="companyForm.qrCode = null" class="absolute inset-0 bg-black bg-opacity-50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition"><LegacyIcon class="fas fa-trash" /></button>
                                 </div>
                                 <label class="cursor-pointer bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 px-3 py-1 rounded text-xs font-bold shadow-sm text-emerald-700 dark:text-emerald-400">Upload Screenshot<input type="file" accept="image/*" class="hidden" @change="(e) => handleFileUpload(e, 'qrCode')"></label>
                             </div>

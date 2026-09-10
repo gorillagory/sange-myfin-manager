@@ -1,5 +1,9 @@
 # Temporary shop POS: code and database assessment
 
+Historical assessment before the Edition implementation. See
+[Edition implementation and validation](EDITION_IMPLEMENTATION.md) for the
+repairs, current behavior and remaining shop-device checks.
+
 Reviewed 10 September 2026, Asia/Kuala_Lumpur. Live database inspection began at 2026-09-09 19:32 UTC.
 
 **Decision: reuse this project and Firebase database, but do not rely on the current checkout for shop trading yet.** The app has useful catalog, company, invoice and POS interfaces. Its sale persistence, inventory, receipts and reporting need repair before they can be trusted at the counter. The deployed database also needs access controls before further operational use.

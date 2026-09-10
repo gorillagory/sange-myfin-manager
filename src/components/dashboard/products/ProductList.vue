@@ -42,8 +42,8 @@ const emit = defineEmits(['edit', 'delete']);
                             <span v-else>{{ currency }} {{ p.price }}</span>
                         </td>
                         <td class="p-4 text-right space-x-3">
-                            <button @click="$emit('edit', p)" class="text-blue-500 hover:text-blue-700"><i class="fas fa-edit"></i></button>
-                            <button @click="$emit('delete', p.id)" class="text-red-400 hover:text-red-600"><i class="fas fa-trash"></i></button>
+                            <button @click="$emit('edit', p)" :aria-label="'Edit '+p.name" class="text-blue-500 hover:text-blue-700"><LegacyIcon class="fas fa-edit" /></button>
+                            <button @click="$emit('delete', p.id)" :aria-label="'Delete '+p.name" class="text-red-400 hover:text-red-600"><LegacyIcon class="fas fa-trash" /></button>
                         </td>
                     </tr>
                     <tr v-if="products.length === 0"><td colspan="5" class="p-10 text-center text-gray-400 italic">No products found.</td></tr>

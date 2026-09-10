@@ -12,6 +12,7 @@ const props = defineProps({
     companyPrefs: { type: Object, required: true },
     clients: { type: Array, required: true },
     products: { type: Array, required: true },
+    saving: Boolean,
     isGeneratingPdf: { type: Boolean, default: false }
 });
 
@@ -53,15 +54,15 @@ function handleRemoveItem(index) {
 </script>
 
 <template>
-    <div class="flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full p-6 h-screen overflow-hidden">
+    <div class="flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full p-6 min-h-screen">
         <div class="flex-grow bg-white shadow-2xl rounded-lg overflow-hidden flex flex-col h-full">
             
             <div class="bg-slate-100 dark:bg-slate-800 px-6 py-3 border-b dark:border-slate-700 flex justify-between items-center no-print flex-shrink-0">
                 <button @click="$emit('cancel')" class="text-gray-600 dark:text-gray-300 hover:text-black font-medium transition">
-                    <i class="fas fa-arrow-left mr-2"></i> Dashboard
+                    <LegacyIcon class="fas fa-arrow-left mr-2" /> Dashboard
                 </button>
-                <button @click="$emit('save')" class="bg-emerald-600 text-white px-4 py-2 rounded shadow hover:bg-emerald-700 font-bold transition">
-                    <i class="fas fa-save mr-2"></i> Save
+                <button :disabled="saving" @click="$emit('save')" class="bg-emerald-600 text-white px-4 py-2 rounded shadow hover:bg-emerald-700 font-bold transition">
+                    <LegacyIcon class="fas fa-save mr-2" /> Save
                 </button>
             </div>
 

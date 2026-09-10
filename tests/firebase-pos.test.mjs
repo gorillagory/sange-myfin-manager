@@ -1,0 +1,43 @@
+// Requires only the demo-myfin-edition emulators and seed-edition-emulator.mjs.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { initializeApp, deleteApp } from 'firebase/app';
+import { getAuth, connectAuthEmulator, signInWithEmailAndPassword } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { postSaleTo } from '../src/services/postSale.js';
+import { createSale, cartItem, normalizeProduct } from '../src/domain/pos.js';
+import { getStorage, connectStorageEmulator, ref, uploadBytes, getMetadata, deleteObject } from 'firebase/storage';
+const app=initializeApp({projectId:'demo-myfin-edition',apiKey:'demo-key'},'test-cashier');
+const auth=getAuth(app);connectAuthEmulator(auth,'http://127.0.0.1:9099',{disableWarnings:true});
+const db=getFirestore(app);connectFirestoreEmulator(db,'127.0.0.1',8080);
+const cred=await signInWithEmailAndPassword(auth,'cashier@example.test','EditionTest123!');
+const company={id:'test-store',name:'Test Store',preferences:{currency:'RM',tax:0}},user={uid:cred.user.uid,username:'Sarah Ismail'};
+const prefix='qa-'+crypto.randomUUID().slice(0,8);
+const product=(suffix,stock=3)=>normalizeProduct({id:prefix+suffix,company_id:'test-store',name:'Test product',sku:'TEST',price:5,cost:2,stock,trackStock:true,variants:[]});
+const sale=(p,id,extra={})=>createSale({id,items:[cartItem(p)],company,user,method:'Cash',received:10,...extra});
+await test('Firebase atomically stores sale, stock and movement; retry does not deduct twice',async()=>{const p=product('idempotent');await setDoc(doc(db,'products',p.id),p);const s=sale(p,prefix+'sale');const first=await postSaleTo(db,s);const second=await postSaleTo(db,JSON.parse(JSON.stringify(s)));assert.equal(first.number,second.number);assert.equal((await getDoc(doc(db,'products',p.id))).data().stock,2);assert.ok((await getDoc(doc(db,'stock_movements',s.id))).exists());assert.ok((await getDoc(doc(db,'activities',s.id))).exists());await assert.rejects(postSaleTo(db,{...s,received:20}));});
+await test('two concurrent tills cannot both sell the last online item',async()=>{const p=product('last',1);await setDoc(doc(db,'products',p.id),p);const results=await Promise.allSettled([postSaleTo(db,sale(p,prefix+'a')),postSaleTo(db,sale(p,prefix+'b'))]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal((await getDoc(doc(db,'products',p.id))).data().stock,0);});
+await test('offline shortage is retained and flagged',async()=>{const p=product('offline',0);await setDoc(doc(db,'products',p.id),p);const saved=await postSaleTo(db,sale(p,prefix+'offline-sale',{offline:true}));assert.equal(saved.stockShortage,true);assert.equal((await getDoc(doc(db,'products',p.id))).data().stock,-1);});
+await test('cashier can query own store; cross-company reads and writes are denied',async()=>{assert.ok((await getDocs(query(collection(db,'products'),where('company_id','==','test-store')))).size);await assert.rejects(getDoc(doc(db,'products','other-product')),e=>e.code==='permission-denied');await assert.rejects(setDoc(doc(db,'products',prefix+'wrong'),{name:'No',company_id:'other-store'}),e=>e.code==='permission-denied');await assert.rejects(getDocs(collection(db,'companies')),e=>e.code==='permission-denied');});
+await test('cashier cannot elevate their role or edit/delete a posted receipt',async()=>{await assert.rejects(updateDoc(doc(db,'users',user.uid),{role:'super'}),e=>e.code==='permission-denied');await assert.rejects(updateDoc(doc(db,'transactions',prefix+'sale'),{total:0}),e=>e.code==='permission-denied');await assert.rejects(deleteDoc(doc(db,'transactions',prefix+'sale')),e=>e.code==='permission-denied');});
+await test('expense saves use the expense collection and correct numeric amount',async()=>{await setDoc(doc(db,'expenses',prefix+'expense'),{company_id:'test-store',amount:12.3,description:'Test receipt',date:'2026-09-10'});assert.equal((await getDoc(doc(db,'expenses',prefix+'expense'))).data().amount,12.3);await updateDoc(doc(db,'expenses',prefix+'expense'),{amount:14.5});assert.equal((await getDoc(doc(db,'expenses',prefix+'expense'))).data().amount,14.5);});
+const anonymous=initializeApp({projectId:'demo-myfin-edition',apiKey:'demo-key'},'anonymous');const anonymousDb=getFirestore(anonymous);connectFirestoreEmulator(anonymousDb,'127.0.0.1',8080);
+await test('anonymous database access is denied',async()=>{await assert.rejects(getDoc(doc(anonymousDb,'products','coffee')),e=>e.code==='permission-denied');await assert.rejects(setDoc(doc(anonymousDb,'products','anonymous'),{company_id:'test-store'}),e=>e.code==='permission-denied');});
+await test('variant checkout deducts only the selected variant and services do not deduct stock',async()=>{
+  const p=normalizeProduct({...product('variants',10),hasVariants:true,variants:[{id:'small',name:'Small',price:5,cost:2,stock:4},{id:'large',name:'Large',price:8,cost:3,stock:6}]});
+  const service=normalizeProduct({...product('service',0),category:'Service',trackStock:false});
+  await setDoc(doc(db,'products',p.id),p);await setDoc(doc(db,'products',service.id),service);
+  const order=createSale({id:prefix+'variant-sale',items:[cartItem(p,p.variants[1]),cartItem(service)],company,user,method:'Cash',received:20});
+  await postSaleTo(db,order);
+  const saved=(await getDoc(doc(db,'products',p.id))).data();assert.equal(saved.variants[0].stock,4);assert.equal(saved.variants[1].stock,5);assert.equal((await getDoc(doc(db,'products',service.id))).data().stock,0);
+});
+const storage=getStorage(app,'gs://demo-myfin-edition.appspot.com');connectStorageEmulator(storage,'127.0.0.1',9199);
+await test('receipt attachments allow own-store PDFs and deny cross-store or unsupported uploads',async()=>{
+  const own=ref(storage,`receipts/test-store/${prefix}.pdf`),data=new TextEncoder().encode('%PDF-1.4\nTest fixture');
+  await uploadBytes(own,data,{contentType:'application/pdf'});assert.equal((await getMetadata(own)).contentType,'application/pdf');
+  await assert.rejects(uploadBytes(ref(storage,`receipts/other-store/${prefix}.pdf`),data,{contentType:'application/pdf'}),e=>e.code==='storage/unauthorized');
+  await assert.rejects(uploadBytes(ref(storage,`receipts/test-store/${prefix}.txt`),data,{contentType:'text/plain'}),e=>e.code==='storage/unauthorized');
+  await assert.rejects(uploadBytes(ref(storage,`receipts/test-store/${prefix}-large.pdf`),new Uint8Array(5*1024*1024+1),{contentType:'application/pdf'}),e=>e.code==='storage/unauthorized');
+  await deleteObject(own);
+});
+await deleteApp(app);await deleteApp(anonymous);

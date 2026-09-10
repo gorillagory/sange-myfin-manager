@@ -54,11 +54,11 @@ async function handleSave() {
 
     if (isEditing.value) {
         // UPDATE EXISTING
-        await Store.updateUser(userForm.value);
+        if (!await Store.updateUser(userForm.value)) return;
     } else {
         // CREATE NEW
         if (!userForm.value.password) return Store.notify("Password required for new users", 'error');
-        await Store.addUser(userForm.value);
+        if (!await Store.addUser(userForm.value)) return;
     }
     
     showUserModal.value = false;
@@ -82,11 +82,11 @@ function sendReset() {
         
         <div class="flex justify-between items-center mb-8">
             <div>
-                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Staff Directory</h2>
+                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Good people. Clear roles.</h2>
                 <p class="text-sm text-gray-500">Managing access for <span class="font-bold text-emerald-600">{{ activeCompany?.name }}</span></p>
             </div>
             <button @click="openCreateModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 shadow-lg transition font-bold flex items-center gap-2">
-                <i class="fas fa-user-plus"></i> Recruit Staff
+                <LegacyIcon class="fas fa-user-plus" /> Add teammate
             </button>
         </div>
 
@@ -121,16 +121,16 @@ function sendReset() {
                         <td class="p-4 font-mono text-xs">{{ u.email }}</td>
                         <td class="p-4 text-right">
                             <button v-if="u.role !== 'super'" @click="openEditModal(u)" class="text-blue-500 hover:text-blue-700 px-2 transition" title="Edit User">
-                                <i class="fas fa-edit"></i>
+                                <LegacyIcon class="fas fa-edit" />
                             </button>
                             <button v-if="u.role !== 'super' && u.id !== currentUser.id" @click="handleDelete(u.id)" class="text-red-400 hover:text-red-600 px-2 transition" title="Revoke Access">
-                                <i class="fas fa-trash-alt"></i>
+                                <LegacyIcon class="fas fa-trash-alt" />
                             </button>
                         </td>
                     </tr>
                     <tr v-if="displayedUsers.length === 0">
                         <td colspan="4" class="p-10 text-center text-gray-400 italic">
-                            <i class="fas fa-users-slash text-4xl mb-2 opacity-30"></i>
+                            <LegacyIcon class="fas fa-users-slash text-4xl mb-2 opacity-30" />
                             <p>No staff assigned to this company yet.</p>
                         </td>
                     </tr>
@@ -142,7 +142,7 @@ function sendReset() {
             <div class="bg-white dark:bg-slate-800 rounded-xl p-8 w-full max-w-md shadow-2xl border dark:border-slate-600 animate-fade-in">
                 <div class="flex justify-between items-center mb-6">
                     <h3 class="font-bold text-xl dark:text-white">{{ isEditing ? 'Edit Profile' : 'New Employee' }}</h3>
-                    <button @click="showUserModal = false" class="text-gray-400 hover:text-red-500"><i class="fas fa-times"></i></button>
+                    <button @click="showUserModal = false" class="text-gray-400 hover:text-red-500"><LegacyIcon class="fas fa-times" /></button>
                 </div>
 
                 <div class="space-y-4">
@@ -165,14 +165,14 @@ function sendReset() {
                     <div v-if="isEditing" class="bg-blue-50 dark:bg-blue-900/20 p-3 rounded border border-blue-200 dark:border-blue-800">
                         <label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase mb-2">Security</label>
                         <button @click="sendReset" class="text-xs bg-white dark:bg-slate-800 border dark:border-slate-600 px-3 py-2 rounded shadow-sm hover:bg-gray-100 dark:hover:bg-slate-700 w-full font-bold text-slate-600 dark:text-white">
-                            <i class="fas fa-envelope mr-1"></i> Send Password Reset Email
+                            <LegacyIcon class="fas fa-envelope mr-1" /> Send Password Reset Email
                         </button>
                     </div>
                     
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Role / Permissions</label>
                         <select v-model="userForm.role" class="w-full border p-3 rounded-lg dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none">
-                            <option value="company_user">Staff (POS & Orders Only)</option>
+                            <option value="company_user">Staff (Checkout & daily operations)</option>
                             <option value="company_admin">Manager (Full Company Access)</option>
                         </select>
                     </div>

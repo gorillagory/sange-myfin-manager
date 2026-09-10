@@ -1,23 +1,21 @@
 <script setup>
 import { computed } from 'vue';
 import { Store } from '../../store';
+import { isPaid, businessDate, expenseRecords } from '../../domain/pos';
 
 // 1. DATA SOURCES
 const transactions = computed(() => Store.state.transactions);
-const expenses = computed(() => Store.state.expenses);
+const expenses = computed(() => expenseRecords(Store.state));
 const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 
 // --- HELPER FUNCTIONS ---
-const isSameDay = (d1, d2) => {
-    const date1 = new Date(d1); const date2 = new Date(d2);
-    return date1.getDate() === date2.getDate() && date1.getMonth() === date2.getMonth() && date1.getFullYear() === date2.getFullYear();
-};
+const isSameDay = (a,b) => businessDate(a) === businessDate(b);
 const formatMoney = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // 2. FINANCIAL ENGINE (Today vs Yesterday)
 function getDailyStats(targetDate) {
     // A. Revenue (Money In)
-    const sales = transactions.value.filter(t => t.status === 'Paid' && isSameDay(t.date, targetDate));
+    const sales = transactions.value.filter(t => isPaid(t) && isSameDay(t.date, targetDate));
     const revenue = sales.reduce((sum, t) => sum + Number(t.total), 0);
     
     // B. Expenses (Money Out)
@@ -38,27 +36,27 @@ const yesterday = computed(() => {
     return getDailyStats(d);
 });
 
-// Growth Calculation (Profit Growth)
+// Growth Calculation (Surplus Growth)
 const profitGrowth = computed(() => {
     if (yesterday.value.profit === 0) return today.value.profit > 0 ? 100 : 0;
     return ((today.value.profit - yesterday.value.profit) / Math.abs(yesterday.value.profit)) * 100;
 });
 
-// 3. CHART ENGINE (Last 7 Days Net Profit)
+// 3. CHART ENGINE (Last 7 Days Cash surplus)
 const weeklyChart = computed(() => {
     const days = [];
     for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = businessDate(d);
         
         // Revenue
         const rev = transactions.value
-            .filter(t => t.status === 'Paid' && t.date.startsWith(dateStr))
+            .filter(t => isPaid(t) && businessDate(t.date) === dateStr)
             .reduce((sum, t) => sum + Number(t.total), 0);
             
         // Expenses
         const exp = expenses.value
-            .filter(e => e.date === dateStr)
+            .filter(e => businessDate(e.date) === dateStr)
             .reduce((sum, e) => sum + Number(e.amount), 0);
 
         const profit = rev - exp;
@@ -79,10 +77,10 @@ const weeklyChart = computed(() => {
 // 4. TOP PRODUCTS
 const topProducts = computed(() => {
     const tally = {};
-    transactions.value.filter(t => t.status === 'Paid').forEach(tx => {
-        tx.items.forEach(item => {
+    transactions.value.filter(t => isPaid(t)).forEach(tx => {
+        (tx.items || []).forEach(item => {
             if (!tally[item.desc]) tally[item.desc] = { name: item.desc, qty: 0, revenue: 0 };
-            tally[item.desc].qty += item.qty;
+            tally[item.desc].qty += Number(item.qty);
             tally[item.desc].revenue += (item.price * item.qty);
         });
     });
@@ -90,98 +88,6 @@ const topProducts = computed(() => {
 });
 </script>
 
-<template>
-    <div class="space-y-6">
-        <div class="flex justify-between items-end">
-            <div>
-                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Business Intelligence</h2>
-                <p class="text-sm text-gray-500">P&L Overview for <span class="font-bold text-emerald-600">{{ new Date().toLocaleDateString() }}</span></p>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-emerald-500 relative overflow-hidden group">
-                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-wallet text-6xl"></i></div>
-                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Gross Revenue</div>
-                <div class="text-2xl font-bold text-slate-800 dark:text-white mt-1">{{ currency }} {{ formatMoney(today.revenue) }}</div>
-                <div class="mt-2 text-xs text-emerald-600 font-bold flex items-center gap-1">
-                    <i class="fas fa-arrow-up"></i> {{ today.count }} Transactions
-                </div>
-            </div>
-
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 border-red-500 relative overflow-hidden group">
-                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-file-invoice text-6xl"></i></div>
-                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Expenses</div>
-                <div class="text-2xl font-bold text-red-500 mt-1">{{ currency }} {{ formatMoney(today.expense) }}</div>
-                <div class="mt-2 text-xs text-red-400 font-bold opacity-80">
-                    Money Out Today
-                </div>
-            </div>
-
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border-l-4 relative overflow-hidden group"
-                 :class="today.profit >= 0 ? 'border-blue-500' : 'border-orange-500'">
-                <div class="absolute right-0 top-0 p-4 opacity-5 group-hover:opacity-10 transition"><i class="fas fa-piggy-bank text-6xl"></i></div>
-                <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Net Profit</div>
-                <div class="text-3xl font-bold mt-1" :class="today.profit >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-500'">
-                    {{ currency }} {{ formatMoney(today.profit) }}
-                </div>
-                <div class="mt-2 text-xs font-bold flex items-center gap-1" :class="profitGrowth >= 0 ? 'text-emerald-500' : 'text-red-500'">
-                    <i class="fas" :class="profitGrowth >= 0 ? 'fa-chart-line' : 'fa-chart-line-down'"></i>
-                    <span>{{ Math.abs(profitGrowth).toFixed(0) }}% vs Yesterday</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 bg-white dark:bg-slate-800 p-6 rounded-xl shadow border dark:border-slate-700 flex flex-col">
-                <h3 class="font-bold text-slate-700 dark:text-white mb-6">7-Day Net Profit Trend</h3>
-                
-                <div class="flex-grow flex items-end justify-between gap-3 h-64 pb-2 border-b dark:border-slate-700">
-                    <div v-for="bar in weeklyChart" :key="bar.date" class="w-full flex flex-col justify-end group cursor-default relative h-full">
-                        
-                        <div class="absolute bottom-1/2 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap z-20 font-bold mb-2">
-                            {{ currency }} {{ formatMoney(bar.profit) }}
-                        </div>
-                        
-                        <div class="h-full flex flex-col justify-end relative">
-                            <div v-if="!bar.isNegative" class="w-full bg-blue-100 dark:bg-blue-900/30 rounded-t-sm relative overflow-hidden transition-all duration-500 group-hover:bg-blue-200" 
-                                 :style="{ height: bar.height + '%' }">
-                                <div class="absolute bottom-0 left-0 w-full bg-blue-500 transition-all duration-1000" style="height: 100%"></div>
-                            </div>
-                            
-                            <div v-else class="w-full bg-red-100 dark:bg-red-900/30 rounded-t-sm relative overflow-hidden transition-all duration-500 group-hover:bg-red-200" 
-                                 :style="{ height: bar.height + '%' }">
-                                <div class="absolute bottom-0 left-0 w-full bg-red-500 transition-all duration-1000" style="height: 100%"></div>
-                            </div>
-                        </div>
-                        
-                        <div class="text-center text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-wider">{{ bar.day }}</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="bg-white dark:bg-slate-800 p-6 rounded-xl shadow border dark:border-slate-700">
-                <h3 class="font-bold text-slate-700 dark:text-white mb-4">Top Performers</h3>
-                <div class="space-y-3">
-                    <div v-for="(prod, i) in topProducts" :key="i" class="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-slate-700/30">
-                        <div class="flex items-center gap-3">
-                            <div class="w-6 h-6 rounded bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold text-xs">
-                                {{ i+1 }}
-                            </div>
-                            <div>
-                                <div class="font-bold text-xs text-slate-800 dark:text-white line-clamp-1">{{ prod.name }}</div>
-                                <div class="text-[10px] text-gray-400">{{ prod.qty }} Sold</div>
-                            </div>
-                        </div>
-                        <div class="font-bold text-xs text-slate-600 dark:text-gray-300">{{ currency }} {{ formatMoney(prod.revenue) }}</div>
-                    </div>
-                    
-                    <div v-if="topProducts.length === 0" class="text-center py-10 opacity-50">
-                        <i class="fas fa-chart-bar text-4xl mb-2"></i>
-                        <p class="text-xs">No sales yet.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</template>
+<template><div class="ed-page"><header class="ed-page-head"><div><div class="ed-eyebrow">WORKSPACE / ANALYTICS</div><h1>A clearer view of business.</h1><p>Cash coming in, spending going out, and the products customers love.</p></div><span class="ed-pill">{{ businessDate(new Date()) }}</span></header>
+<div class="ed-metrics ed-metrics-three"><div class="ed-metric"><label>Collected today</label><strong><span class="ed-currency">{{ currency }}</span>{{ formatMoney(today.revenue) }}</strong><small>{{ today.count }} paid sales</small></div><div class="ed-metric"><label>Expenses today</label><strong><span class="ed-currency">{{ currency }}</span>{{ formatMoney(today.expense) }}</strong><small>Recorded business outgoings</small></div><div class="ed-metric"><label>Cash surplus today</label><strong><span class="ed-currency">{{ currency }}</span>{{ formatMoney(today.profit) }}</strong><small>{{ currency }} {{ formatMoney(today.profit-yesterday.profit) }} change from yesterday</small></div></div>
+<div class="ed-two-col"><section><div class="ed-section-head"><h2>Seven days, in perspective.</h2><span class="ed-muted" style="font-size:11px">Cash surplus</span></div><div class="ed-surplus-chart" role="img" :aria-label="weeklyChart.map(d=>d.day+': '+currency+' '+formatMoney(d.profit)).join('; ')"><div v-for="bar in weeklyChart" :key="bar.date" class="ed-surplus-column"><div class="ed-surplus-plot"><div class="ed-surplus-bar" :style="{height:Math.max(.5,bar.height/2)+'%',top:bar.isNegative?'50%':(50-bar.height/2)+'%',background:bar.isNegative?'#b97459':'var(--ed-accent)'}" :title="currency+' '+formatMoney(bar.profit)"></div></div><strong>{{ bar.day }}</strong><small>{{ formatMoney(bar.profit) }}</small></div></div><p class="ed-muted" style="font-size:11px;margin-top:20px">Above the line: collected sales exceed expenses. Below: expenses exceed sales. Cash surplus excludes inventory valuation and is not net profit.</p></section><aside class="ed-side-section"><div class="ed-section-head"><h2>Customer favourites.</h2></div><div v-for="(prod,i) in topProducts" :key="prod.name" class="ed-row"><span class="ed-avatar">{{ i+1 }}</span><div style="flex:1;min-width:0"><strong>{{ prod.name }}</strong><small>{{ prod.qty }} sold · all time</small></div><span style="font-size:12px;white-space:nowrap">{{ currency }} {{ formatMoney(prod.revenue) }}</span></div><div v-if="!topProducts.length" class="ed-empty"><h3>Your first bestseller awaits.</h3><p>Completed sales will fill this view.</p></div></aside></div></div></template>

@@ -7,7 +7,7 @@ const emit = defineEmits(['close', 'print']);
     <div class="fixed inset-0 flex items-center justify-center z-50 p-4 bg-emerald-900/40 backdrop-blur-sm">
         <div class="bg-white dark:bg-slate-800 rounded-2xl p-8 w-full max-w-sm shadow-2xl text-center">
             <div class="w-20 h-20 bg-emerald-100 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl">
-                <i class="fas fa-check"></i>
+                <LegacyIcon class="fas fa-check" />
             </div>
             
             <h2 class="text-2xl font-black text-slate-800 dark:text-white mb-2">Sale Completed!</h2>
@@ -20,7 +20,7 @@ const emit = defineEmits(['close', 'print']);
 
             <div class="grid grid-cols-2 gap-3">
                 <button @click="$emit('print')" class="bg-gray-200 hover:bg-gray-300 text-slate-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2">
-                    <i class="fas fa-print"></i> Receipt
+                    <LegacyIcon class="fas fa-print" /> Receipt
                 </button>
                 <button @click="$emit('close')" class="bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold">
                     New Sale

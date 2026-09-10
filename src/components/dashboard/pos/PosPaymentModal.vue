@@ -73,13 +73,13 @@ function process() {
                         <img :src="company.qrCodeUrl" class="w-56 h-56 mx-auto border-4 border-white shadow-xl rounded-xl object-cover">
                     </div>
                     <div v-else class="w-56 h-56 mx-auto bg-gray-100 flex flex-col items-center justify-center rounded-xl mb-4 text-gray-400 border-2 border-dashed">
-                        <i class="fas fa-qrcode text-4xl mb-2"></i><span class="text-xs">No QR Code</span>
+                        <LegacyIcon class="fas fa-qrcode text-4xl mb-2" /><span class="text-xs">No QR Code</span>
                     </div>
                     <p class="text-sm text-gray-500">Scan to pay <strong>RM {{ total.toFixed(2) }}</strong></p>
                 </div>
 
                 <div v-if="paymentMethod === 'Card'" class="text-center py-8 text-gray-400">
-                    <i class="fas fa-credit-card text-5xl mb-4"></i><p>Use external terminal.</p>
+                    <LegacyIcon class="fas fa-credit-card text-5xl mb-4" /><p>Use external terminal.</p>
                 </div>
             </div>
 

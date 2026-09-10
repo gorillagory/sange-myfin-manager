@@ -1,8 +1,10 @@
+import { watch } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import { Store } from '../store';
 
 const routes = [
     { path: '/', redirect: '/overview' },
+    { path: '/:pathMatch(.*)*', redirect: '/overview' },
     { path: '/overview', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/analytics', component: () => import('../components/dashboard/AnalyticsTab.vue') },
@@ -22,11 +24,13 @@ const routes = [
 
 const router = createRouter({
     history: createWebHistory(),
-    routes
+    routes,
+    scrollBehavior: () => ({ top: 0 })
 });
 
 // Guard to prevent standard users from forcing their way into Admin routes via URL
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
+    if (Store.state.isLoading) await new Promise(resolve => { const unwatch=watch(() => Store.state.isLoading, loading => { if(!loading){unwatch();resolve();} }); });
     const isAdmin = ['super', 'company_admin'].includes(Store.state.currentUser?.role);
     if (to.meta.requiresAdmin && !isAdmin) {
         Store.notify("Unauthorized Access", "error");

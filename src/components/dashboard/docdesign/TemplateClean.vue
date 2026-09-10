@@ -88,14 +88,14 @@ const formatRowMoney = (n) => Number(n || 0).toLocaleString('en-US', {minimumFra
                         {{ formatRowMoney(item.qty * item.price) }}
                     </td>
                     <td v-if="!isPdf" class="text-center align-top opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><i class="fas fa-times"></i></button>
+                        <button @click="$emit('removeItem', i)" class="text-red-400 hover:text-red-600"><LegacyIcon class="fas fa-times" /></button>
                     </td>
                 </tr>
             </tbody>
         </table>
 
         <div class="mb-4 no-print flex gap-2">
-            <button @click="$emit('addItem')" class="text-xs font-bold uppercase border rounded px-3 py-2 hover:bg-gray-50 transition" :style="{ color: prefs.primaryColor, borderColor: prefs.primaryColor }"><i class="fas fa-plus mr-1"></i> Add Line</button>
+            <button @click="$emit('addItem')" class="text-xs font-bold uppercase border rounded px-3 py-2 hover:bg-gray-50 transition" :style="{ color: prefs.primaryColor, borderColor: prefs.primaryColor }"><LegacyIcon class="fas fa-plus mr-1" /> Add Line</button>
             <select @change="(e) => { const prod = props.products.find(p => p.id == e.target.value); $emit('addItem', prod); e.target.value = ''; }" class="text-xs border rounded px-3 py-2 bg-white focus:outline-none cursor-pointer w-64 shadow-sm hover:border-emerald-500 transition text-gray-600">
                 <option value="" disabled selected>+ Pick Product...</option>
                 <option v-for="p in props.products" :key="p.id" :value="p.id">{{ p.code ? `[${p.code}] ` : '' }}{{ p.name }}</option>
@@ -127,7 +127,7 @@ const formatRowMoney = (n) => Number(n || 0).toLocaleString('en-US', {minimumFra
             <div class="flex justify-between items-center mb-0.5 max-w-lg">
                 <div class="font-extrabold uppercase tracking-wider text-[12px] text-slate-900">Notes / Terms / Account Details:</div>
                 <button v-if="!isPdf" @click="$emit('saveDefaultNotes')" class="text-[10px] font-bold text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded cursor-pointer transition flex items-center shadow-sm">
-                    <i class="fas fa-save mr-1"></i> Save as Default
+                    <LegacyIcon class="fas fa-save mr-1" /> Save as Default
                 </button>
             </div>
             

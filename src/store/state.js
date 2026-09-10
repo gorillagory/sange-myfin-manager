@@ -12,5 +12,11 @@ export const state = reactive({
     activities: [],
     notification: { show: false, message: '', type: 'success' },
     preferences: { theme: 'light' },
-    isLoading: true
+    isLoading: true,
+    online: true,
+    fromCache: true,
+    dataLoading: false,
+    dataError: '',
+    pendingSales: [],
+    syncing: false
 });

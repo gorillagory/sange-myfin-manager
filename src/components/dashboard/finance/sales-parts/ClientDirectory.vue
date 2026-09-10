@@ -32,7 +32,7 @@ const filteredClients = computed(() => {
                  :class="selectedClient?.id === c.id ? 'bg-emerald-50 dark:bg-slate-700 border-l-4 border-emerald-500' : 'border-l-4 border-transparent'">
                 <div class="flex justify-between items-center">
                     <div class="font-bold text-slate-700 dark:text-gray-200 group-hover:text-emerald-600">{{ c.name }}</div>
-                    <i v-if="selectedClient?.id === c.id" class="fas fa-chevron-right text-xs text-emerald-500"></i>
+                    <LegacyIcon v-if="selectedClient?.id === c.id" class="fas fa-chevron-right text-xs text-emerald-500" />
                 </div>
                 <div class="text-[10px] text-gray-400 mt-1 truncate">{{ c.phone || 'No Phone' }}</div>
             </div>

@@ -14,11 +14,11 @@ const emit = defineEmits(['remove-item', 'clear-cart', 'hold-order', 'open-payme
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow border dark:border-slate-700 flex flex-col flex-grow h-[60vh] lg:h-auto overflow-hidden">
         <div class="p-3 border-b dark:border-slate-700 font-bold flex justify-between items-center bg-slate-50 dark:bg-slate-900">
             <span class="flex items-center gap-2 text-slate-700 dark:text-white">
-                <i class="fas fa-shopping-cart text-emerald-500"></i> Cart
+                <LegacyIcon class="fas fa-shopping-cart text-emerald-500" /> Cart
             </span>
             <div class="flex items-center gap-2">
                 <button @click="$emit('open-history')" class="text-gray-400 hover:text-emerald-600 transition" title="Sales History">
-                    <i class="fas fa-clock fa-lg"></i>
+                    <LegacyIcon class="fas fa-clock fa-lg" />
                 </button>
 
                 <button v-if="heldCount > 0" @click="$emit('open-history')" class="text-xs bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full hover:bg-yellow-200 transition font-bold shadow-sm">
@@ -39,12 +39,12 @@ const emit = defineEmits(['remove-item', 'clear-cart', 'hold-order', 'open-payme
                     <div class="text-right font-bold text-slate-700 dark:text-gray-200 mr-3">
                         {{ (item.price * item.qty).toFixed(2) }}
                     </div>
-                    <button @click="$emit('remove-item', i)" class="text-gray-300 hover:text-red-500 transition px-2"><i class="fas fa-times"></i></button>
+                    <button @click="$emit('remove-item', i)" class="text-gray-300 hover:text-red-500 transition px-2"><LegacyIcon class="fas fa-times" /></button>
                 </div>
             </TransitionGroup>
             
             <div v-if="cart.length === 0" class="h-full flex flex-col items-center justify-center text-gray-300 space-y-2 opacity-50">
-                <i class="fas fa-cash-register text-4xl"></i>
+                <LegacyIcon class="fas fa-cash-register text-4xl" />
                 <span class="text-sm italic">Cart is empty</span>
             </div>
         </div>

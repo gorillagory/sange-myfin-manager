@@ -16,7 +16,7 @@ watch(activeCompany, (newVal) => {
     }
 }, { immediate: true });
 
-function save() { Store.saveCompanyStyle(JSON.parse(JSON.stringify(config.value))); }
+async function save() { try { await Store.saveCompanyStyle(JSON.parse(JSON.stringify(config.value))); Store.notify('Document style saved.'); } catch(e) { Store.notify(e.message,'error'); } }
 
 const previewStyle = computed(() => {
     return {

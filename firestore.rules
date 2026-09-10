@@ -1,8 +1,59 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
+    function signedIn() { return request.auth != null && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function superUser() { return signedIn() && profile().role == 'super'; }
+    function member(company) { return signedIn() && (superUser() || profile().company_id == company) && exists(/databases/$(database)/documents/companies/$(company)); }
+    function manager(company) { return member(company) && (superUser() || profile().role == 'company_admin'); }
+    function sameCompany() { return request.resource.data.company_id == resource.data.company_id; }
+    match /users/{uid} {
+      allow get: if request.auth != null && (request.auth.uid == uid || superUser() || member(resource.data.company_id));
+      allow list: if superUser() || member(resource.data.company_id);
+      allow create: if superUser() || (manager(request.resource.data.company_id) && request.resource.data.role in ['company_admin','company_user']);
+      allow update: if superUser() || (request.auth.uid == uid && signedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username','preferences'])) || (manager(resource.data.company_id) && request.auth.uid != uid && sameCompany() && request.resource.data.email == resource.data.email && request.resource.data.role in ['company_admin','company_user']);
+      allow delete: if request.auth.uid != uid && (superUser() || (manager(resource.data.company_id) && resource.data.role != 'super'));
     }
+    match /companies/{company} {
+      allow read: if superUser() || member(company);
+      allow create, delete: if superUser();
+      allow update: if manager(company);
+    }
+    match /products/{id} {
+      allow read: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id);
+      allow update: if member(resource.data.company_id) && sameCompany();
+      allow delete: if manager(resource.data.company_id);
+    }
+    match /transactions/{id} {
+      allow get: if (!exists(/databases/$(database)/documents/transactions/$(id)) && signedIn()) || member(resource.data.company_id);
+      allow list: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id) && (request.resource.data.get('source','') != 'pos' || (request.resource.data.cashierId == request.auth.uid && request.resource.data.status == 'Paid' && request.resource.data.type == 'Invoice' && request.resource.data.items is list && request.resource.data.items.size() > 0 && request.resource.data.total is number && request.resource.data.total > 0));
+      allow update: if member(resource.data.company_id) && sameCompany() && (resource.data.get('source','') != 'pos' || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['project']));
+      allow delete: if manager(resource.data.company_id) && resource.data.get('source','') != 'pos';
+    }
+    match /expenses/{id} {
+      allow read: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id) && request.resource.data.amount is number && request.resource.data.amount > 0;
+      allow update: if member(resource.data.company_id) && sameCompany() && request.resource.data.amount is number && request.resource.data.amount > 0;
+      allow delete: if manager(resource.data.company_id);
+    }
+    match /clients/{id} {
+      allow read: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id);
+      allow update: if member(resource.data.company_id) && sameCompany();
+      allow delete: if manager(resource.data.company_id);
+    }
+    match /activities/{id} {
+      allow read: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id) && request.resource.data.actorId == request.auth.uid;
+      allow update, delete: if false;
+    }
+    match /stock_movements/{id} {
+      allow read: if member(resource.data.company_id);
+      allow create: if member(request.resource.data.company_id) && request.resource.data.cashierId == request.auth.uid && getAfter(/databases/$(database)/documents/transactions/$(id)).data.company_id == request.resource.data.company_id;
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

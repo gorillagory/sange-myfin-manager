@@ -37,7 +37,7 @@ const activeTab = ref('held'); // 'held' | 'history'
                         <div>
                             <div class="font-bold text-slate-800 dark:text-white">{{ h.name }}</div>
                             <div class="text-xs text-gray-400 mt-1">
-                                <i class="fas fa-clock mr-1"></i> {{ h.time.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) }} 
+                                <LegacyIcon class="fas fa-clock mr-1" /> {{ h.time.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) }}
                                 • {{ h.items.length }} items
                             </div>
                             <div class="font-bold text-emerald-600 text-sm mt-1">RM {{ h.total.toFixed(2) }}</div>
@@ -49,7 +49,7 @@ const activeTab = ref('held'); // 'held' | 'history'
                         </div>
                     </div>
                     <div v-if="heldCarts.length === 0" class="text-center text-gray-400 py-12 italic">
-                        <i class="fas fa-pause-circle text-4xl mb-2 opacity-20"></i><br>No held orders.
+                        <LegacyIcon class="fas fa-pause-circle text-4xl mb-2 opacity-20" /><br>No held orders.
                     </div>
                 </div>
 
@@ -67,12 +67,12 @@ const activeTab = ref('held'); // 'held' | 'history'
                         <div class="text-right">
                             <div class="font-black text-slate-800 dark:text-white text-lg">RM {{ Number(tx.total).toFixed(2) }}</div>
                             <button @click="$emit('print-receipt', tx)" class="text-xs font-bold text-blue-500 hover:text-blue-700 mt-1 flex items-center justify-end gap-1">
-                                <i class="fas fa-print"></i> Reprint
+                                <LegacyIcon class="fas fa-print" /> Reprint
                             </button>
                         </div>
                     </div>
                     <div v-if="recentSales.length === 0" class="text-center text-gray-400 py-12 italic">
-                        <i class="fas fa-history text-4xl mb-2 opacity-20"></i><br>No sales today.
+                        <LegacyIcon class="fas fa-history text-4xl mb-2 opacity-20" /><br>No sales today.
                     </div>
                 </div>
 

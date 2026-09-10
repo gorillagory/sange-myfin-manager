@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
-import { getStorage } from "firebase/storage";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator } from "firebase/firestore";
+import { getAuth, connectAuthEmulator } from "firebase/auth";
+import { getStorage, connectStorageEmulator } from "firebase/storage";
 
 // Dynamic Configurations
 const firebaseConfig = {
@@ -14,9 +14,11 @@ const firebaseConfig = {
 };
 
 // Initialize
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const emulator = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === 'true';
+const app = initializeApp(emulator ? { ...firebaseConfig, projectId: 'demo-myfin-edition', apiKey: 'demo-key', authDomain: 'localhost', storageBucket: 'demo-myfin-edition.appspot.com' } : firebaseConfig);
+const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 const auth = getAuth(app);
 const storage = getStorage(app);
+if (emulator) { connectFirestoreEmulator(db, '127.0.0.1', 8080); connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true }); connectStorageEmulator(storage, '127.0.0.1', 9199); }
 
 export { db, auth, storage };

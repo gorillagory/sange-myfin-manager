@@ -4,7 +4,9 @@ import { Store } from '../../store';
 import ProductList from './products/ProductList.vue';
 import ProductEditorModal from './products/ProductEditorModal.vue';
 
-const products = computed(() => Store.state.products);
+const search=ref('');
+const saving=ref(false);
+const products = computed(() => Store.state.products.filter(p => [p.name,p.sku,p.code].join(' ').toLowerCase().includes(search.value.toLowerCase())));
 const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 const showModal = ref(false);
 const editingProduct = ref(null);
@@ -28,10 +30,17 @@ async function saveProduct(productData) {
         return Store.notify("Please add at least one variant", "error");
     }
 
+    const rows = productData.hasVariants ? productData.variants : [productData];
+    if (rows.some(row => ['price', 'cost', 'stock'].some(key => !Number.isFinite(Number(row[key] ?? 0)) || Number(row[key] ?? 0) < 0))) return Store.notify('Enter valid prices, costs and stock of zero or more.', 'error');
+    if (productData.hasVariants && rows.some(row => !row.name?.trim())) return Store.notify('Give each variant a name.', 'error');
+
+    saving.value = true;
+    try {
     if (productData.id) await Store.inventoryModule.updateProduct(Store, productData);
     else await Store.addProduct(productData);
     
     showModal.value = false;
+    } catch(e) { Store.notify(e.message, "error"); } finally { saving.value = false; }
 }
 
 function deleteProduct(id) {
@@ -41,16 +50,17 @@ function deleteProduct(id) {
 
 <template>
     <div class="h-full flex flex-col">
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex flex-wrap gap-4 justify-between items-center mb-6">
             <div>
-                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Product Catalog</h2>
-                <p class="text-sm text-gray-500">Manage inventory, services, and variants.</p>
+                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">A place for every product.</h2>
+                <p class="text-sm text-gray-500">Your products, services and stock, in one clear view.</p>
             </div>
             <button @click="openModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold shadow transition flex items-center gap-2">
-                <i class="fas fa-plus"></i> Add Item
+                <LegacyIcon class="fas fa-plus" /> Add product
             </button>
         </div>
 
+        <div class="ed-filters"><div class="ed-search"><input v-model="search" class="ed-input" style="padding-left:12px" aria-label="Search inventory" placeholder="Search by product name or SKU"></div><span class="ed-muted" style="font-size:12px">{{ products.length }} products</span></div>
         <ProductList 
             :products="products" 
             :currency="currency" 
@@ -60,6 +70,7 @@ function deleteProduct(id) {
 
         <ProductEditorModal 
             :show="showModal"
+            :busy="saving"
             :product="editingProduct"
             :categories="categories"
             :currency="currency"
