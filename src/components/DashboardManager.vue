@@ -57,6 +57,7 @@ onMounted(() => {
                     <div class="text-xs font-bold text-emerald-500 uppercase">{{ currentUser?.role === 'company_user' ? 'Staff' : currentUser?.role }}</div>
                     <div class="text-xs opacity-50">{{ currentUser?.username }}</div>
                 </div>
+                <a href="/design-lab/index.html" target="_blank" rel="noopener noreferrer" class="text-emerald-300 hover:text-white text-xs whitespace-nowrap">Designs ↗</a>
                 <button @click="fullLogout" class="text-red-400 hover:text-red-300 text-xs px-3 py-1.5 border border-red-900 rounded bg-red-900 bg-opacity-20 transition whitespace-nowrap">Logout</button>
             </div>
         </nav>

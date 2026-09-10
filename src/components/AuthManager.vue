@@ -41,5 +41,8 @@ function handleLogin() {
                 <span>{{ loading ? 'Signing in...' : 'Sign In' }}</span>
             </button>
         </form>
+        <a href="/design-lab/index.html" target="_blank" rel="noopener noreferrer" class="block mt-6 pt-5 border-t border-slate-200 dark:border-slate-700 text-center text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:underline">
+            Explore 2 new design directions ↗
+        </a>
     </div>
 </template>
