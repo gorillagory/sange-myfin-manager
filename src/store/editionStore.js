@@ -228,12 +228,14 @@ export const Store = reactive({
     if (initialized) return;
     initialized = true;
     onSessionExpired(() => {
+      const hadSession = Boolean(state.currentUser || localSettings.getItem("myfin-last-operator"));
       localSettings.removeItem("myfin-last-operator");
       this.clearSession();
-      this.notify(
-        "Session expired. Sign in again to sync pending receipts.",
-        "warning",
-      );
+      if (hadSession)
+        this.notify(
+          "Session expired. Sign in again to sync pending receipts.",
+          "warning",
+        );
     });
     const network = () => {
       state.online = navigator.onLine;
