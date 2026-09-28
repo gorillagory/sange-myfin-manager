@@ -92,7 +92,7 @@ await test("concurrent numbering, quote conversion, cent-exact partial payments 
  const last=await json(route("/documents/"+invoice.id+"/payments"),{cookie:managerCookie,method:"POST",body:{id:randomUUID(),amount:.1,method:"Cash",date:today}});assert.equal(last.status,"Paid");assert.equal(last.outstandingAmount,0);assert.equal(buildDocumentViewModel(last).status,"Paid");assert.equal(last.issuedSnapshot.total,10.1);
  assert.equal((await request(route("/documents/"+invoice.id+"/void"),{cookie:managerCookie,method:"POST",body:{reason:"Not a refund"}})).statusCode,409);
  assert.equal((await request(route("/documents/"+invoice.id+"/corrections"),{cookie:managerCookie,method:"POST",body:{reason:"No credit ledger"}})).statusCode,409);
- const summary=await json(route("/reports/summary?from="+today+"&to="+today));assert.equal(summary.collected,10.1);assert.equal(summary.expenses,50);
+ const summary=await json(route("/reports/summary?from="+today+"&to="+today));assert.equal(summary.cashFlow,-39.9);assert.equal(summary.expenses,50);
 });
 await test("unpaid linked corrections preserve originals and only replace status after new issue",async()=>{
  const d=await json(route("/documents"),{cookie:managerCookie,method:"POST",body:doc({type:"Invoice"})});const old=await json(route("/documents/"+d.id+"/issue"),{cookie:managerCookie,method:"POST",body:{}});

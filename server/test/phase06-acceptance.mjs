@@ -50,7 +50,9 @@ await test("manager reports expose only sales, tax, expenses and cash flow",asyn
  await db.query("INSERT INTO myfin.expenses(company_id,id,data,amount,created_by) VALUES($1,$2,$3,20,$4)",[companyA,"report-expense-"+tag,{id:"report-expense-"+tag,company_id:companyA,date:new Date().toISOString().slice(0,10),description:"Rent",amount:20},operatorId]);
  const report=await json("bfsb-bali.test",`/companies/${companyA}/reports/summary`,{cookie:managerCookie});
  assert.equal(report.sales,106);assert.equal(report.tax,6);assert.equal(report.expenses,20);assert.equal(report.cashFlow,86);
- assert.equal(JSON.stringify(report).match(/cost|margin|profit|valuation/i),null);
+ assert.deepEqual(Object.keys(report).sort(),["basis","cashFlow","daily","expenses","from","sales","tax","to"]);
+ assert.deepEqual(Object.keys(report.daily[0]).sort(),["cashFlow","date","expenses","sales","tax"]);
+ assert.equal(JSON.stringify(report).match(/cashIn|collected|cost|margin|profit|surplus|valuation/i),null);
  assert.equal((await request("bfsb-bali.test",`/companies/${companyA}/reports/summary`,{cookie:operatorCookie})).statusCode,403);
 });
 await test("company-scoped POS code cannot enter password administration",async()=>{

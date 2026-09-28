@@ -417,10 +417,11 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
     }
     for(const payment of payments)add(businessDate(payment.paid_at),"cashIn",payment.amount);
     for(const expense of expenseRecords({expenses:exp,transactions:tx.filter(row=>row.document_state==="legacy").map(asRecord)}))add(businessDate(expense.date),"expenses",expense.amount);
-    const daily=[...days.values()].map(row=>({date:row.date,sales:row.sales/100,tax:row.tax/100,cashIn:row.cashIn/100,expenses:row.expenses/100,cashFlow:(row.cashIn-row.expenses)/100}));
-    const sum=key=>daily.reduce((total,row)=>total+cents(row[key]),0)/100;
+    const calculated=[...days.values()].map(row=>({date:row.date,sales:row.sales/100,tax:row.tax/100,cashIn:row.cashIn/100,expenses:row.expenses/100,cashFlow:(row.cashIn-row.expenses)/100}));
+    const sum=key=>calculated.reduce((total,row)=>total+cents(row[key]),0)/100;
     const sales=sum("sales"),tax=sum("tax"),cashIn=sum("cashIn"),expenses=sum("expenses"),cashFlow=(cents(cashIn)-cents(expenses))/100;
-    return {from,to,sales,tax,expenses,cashIn,cashFlow,collected:cashIn,cashSurplus:cashFlow,daily,basis:"Sales and tax use POS business date or invoice issue date; cash uses receipts and invoice payments; expenses use expense date."};
+    const daily=calculated.map(row=>({date:row.date,sales:row.sales,tax:row.tax,expenses:row.expenses,cashFlow:row.cashFlow}));
+    return {from,to,sales,tax,expenses,cashFlow,daily,basis:"Sales and tax use POS business date or invoice issue date; cash flow uses receipts, invoice payments and expenses."};
   }));
   app.post("/api/companies/:company/stock-adjustments",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"inventoryTransact");
