@@ -24,4 +24,4 @@ Production uses the corresponding protected `myfin-prod` paths and `MYFIN_REVIEW
 
 The current development database already has active SuperAdmins from its controlled seed/import history, including named owner identities with password credentials. Its genesis command therefore refuses with `genesis_already_initialized`. Create any additional development SuperAdmin through the existing authenticated SuperAdmin management flow.
 
-Production is still absent: there is no `myfin-prod` secret directory, database, upload volume or Compose service. Its first account is created with `production-genesis.sh` only after private production provisioning and migrations, and before public ingress. This source release does not provision production or change Firebase.
+Production genesis completed on 29 September 2026. The audited first account is `nik@bayamtech.com`; the production-only password remains in protected file `/srv/docker/secrets/myfin-prod/genesis.secret`. The production control URL and recovery evidence are recorded in [PRODUCTION_GENESIS_20260929.md](PRODUCTION_GENESIS_20260929.md). Firebase was not changed.
