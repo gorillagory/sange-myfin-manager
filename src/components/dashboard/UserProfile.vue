@@ -6,6 +6,7 @@ const currentUser = computed(() => Store.state.currentUser);
 const form = ref({
     username: currentUser.value?.username || '',
     password: '',
+    currentPassword: '',
     confirmPassword: ''
 });
 
@@ -16,11 +17,13 @@ async function save() {
 
     const success = await Store.updateSelf({
         username: form.value.username,
-        password: form.value.password || null
+        password: form.value.password || null,
+        currentPassword: form.value.currentPassword
     });
 
     if (success) {
         form.value.password = '';
+        form.value.currentPassword = '';
         form.value.confirmPassword = '';
     }
 }
@@ -52,6 +55,7 @@ async function save() {
             <div class="bg-yellow-50 dark:bg-yellow-900/10 p-4 rounded border border-yellow-200 dark:border-yellow-800/50">
                 <h3 class="font-bold text-yellow-700 dark:text-yellow-500 mb-4 text-sm uppercase">Change Password</h3>
                 <div class="space-y-4">
+                    <label>Current password<input v-model="form.currentPassword" type="password" autocomplete="current-password" class="w-full border p-3 rounded"></label>
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase mb-1">New Password</label>
                         <input v-model="form.password" type="password" placeholder="Leave empty to keep current" class="w-full border p-3 rounded bg-white dark:bg-slate-900 dark:border-slate-600 dark:text-white outline-none focus:ring-2 ring-yellow-500">

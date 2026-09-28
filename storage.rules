@@ -9,5 +9,10 @@ service firebase.storage {
       allow delete: if member(company);
     }
     match /{path=**} { allow read, write: if false; }
+    match /products/{company}/{file=**} {
+      allow read: if member(company);
+      allow create, update: if member(company) && request.resource.size <= 3 * 1024 * 1024 && request.resource.contentType in ['image/jpeg','image/png','image/webp'];
+      allow delete: if member(company);
+    }
   }
 }

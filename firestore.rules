@@ -39,7 +39,8 @@ service cloud.firestore {
       allow delete: if manager(resource.data.company_id);
     }
     match /clients/{id} {
-      allow read: if member(resource.data.company_id);
+      allow get: if (!exists(/databases/$(database)/documents/clients/$(id)) && signedIn()) || member(resource.data.company_id);
+      allow list: if member(resource.data.company_id);
       allow create: if member(request.resource.data.company_id);
       allow update: if member(resource.data.company_id) && sameCompany();
       allow delete: if manager(resource.data.company_id);

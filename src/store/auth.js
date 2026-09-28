@@ -1,124 +1,68 @@
-import { auth, db } from '../firebase';
-import { 
-    signInWithEmailAndPassword, signOut, onAuthStateChanged, 
-    getAuth, createUserWithEmailAndPassword, updatePassword, connectAuthEmulator, deleteUser
-} from "firebase/auth";
-import { doc, onSnapshot, setDoc, deleteDoc, updateDoc } from "firebase/firestore"; // Added updateDoc
-import { initializeApp, getApp, getApps } from "firebase/app";
-
+import { manageableAccount } from "../domain/viewAccess";
+import { api } from "../services/api";
 export const authModule = {
-    init(store) {
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                this.fetchUserProfile(store, user.uid);
-            } else {
-                store.state.currentUser = null;
-                store.state.selectedCompany = null;
-                store.state.transactions = [];
-                store.state.products = [];
-            }
-        });
-    },
-
-    fetchUserProfile(store, uid) {
-        onSnapshot(doc(db, "users", uid), (docSnap) => {
-            if (docSnap.exists()) {
-                store.state.currentUser = { id: docSnap.id, ...docSnap.data() };
-                store.startListeners(); // Callback to main store
-            }
-        });
-    },
-
-    async login(store, email, password) {
-        try {
-            await signInWithEmailAndPassword(auth, email, password);
-            store.notify("Welcome back!");
-            return true;
-        } catch (error) {
-            console.error(error);
-            store.notify("Login failed: " + error.message, "error");
-            return false;
-        }
-    },
-
-    async logout() {
-        await signOut(auth);
-        window.location.reload();
-    },
-
-    // Admin: Add User (Secondary App Trick)
-    async addUser(store, userData) {
-        const { password, ...profile } = userData;
-        if (!password) { store.notify("Password required", "error"); return false; }
-
-        let secondaryAuth, createdUser;
-        try {
-            const secondaryApp = getApps().find(app => app.name === 'Secondary') || initializeApp(getApp().options, "Secondary");
-            secondaryAuth = getAuth(secondaryApp);
-            if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === 'true' && !secondaryAuth.emulatorConfig) connectAuthEmulator(secondaryAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
-            const cred = await createUserWithEmailAndPassword(secondaryAuth, profile.email, password);
-            createdUser = cred.user;
-            
-            const cleanUser = JSON.parse(JSON.stringify(profile));
-            delete cleanUser.id;
-            await setDoc(doc(db, "users", cred.user.uid), cleanUser);
-            
-            store.logActivity('Create User', `Created: ${profile.username}`);
-            store.notify("User Created!");
-            return true;
-        } catch (error) {
-            if (createdUser) await deleteUser(createdUser).catch(() => {});
-            store.notify(error.code === 'auth/email-already-in-use' ? "Email taken" : error.message, "error");
-            return false;
-        } finally { if (secondaryAuth) await signOut(secondaryAuth).catch(() => {}); }
-    },
-
-    async updateUser(store, user) {
-        try {
-            const { id, password, email, ...data } = user; // Separate ID and sensitive fields
-            // We DO NOT update email/password here (requires re-auth). 
-            // We only update the profile data in Firestore.
-            
-            await updateDoc(doc(db, "users", id), data);
-            
-            store.logActivity('Update User', `Updated profile: ${data.username}`);
-            store.notify("User Profile Updated");
-            return true;
-        } catch (error) {
-            store.notify("Update failed: " + error.message, "error");
-            return false;
-        }
-    },
-    async updateSelf(store, { username, password }) {
-        const user = auth.currentUser;
-        if (!user) return;
-
-        try {
-            // 1. Update Password (if provided)
-            if (password) {
-                await updatePassword(user, password);
-            }
-
-            // 2. Update Firestore Profile
-            if (username) {
-                await updateDoc(doc(db, "users", store.state.currentUser.id), { username });
-                store.state.currentUser.username = username; // Local update
-            }
-
-            store.notify("Profile Updated Successfully");
-            return true;
-        } catch (error) {
-            console.error(error);
-            // Re-auth might be required if session is old
-            if (error.code === 'auth/requires-recent-login') {
-                store.notify("Please logout and login again to change password.", "error");
-            } else {
-                store.notify(error.message, "error");
-            }
-            return false;
-        }
-    },
-    async deleteUser(store, id) {
-        await deleteDoc(doc(db, "users", id));
+  init: (s) => s.init(),
+  login: (s, e, p) => s.login(e, p),
+  logout: (s) => s.logout(),
+  fetchUserProfile: (s) => s.loadSession(),
+  async addUser(s, u) {
+    try {
+      if (!s.can("usersManage") || (!s.can("managersManage") && (u.role !== "company_user" || u.company_id !== s.state.currentUser.company_id))) throw new Error("Your account can create staff in your company only.");
+      await api("/users", {
+        method: "POST",
+        body: Object.fromEntries(
+          Object.entries(u).filter(([k, value]) => !(k === "id" && !value)),
+        ),
+      });
+      await s.startListeners();
+      s.notify("User created.");
+      return true;
+    } catch (e) {
+      s.notify(e.message, "error");
+      return false;
     }
+  },
+  async updateUser(s, u) {
+    try {
+      const target = s.state.users.find(user => user.id === u.id);
+      if (!target || !manageableAccount(s.state.currentUser,target) || (!s.can("managersManage") && (u.role !== "company_user" || u.company_id !== s.state.currentUser.company_id))) throw new Error("Your account can manage staff in your company only.");
+      const { password, ...body } = u;
+      if (body.disabled === undefined) {
+        const current = s.state.users.find(user => user.id === u.id);
+        if (current) body.disabled = !!current.disabled;
+      }
+      await api("/users/" + encodeURIComponent(u.id), { method: "PUT", body });
+      await s.startListeners();
+      return true;
+    } catch (e) {
+      s.notify(e.message, "error");
+      return false;
+    }
+  },
+  async deleteUser(s, id) {
+    const target = s.state.users.find(user => user.id === id);
+    if (!target || !manageableAccount(s.state.currentUser,target)) throw new Error("This account is outside your management scope.");
+    await api("/users/" + encodeURIComponent(id), { method: "DELETE" });
+    await s.startListeners();
+  },
+  async updateSelf(s, { username, password, currentPassword }) {
+    try {
+      if (password)
+        await api("/auth/change-password", {
+          method: "POST",
+          body: {
+            newPassword: password,
+            currentPassword,
+            revokeOtherSessions: true,
+          },
+        });
+      await api("/me", { method: "PATCH", body: { username } });
+      await s.loadSession();
+      s.notify("Profile updated.");
+      return true;
+    } catch (e) {
+      s.notify(e.message, "error");
+      return false;
+    }
+  },
 };

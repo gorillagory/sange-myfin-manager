@@ -64,7 +64,7 @@ const currentView = computed(() => {
            
            <LegacyIcon class="fas" :class="toast.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'" />
            <div>
-             <div class="font-bold text-sm uppercase opacity-75">{{ toast.type === 'error' ? 'Error' : 'Success' }}</div>
+             <div class="font-bold text-sm uppercase opacity-75">{{ toast.type === 'error' ? 'Error' : toast.type === 'warning' ? 'Warning' : 'Success' }}</div>
              <div class="font-bold">{{ toast.message }}</div>
            </div>
       </div>

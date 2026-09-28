@@ -1,0 +1,85 @@
+name: myfin-dev
+services:
+  web:
+    image: ${MYFIN_WEB_IMAGE:-myfin-web:phase02}
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${MYFIN_WEB_BIND_IP:?assign runtime LAN bind IP}:${MYFIN_WEB_PORT:?assign verified unused web port}:8080"
+    networks: [ingress, app]
+    mem_limit: ${MYFIN_WEB_MEMORY:-128m}
+    cpus: ${MYFIN_WEB_CPUS:-0.25}
+    pids_limit: 64
+    read_only: true
+    tmpfs: ['/tmp:size=64m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  api:
+    image: ${MYFIN_API_IMAGE:-myfin-api:phase02}
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '8080'
+      PGHOST: nexus-shared-postgres
+      PGPORT: '5432'
+      PGDATABASE: ${MYFIN_DB_NAME:-myfin_dev}
+      PGUSER: ${MYFIN_DB_USER:-myfin_dev_runtime}
+      PGPASSWORD_FILE: /run/secrets/db_password
+      AUTH_BASE_URL: ${AUTH_BASE_URL:?set exact external HTTPS origin}
+      AUTH_SECRET_FILE: /run/secrets/auth_secret
+      PG_TLS: disable
+      PGPOOL_MAX: ${MYFIN_DB_POOL_MAX:-5}
+      PG_CONNECT_TIMEOUT_MS: '2000'
+      PG_STATEMENT_TIMEOUT_MS: '3000'
+      PG_QUERY_TIMEOUT_MS: '4000'
+      SHUTDOWN_TIMEOUT_MS: '10000'
+      UPLOAD_DIR: /app/uploads
+    secrets: [db_password, auth_secret]
+    volumes:
+      - uploads:/app/uploads
+    networks: [app, nexus-data]
+    mem_limit: ${MYFIN_API_MEMORY:-512m}
+    cpus: ${MYFIN_API_CPUS:-1.0}
+    pids_limit: 128
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 15s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/api/health/ready',{signal:AbortSignal.timeout(7000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+networks:
+  ingress:
+    driver: bridge
+  app:
+    internal: true
+  nexus-data:
+    external: true
+    name: nexus-data
+volumes:
+  uploads:
+    external: true
+    name: ${MYFIN_UPLOAD_VOLUME:?assign private pre-provisioned upload volume}
+secrets:
+  db_password:
+    file: ${MYFIN_DB_PASSWORD_FILE:?set absolute runtime password file path}
+
+  auth_secret:
+    file: ${MYFIN_AUTH_SECRET_FILE:?set absolute auth secret file path}

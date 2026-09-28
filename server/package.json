@@ -1,0 +1,23 @@
+{
+  "name": "myfin-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.20.2"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js",
+    "migrate": "node src/migrate-cli.js"
+  },
+  "dependencies": {
+    "@fastify/multipart": "9.4.0",
+    "@fastify/rate-limit": "10.3.0",
+    "better-auth": "1.7.4",
+    "fastify": "5.12.4",
+    "file-type": "21.3.4",
+    "pg": "8.23.0",
+    "zod": "4.3.6"
+  }
+}

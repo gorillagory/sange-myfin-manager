@@ -1,6 +1,7 @@
 import { watch } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import { Store } from '../store';
+import { canVisit } from '../domain/viewAccess';
 
 const routes = [
     { path: '/', redirect: '/overview' },
@@ -9,6 +10,7 @@ const routes = [
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/analytics', component: () => import('../components/dashboard/AnalyticsTab.vue') },
     { path: '/contacts', component: () => import('../components/dashboard/ContactsTab.vue') },
+    { path: '/receipt-reviews', component: () => import('../components/dashboard/ReceiptReviews.vue') },
     { path: '/sales', component: () => import('../components/dashboard/finance/SalesTab.vue') },
     { path: '/expenses', component: () => import('../components/dashboard/ExpensesTab.vue') },
     { path: '/products', component: () => import('../components/dashboard/ProductsTab.vue') },
@@ -28,16 +30,15 @@ const router = createRouter({
     scrollBehavior: () => ({ top: 0 })
 });
 
-// Guard to prevent standard users from forcing their way into Admin routes via URL
-router.beforeEach(async (to, from, next) => {
-    if (Store.state.isLoading) await new Promise(resolve => { const unwatch=watch(() => Store.state.isLoading, loading => { if(!loading){unwatch();resolve();} }); });
-    const isAdmin = ['super', 'company_admin'].includes(Store.state.currentUser?.role);
-    if (to.meta.requiresAdmin && !isAdmin) {
-        Store.notify("Unauthorized Access", "error");
-        next('/overview');
-    } else {
-        next();
-    }
+// UI routing complements the API's authoritative permission checks.
+router.beforeEach(async to => {
+    if (Store.state.isLoading) await new Promise(resolve => {
+        const unwatch=watch(() => Store.state.isLoading, loading => { if(!loading){unwatch();resolve();} });
+    });
+    if (Store.state.currentUser && !canVisit(Store.state.currentUser,to.path)) return '/overview';
 });
-
+watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id], () => {
+    if (Store.state.currentUser && !canVisit(Store.state.currentUser,router.currentRoute.value.path))
+        router.replace('/overview');
+});
 export default router;

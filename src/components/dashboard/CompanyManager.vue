@@ -1,192 +1,24 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { computed, ref } from 'vue';
 import { Store } from '../../store';
-import { useStorage } from '../../composables/useStorage';
-
-const { optimizeImage, extractQRCode } = useStorage();
-
-const activeCompany = computed(() => Store.state.selectedCompany);
-const currentUser = computed(() => Store.state.currentUser);
-const showModal = ref(false);
-
-const companyForm = ref({ 
-    id: null, name: '', registration: '', address: '', phone: '', email: '', logo: null, qrCode: null, 
-    preferences: { currency: 'RM', tax: 0 } 
-});
-
-function prepareEdit() {
-    if (!activeCompany.value) return;
-    companyForm.value = JSON.parse(JSON.stringify(activeCompany.value));
-    if (!companyForm.value.preferences) companyForm.value.preferences = { currency: 'RM', tax: 0 };
-    showModal.value = true;
-}
-
-async function handleFileUpload(event, field) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    if (field === 'logo') {
-        try {
-            companyForm.value.logo = await optimizeImage(file, true);
-            Store.notify("Logo optimized!");
-        } catch (e) { 
-            Store.notify("Error processing logo", "error"); 
-        }
-    }
-
-    if (field === 'qrCode') {
-        const qrResult = await extractQRCode(file);
-        if (qrResult.success) {
-            companyForm.value.qrCode = qrResult.url;
-            Store.notify("QR Code extracted!");
-        } else {
-            // Fallback to regular optimized image if no QR detected
-            companyForm.value.qrCode = await optimizeImage(file);
-            Store.notify("Using optimized image.", "warning");
-        }
-    }
-}
-
-async function saveCompany() {
-    if (!companyForm.value.name) return Store.notify("Name required", "error");
-    if (companyForm.value.logo && companyForm.value.logo.length > 800000) return Store.notify("Logo too big", "error");
-
-    try {
-        await Store.updateCompany(companyForm.value);
-        showModal.value = false;
-        Store.notify("Company Profile Updated");
-    } catch (e) { 
-        Store.notify("Save failed: " + e.message, "error"); 
-    }
-}
-
-async function deleteCompany() {
-    if (confirm("WARNING: This will delete the company and access for all its staff. Continue?")) { 
-        await Store.deleteCompany(activeCompany.value.id);
-        Store.notify("Company Deleted");
-    }
-}
+import { managementError } from '../../domain/management';
+import Icon from '../ui/EditionIcon.vue';
+import CompanyEditor from '../management/CompanyEditor.vue';
+const company = computed(() => Store.state.selectedCompany);
+const editor = ref(false), error = ref('');
+const managers = computed(() => Store.state.users.filter(user => user.company_id === company.value?.id && user.role === 'company_admin' && !user.disabled).length);
+async function saved() { try { await Store.startListeners(); Store.notify('Company profile updated.'); } catch (failure) { error.value = managementError(failure); } }
 </script>
-
 <template>
-    <div class="h-full overflow-y-auto p-6">
-        
-        <div class="flex justify-between items-center mb-8">
-            <div>
-                <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Settings & Configuration</h2>
-                <p class="text-gray-500 text-sm">Manage profile for <span class="font-bold text-emerald-600">{{ activeCompany?.name }}</span></p>
-            </div>
-        </div>
-
-        <div class="max-w-4xl mx-auto bg-white dark:bg-slate-800 rounded-xl shadow border dark:border-slate-700 p-8">
-             
-             <div class="text-center py-6 border-b dark:border-slate-700 mb-6">
-                 <div class="mb-4 relative inline-block group">
-                     <div class="h-32 w-32 mx-auto rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border-4 border-white dark:border-slate-600 shadow-lg">
-                         <img v-if="activeCompany?.logo" :src="activeCompany.logo" class="h-full w-full object-contain">
-                         <LegacyIcon v-else class="fas fa-building text-4xl text-gray-300" />
-                     </div>
-                 </div>
-                 
-                 <h3 class="text-3xl font-bold text-slate-800 dark:text-white mb-2">{{ activeCompany?.name }}</h3>
-                 <p class="text-gray-500 font-mono text-sm bg-gray-100 dark:bg-slate-900 inline-block px-3 py-1 rounded">Reg: {{ activeCompany?.registration || 'N/A' }}</p>
-             </div>
-
-             <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-                 <div>
-                     <h4 class="font-bold text-gray-400 text-xs uppercase mb-4 border-b dark:border-slate-700 pb-2">Contact Details</h4>
-                     <div class="space-y-4">
-                         <div class="flex gap-3">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-map-marker-alt text-gray-400" /></div>
-                             <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.address || 'No Address Provided' }}</div>
-                         </div>
-                         <div class="flex gap-3">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-phone text-gray-400" /></div>
-                             <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.phone || 'No Phone' }}</div>
-                         </div>
-                         <div class="flex gap-3">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-envelope text-gray-400" /></div>
-                             <div class="text-slate-700 dark:text-gray-300 text-sm">{{ activeCompany?.email || 'No Email' }}</div>
-                         </div>
-                     </div>
-                 </div>
-
-                 <div>
-                     <h4 class="font-bold text-gray-400 text-xs uppercase mb-4 border-b dark:border-slate-700 pb-2">Financial Settings</h4>
-                     <div class="space-y-4">
-                         <div class="flex gap-3 items-center">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-coins text-gray-400" /></div>
-                             <div class="text-slate-700 dark:text-gray-300 text-sm">Currency: <span class="font-bold">{{ activeCompany?.preferences?.currency || 'RM' }}</span></div>
-                         </div>
-                         <div class="flex gap-3 items-center">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-percent text-gray-400" /></div>
-                             <div class="text-slate-700 dark:text-gray-300 text-sm">Tax Rate: <span class="font-bold">{{ activeCompany?.preferences?.tax || 0 }}%</span></div>
-                         </div>
-                         <div class="flex gap-3 items-start">
-                             <div class="w-8 text-center"><LegacyIcon class="fas fa-qrcode text-gray-400" /></div>
-                             <div>
-                                 <div class="text-slate-700 dark:text-gray-300 text-sm mb-1">DuitNow QR:</div>
-                                 <span v-if="activeCompany?.qrCode" class="text-emerald-600 font-bold text-xs"><LegacyIcon class="fas fa-check-circle mr-1" /> Active</span>
-                                 <span v-else class="text-gray-400 text-xs">Not Configured</span>
-                             </div>
-                         </div>
-                     </div>
-                 </div>
-             </div>
-
-             <div class="flex justify-center">
-                 <button @click="prepareEdit" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-bold shadow-lg transition flex items-center gap-2">
-                     <LegacyIcon class="fas fa-edit" /> Edit Configuration
-                 </button>
-             </div>
-        </div>
-
-        <div v-if="showModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 backdrop-blur-sm">
-            <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl h-[90vh] overflow-hidden flex flex-col">
-                <div class="p-6 border-b dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-900"><h3 class="font-bold text-xl text-slate-800 dark:text-white">Edit Company</h3><button @click="showModal = false" class="text-gray-400 hover:text-red-500 text-xl"><LegacyIcon class="fas fa-times" /></button></div>
-                
-                <div class="flex-grow overflow-y-auto p-8 space-y-6">
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="col-span-2"><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Company Name</label><input v-model="companyForm.name" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"></div>
-                        <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Registration No.</label><input v-model="companyForm.registration" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none"></div>
-                        <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Phone</label><input v-model="companyForm.phone" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none"></div>
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-6 bg-gray-50 dark:bg-slate-900 p-4 rounded-lg border dark:border-slate-700">
-                        <div>
-                            <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Company Logo</label>
-                            <div class="flex items-center gap-3">
-                                <div class="h-16 w-16 border rounded bg-white flex items-center justify-center overflow-hidden"><img v-if="companyForm.logo" :src="companyForm.logo" class="h-full w-full object-contain"><LegacyIcon v-else class="fas fa-image text-gray-300" /></div>
-                                <label class="cursor-pointer bg-white dark:bg-slate-700 border dark:border-slate-600 hover:bg-gray-100 px-3 py-1 rounded text-xs font-bold shadow-sm">Change<input type="file" accept="image/*" class="hidden" @change="(e) => handleFileUpload(e, 'logo')"></label>
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-gray-500 uppercase mb-2 text-emerald-600">DuitNow QR Image</label>
-                            <div class="flex items-center gap-3">
-                                <div class="h-16 w-16 border rounded bg-white flex items-center justify-center overflow-hidden relative group">
-                                    <img v-if="companyForm.qrCode" :src="companyForm.qrCode" class="h-full w-full object-cover">
-                                    <LegacyIcon v-else class="fas fa-qrcode text-gray-300" />
-                                    <button v-if="companyForm.qrCode" @click="companyForm.qrCode = null" class="absolute inset-0 bg-black bg-opacity-50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition"><LegacyIcon class="fas fa-trash" /></button>
-                                </div>
-                                <label class="cursor-pointer bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 px-3 py-1 rounded text-xs font-bold shadow-sm text-emerald-700 dark:text-emerald-400">Upload Screenshot<input type="file" accept="image/*" class="hidden" @change="(e) => handleFileUpload(e, 'qrCode')"></label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Email</label><input v-model="companyForm.email" type="email" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none"></div>
-                    <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Address</label><textarea v-model="companyForm.address" rows="3" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none"></textarea></div>
-                    <div class="grid grid-cols-2 gap-4 border-t pt-4 dark:border-slate-700">
-                        <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Currency Symbol</label><input v-model="companyForm.preferences.currency" placeholder="e.g. RM" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none font-bold"></div>
-                        <div><label class="block text-xs font-bold text-gray-500 uppercase mb-1">Default Tax (%)</label><input v-model="companyForm.preferences.tax" type="number" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white outline-none"></div>
-                    </div>
-                </div>
-                
-                <div class="p-6 bg-gray-50 dark:bg-slate-900 border-t dark:border-slate-700 flex justify-between">
-                    <button v-if="currentUser.role === 'super'" @click="deleteCompany" class="text-red-500 font-bold text-sm hover:underline">Delete Company</button>
-                    <div v-else></div>
-                    <div class="flex gap-3"><button @click="showModal = false" class="px-4 py-2 text-gray-500 font-bold hover:bg-gray-200 rounded transition">Cancel</button><button @click="saveCompany" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold shadow-lg transition">Save Details</button></div>
-                </div>
-            </div>
-        </div>
+  <section v-if="company" class="ed-page ed-management">
+    <header class="ed-page-head"><div><div class="ed-eyebrow">COMPANY ADMINISTRATION</div><h1>Your company profile.</h1><p>Business details that carry through your workspace and new receipts.</p></div><button class="ed-btn primary" :disabled="!Store.state.online" @click="editor=true"><Icon name="edit"/>Edit company</button></header>
+    <p v-if="error" class="ed-notice error" role="alert">{{ error }}</p>
+    <p v-if="!Store.state.online" class="ed-notice warning">You are viewing saved company details. Connect to the internet to make changes.</p>
+    <div class="ed-management-profile">
+      <div class="ed-management-profile-head"><img v-if="company.logo" :src="company.logo" :alt="company.name" class="ed-management-logo"><span v-else class="ed-avatar solid"><Icon name="building"/></span><div><h2>{{ company.name }}</h2><p class="ed-muted">{{ company.registration || 'Registration not provided' }}</p></div></div>
+      <dl class="ed-management-details"><div><dt>Company email</dt><dd>{{ company.email || 'Not provided' }}</dd></div><div><dt>Phone</dt><dd>{{ company.phone || 'Not provided' }}</dd></div><div><dt>Business address</dt><dd>{{ company.address || 'Not provided' }}</dd></div><div><dt>Checkout settings</dt><dd>{{ company.preferences?.currency || 'RM' }} · {{ company.preferences?.taxRate ?? company.preferences?.tax ?? 0 }}% default tax</dd></div><div><dt>Payment QR</dt><dd>{{ company.qrCode || company.qrCodeUrl ? 'Configured' : 'Not configured' }}</dd></div><div><dt>Company managers</dt><dd>{{ managers || 'Managed by workspace owners' }}</dd></div></dl>
+      <div class="ed-actions ed-management-space"><router-link class="ed-btn" to="/users"><Icon name="people"/>Manage teammates</router-link><button v-if="Store.state.currentUser?.role === 'super'" class="ed-btn" @click="Store.selectCompany(null)">All companies & enrollment</button></div>
     </div>
+    <CompanyEditor v-if="editor" :company="company" @close="editor=false" @saved="saved"/>
+  </section>
 </template>

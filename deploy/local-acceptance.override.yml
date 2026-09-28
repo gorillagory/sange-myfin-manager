@@ -1,0 +1,8 @@
+# Explicit development-only SSH localhost acceptance. Never use for a public origin.
+# Browser: http://localhost:18083 via SSH -L 18083:192.168.1.100:8083 nexus-pbund
+services:
+  api:
+    environment:
+      NODE_ENV: test
+      AUTH_LOCAL_TEST: 'true'
+      AUTH_BASE_URL: http://localhost:18083

@@ -1,5 +1,7 @@
+import { validEmail } from './inventoryCsv.js';
 // Shared, framework-free contracts for checkout, receipts and reporting.
 export const cents = value => Math.round((Number(value) + Number.EPSILON) * 100);
+export const lineTotal = item => Math.round(cents(item.price) * Number(item.qty)) / 100;
 export const money = (value, currency = 'RM') => `${currency} ${Number(value || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const isPaid = tx => tx.type === 'Invoice' && ['Paid', 'Cleared'].includes(tx.status);
 export const expenseRecords = state => [...state.expenses.map(e => ({ ...e, origin: 'expenses' })), ...state.transactions.filter(t => ['Expense', 'Payment Voucher'].includes(t.type)).map(t => ({ ...t, amount: t.amount ?? t.total ?? 0, description: t.description || t.payee || t.number || t.type, origin: 'transactions' }))];
@@ -35,17 +37,21 @@ export function totalsFor(items, taxRate = 0, discount = 0) {
   const taxCents = Math.round((subtotalCents - discountCents) * rate / 100);
   return { subtotal: subtotalCents / 100, discountAmount: discountCents / 100, tax: taxCents / 100, total: (subtotalCents - discountCents + taxCents) / 100, taxRate: rate, discount: off };
 }
-export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false }) {
+export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, overrideReason = "" }) {
   if (!items.length) throw new Error('Add an item to this order first.');
+  if (overrideReason.trim() && (overrideReason.trim().length < 3 || overrideReason.trim().length > 1000)) throw new Error('Use 3 to 1,000 characters for the manager override reason.');
   if (!company?.id || !user?.uid) throw new Error('Sign in and choose a store first.');
   if (!['Cash', 'QR Pay', 'Card'].includes(method)) throw new Error('Choose a payment method.');
-  const totals = totalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0);
+  const totals = totalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount);
   if (totals.total <= 0) throw new Error('The order total must be greater than zero.');
   const tender = method === 'Cash' ? cents(received) : cents(totals.total);
   if (!Number.isFinite(tender) || tender < cents(totals.total)) throw new Error('Enter enough cash to cover this order.');
   if (method !== 'Cash' && !confirmed) throw new Error('Confirm the payment on your merchant device first.');
+  const customerEmail = String(customer?.email || '').trim();
+  if (!validEmail(customerEmail)) throw new Error('Enter a valid customer email.');
+  const customerId = customer?.id || (customerEmail ? `pos-${id}` : '');
   const date = new Date().toISOString();
-  return { id, schemaVersion: 2, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customer?.id || '', customerName: customer?.name || 'Walk-in customer', offline, storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
+  return { id, schemaVersion: 2, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
 }
 export function deductItems(products, items, allowShortage = false) {
   const updates = new Map(), movements = [];

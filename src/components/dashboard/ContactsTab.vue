@@ -1,129 +1,17 @@
 <script setup>
-import { ref, computed } from 'vue';
-import { Store } from '../../store';
-
-const activeCompany = computed(() => Store.state.selectedCompany || {});
-const clients = computed(() => Store.state.clients.filter(c => c.company_id === activeCompany.value.id));
-
-const clientModal = ref(false);
-const clientForm = ref({});
-const isEditing = computed(() => !!clientForm.value.id);
-
-function openModal(client = null) {
-    if (client) {
-        // Edit Mode: Create a copy so we don't edit the table directly until saved
-        clientForm.value = JSON.parse(JSON.stringify(client));
-    } else {
-        // Create Mode: Reset form
-        clientForm.value = { 
-            id: null, 
-            company_id: activeCompany.value.id, 
-            name: '', 
-            phone: '', 
-            type: 'Client' 
-        };
-    }
-    clientModal.value = true;
-}
-
-async function saveClient() {
-    try {
-    if (!clientForm.value.name) return Store.notify("Name Required", "error");
-    
-    // Store.addClient uses .set() which creates OR overwrites, so it handles both Add and Edit
-    await Store.addClient(JSON.parse(JSON.stringify(clientForm.value)));
-    
-    clientModal.value = false;
-    Store.notify(isEditing.value ? "Contact Updated" : "Contact Saved");
-    } catch(e) { Store.notify(e.message, "error"); }
-}
-
-async function deleteClient(id) {
-    if (confirm("Delete this contact?")) {
-        try { await Store.deleteClient(id); } catch(e) { return Store.notify(e.message, "error"); }
-        Store.notify("Contact Deleted");
-    }
-}
+import {ref,computed} from 'vue';
+import {Store} from '../../store';
+import Modal from '../ui/EditionModal.vue';
+import {validEmail} from '../../domain/inventoryCsv';
+const search=ref(''),form=ref(null),busy=ref(false),deleting=ref(null),error=ref('');
+const clients=computed(()=>Store.state.clients.filter(c=>(Store.can('suppliersRead')||c.type!=='Supplier')&&[c.name,c.email,c.phone].join(' ').toLowerCase().includes(search.value.toLowerCase())));
+function edit(client){if(client&&!Store.can('clientsWrite'))return;form.value=client?JSON.parse(JSON.stringify(client)):{name:'',email:'',phone:'',type:'Client'};error.value='';}
+async function save(){if(busy.value)return;error.value='';try{form.value.name=form.value.name.trim();form.value.email=(form.value.email||'').trim();if(!form.value.name)throw new Error('Name is required.');if(!validEmail(form.value.email))throw new Error('Enter a valid email address.');busy.value=true;await Store.addClient(form.value);form.value=null;Store.notify('Contact saved.');}catch(e){error.value=e.message;}finally{busy.value=false;}}
+async function remove(){busy.value=true;try{await Store.deleteClient(deleting.value.id);deleting.value=null;Store.notify('Contact deleted.');}catch(e){Store.notify(e.message,'error');}finally{busy.value=false;}}
 </script>
-
-<template>
-    <div class="no-print">
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Contacts</h2>
-            <button @click="openModal()" class="bg-emerald-600 text-white px-3 py-1 rounded text-sm hover:bg-emerald-700 shadow transition">
-                <LegacyIcon class="fas fa-plus mr-2" />New Contact
-            </button>
-        </div>
-        
-        <div class="bg-white dark:bg-slate-800 shadow rounded overflow-hidden border dark:border-slate-700">
-            <table class="w-full text-sm text-left text-gray-600 dark:text-gray-300">
-                <thead class="bg-gray-50 dark:bg-slate-700 uppercase text-xs font-bold">
-                    <tr>
-                        <th class="p-4">Name</th>
-                        <th class="p-4">Type</th>
-                        <th class="p-4">Phone</th>
-                        <th class="p-4 text-right">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="cl in clients" :key="cl.id" class="border-b dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 transition">
-                        <td class="p-4 font-bold">{{ cl.name }}</td>
-                        <td class="p-4">
-                            <span :class="cl.type === 'Supplier' ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'" class="px-2 py-1 rounded-full text-xs font-bold">
-                                {{ cl.type }}
-                            </span>
-                        </td>
-                        <td class="p-4">{{ cl.phone }}</td>
-                        <td class="p-4 text-right">
-                            <button @click="openModal(cl)" class="text-blue-500 hover:text-blue-700 mr-3 transition" title="Edit">
-                                <LegacyIcon class="fas fa-edit" />
-                            </button>
-                            <button @click="deleteClient(cl.id)" class="text-red-400 hover:text-red-600 transition" title="Delete">
-                                <LegacyIcon class="fas fa-trash" />
-                            </button>
-                        </td>
-                    </tr>
-                    <tr v-if="clients.length === 0">
-                        <td colspan="4" class="p-8 text-center text-gray-400 italic">No contacts found. Add one to get started.</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <div v-if="clientModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] backdrop-blur-sm">
-             <div class="bg-white dark:bg-slate-800 p-6 rounded-lg w-96 space-y-4 shadow-2xl border dark:border-slate-600 transform transition-all scale-100">
-                <h3 class="font-bold dark:text-white text-lg border-b pb-2 dark:border-slate-700">
-                    {{ isEditing ? 'Edit' : 'New' }} Contact
-                </h3>
-                
-                <div class="grid grid-cols-2 gap-2">
-                    <label class="block p-2 border rounded text-center cursor-pointer transition" :class="clientForm.type === 'Client' ? 'bg-blue-50 border-blue-500 text-blue-800' : 'dark:border-slate-600 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700'">
-                        <input type="radio" v-model="clientForm.type" value="Client" class="hidden"> 
-                        <LegacyIcon class="fas fa-user mr-1" /> Client
-                    </label>
-                    <label class="block p-2 border rounded text-center cursor-pointer transition" :class="clientForm.type === 'Supplier' ? 'bg-orange-50 border-orange-500 text-orange-800' : 'dark:border-slate-600 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700'">
-                        <input type="radio" v-model="clientForm.type" value="Supplier" class="hidden"> 
-                        <LegacyIcon class="fas fa-truck mr-1" /> Supplier
-                    </label>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-bold text-gray-500 mb-1 uppercase">Name</label>
-                    <input v-model="clientForm.name" placeholder="Company or Person Name" class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:outline-none focus:border-emerald-500">
-                </div>
-                
-                <div>
-                    <label class="block text-xs font-bold text-gray-500 mb-1 uppercase">Phone / Contact</label>
-                    <input v-model="clientForm.phone" placeholder="+60..." class="w-full border p-2 rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:outline-none focus:border-emerald-500">
-                </div>
-
-                <div class="flex justify-end gap-2 pt-2">
-                    <button @click="clientModal=false" class="px-4 py-2 rounded text-sm font-bold text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700 transition">Cancel</button>
-                    <button @click="saveClient" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded text-sm font-bold shadow transition">
-                        {{ isEditing ? 'Update' : 'Save' }}
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-</template>
+<template><div class="ed-page"><header class="ed-page-head"><div><div class="ed-eyebrow">CUSTOMER DIRECTORY</div><h1>Keep in touch.</h1><p>Customer details and emails for receipts.</p></div><button class="ed-btn primary" @click="edit()">+ New contact</button></header>
+<div class="ed-filters"><input v-model="search" class="ed-input" aria-label="Search contacts" placeholder="Search name, phone or email"></div>
+<div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Name</th><th>Type</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead><tbody><tr v-for="c in clients" :key="c.id"><td><strong>{{ c.name }}</strong></td><td>{{ c.type==='Supplier'?'Supplier':'Customer' }}</td><td>{{ c.email||'—' }}</td><td>{{ c.phone||'—' }}</td><td><div class="ed-actions"><button v-if="Store.can('clientsWrite')" class="ed-btn" :aria-label="`Edit ${c.name}`" @click="edit(c)">Edit</button><button v-if="Store.can('clientsWrite')" class="ed-btn danger" :aria-label="`Delete ${c.name}`" @click="deleting=c">Delete</button></div></td></tr><tr v-if="!clients.length"><td colspan="5" class="ed-empty">No matching contacts.</td></tr></tbody></table></div>
+<Modal v-if="form" :title="form.id?'Edit contact':'New contact'" :busy="busy" @close="form=null"><form id="contact-editor" @submit.prevent="save"><fieldset :disabled="busy" class="ed-form-grid"><label class="ed-field wide"><span>Name *</span><input v-model="form.name" required maxlength="120" autocomplete="name"></label><label class="ed-field wide"><span>Email</span><input v-model.trim="form.email" type="email" maxlength="254" autocomplete="email" inputmode="email"></label><label class="ed-field"><span>Phone</span><input v-model="form.phone" type="tel" maxlength="40" autocomplete="tel"></label><label v-if="Store.can('suppliersWrite')" class="ed-field"><span>Contact type</span><select v-model="form.type"><option value="Client">Customer</option><option value="Supplier">Supplier</option></select></label></fieldset><p v-if="error" role="alert" class="ed-alert">{{ error }}</p></form><template #actions><button class="ed-btn" :disabled="busy" @click="form=null">Cancel</button><button class="ed-btn primary" form="contact-editor" type="submit" :disabled="busy">{{ busy?'Saving…':'Save contact' }}</button></template></Modal>
+<Modal v-if="deleting" title="Delete contact?" :busy="busy" @close="deleting=null"><p>Delete {{ deleting.name }} from your directory?</p><template #actions><button class="ed-btn" :disabled="busy" @click="deleting=null">Cancel</button><button class="ed-btn danger" :disabled="busy" @click="remove">Delete contact</button></template></Modal>
+</div></template>

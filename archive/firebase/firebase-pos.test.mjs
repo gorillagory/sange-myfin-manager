@@ -40,4 +40,23 @@ await test('receipt attachments allow own-store PDFs and deny cross-store or uns
   await assert.rejects(uploadBytes(ref(storage,`receipts/test-store/${prefix}-large.pdf`),new Uint8Array(5*1024*1024+1),{contentType:'application/pdf'}),e=>e.code==='storage/unauthorized');
   await deleteObject(own);
 });
+await test('customer email and contact save atomically with receipt; retry preserves one contact',async()=>{
+ const p=product('email',5);await setDoc(doc(db,'products',p.id),p);
+ const s=sale(p,prefix+'email-sale',{customer:{name:'Receipt Customer',email:'receipt@example.test'}});
+ await postSaleTo(db,s);await postSaleTo(db,s);
+ assert.equal((await getDoc(doc(db,'transactions',s.id))).data().customerEmail,'receipt@example.test');
+ assert.equal((await getDoc(doc(db,'clients',s.client_id))).data().email,'receipt@example.test');
+ assert.equal((await getDoc(doc(db,'products',p.id))).data().stock,4);
+ const existing={id:prefix+'contact',company_id:'test-store',name:'Existing Customer',type:'Client',phone:'0123456789',email:'old@example.test'};await setDoc(doc(db,'clients',existing.id),existing);
+ await postSaleTo(db,sale(p,prefix+'known-email-sale',{customer:{...existing,email:'updated@example.test'}}));
+ const contact=(await getDoc(doc(db,'clients',existing.id))).data();assert.equal(contact.email,'updated@example.test');assert.equal(contact.phone,'0123456789');assert.equal(contact.name,'Existing Customer');
+});
+await test('SKU images allow own-store photos and reject cross-store or unsupported content',async()=>{
+ const own=ref(storage,`products/test-store/${prefix}.png`),data=new Uint8Array([137,80,78,71]);
+ await uploadBytes(own,data,{contentType:'image/png'});assert.equal((await getMetadata(own)).contentType,'image/png');
+ await assert.rejects(uploadBytes(ref(storage,`products/other-store/${prefix}.png`),data,{contentType:'image/png'}),e=>e.code==='storage/unauthorized');
+ await assert.rejects(uploadBytes(ref(storage,`products/test-store/${prefix}.svg`),data,{contentType:'image/svg+xml'}),e=>e.code==='storage/unauthorized');
+ await assert.rejects(uploadBytes(ref(storage,`products/test-store/${prefix}-large.png`),new Uint8Array(3*1024*1024+1),{contentType:'image/png'}),e=>e.code==='storage/unauthorized');
+ await deleteObject(own);
+});
 await deleteApp(app);await deleteApp(anonymous);

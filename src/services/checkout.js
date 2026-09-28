@@ -1,3 +1,2 @@
-import { db } from '../firebase';
-import { postSaleTo } from './postSale';
-export const postSale = sale => postSaleTo(db, sale);
+import {postSaleTo} from './postSale';
+export const postSale=sale=>postSaleTo(null,sale);

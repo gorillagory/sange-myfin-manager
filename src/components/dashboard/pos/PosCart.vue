@@ -1,4 +1,5 @@
 <script setup>
+import {lineTotal} from '../../../domain/pos';
 import SmartButton from '../../ui/SmartButton.vue';
 
 const props = defineProps({
@@ -37,7 +38,7 @@ const emit = defineEmits(['remove-item', 'clear-cart', 'hold-order', 'open-payme
                         <div class="text-xs text-gray-400">RM {{ Number(item.price).toFixed(2) }} x {{ item.qty }}</div>
                     </div>
                     <div class="text-right font-bold text-slate-700 dark:text-gray-200 mr-3">
-                        {{ (item.price * item.qty).toFixed(2) }}
+                        {{ lineTotal(item).toFixed(2) }}
                     </div>
                     <button @click="$emit('remove-item', i)" class="text-gray-300 hover:text-red-500 transition px-2"><LegacyIcon class="fas fa-times" /></button>
                 </div>

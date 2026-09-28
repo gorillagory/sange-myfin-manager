@@ -1,171 +1,544 @@
-import { reactive } from 'vue';
-import { auth, db } from '../firebase';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
-import { collection, doc, onSnapshot, query, where, addDoc } from 'firebase/firestore';
-import { state } from './state';
-import { financeModule } from './finance';
-import { inventoryModule } from './inventory';
-import { companiesModule } from './companies';
-import { authModule } from './auth';
-import { normalizeProduct } from '../domain/pos';
-import { localPos } from '../services/posLocal';
-import { postSale } from '../services/checkout';
+import { permissionsFor, can, stripConfidential } from "../domain/permissions";
+import { hydrationCollections } from "../domain/viewAccess";
+import { safePaidSale, safeCompany, needsReceiptReview } from "../domain/offlinePolicy";
+import { localSettings } from "../services/localSettings";
+import { reactive } from "vue";
+import { api, listAll, onSessionExpired } from "../services/api";
+import { state } from "./state";
+import { financeModule } from "./finance";
+import { inventoryModule } from "./inventory";
+import { companiesModule } from "./companies";
+import { authModule } from "./auth";
+import { normalizeProduct } from "../domain/pos";
+import { localPos } from "../services/posLocal";
+import { postSale } from "../services/checkout";
+import { checkoutPayload } from "../services/postSale";
 
-let initialized = false, session = 0, companyEpoch = 0, profileStop, notifyTimer, syncing = false;
-const globalStops = [], companyStops = [];
-const stop = list => list.splice(0).forEach(fn => fn());
-const records = snap => snap.docs.map(d => ({ ...d.data(), id: d.id }));
+let initialized = false,
+  session = 0,
+  companyEpoch = 0,
+  refreshEpoch = 0,
+  directoryEpoch = 0,
+  actorEpoch = 0,
+  reviewEpoch = 0,
+  notifyTimer,
+  syncing = false;
 async function confirmSale(sale) {
   let timeout;
-  try { return await Promise.race([postSale(sale), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Cloud confirmation is taking longer than expected. Retry sync; do not take payment again.')), 12000); })]); }
-  finally { clearTimeout(timeout); }
+  try {
+    return await Promise.race([
+      postSale(sale),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Cloud confirmation is taking longer than expected. Retry sync; do not take payment again.",
+              ),
+            ),
+          12000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export const Store = reactive({
-  state, financeModule, inventoryModule, companiesModule, authModule,
-  async login(email, password) {
-    try { await signInWithEmailAndPassword(auth, email.trim(), password); return true; }
-    catch { this.notify('Sign-in failed. Check your email and password, then try again.', 'error'); return false; }
+  state,
+  financeModule,
+  inventoryModule,
+  companiesModule,
+  authModule,
+  clearSession() {
+    session++;
+    directoryEpoch++;
+    actorEpoch++;
+    state.sessionVerified = false;
+    this.clearCompany();
+    state.currentUser = null;
+    state.selectedCompany = null;
+    state.companies = [];
+    state.users = [];
+    state.isLoading = false;
   },
-  async logout() { await signOut(auth); },
+  permissions() { return permissionsFor(state.currentUser); },
+  can(action) { return can(state.currentUser, action); },
+  async refreshActor() {
+    if (!state.online || !state.currentUser) return state.currentUser;
+    const generation = session, request = ++actorEpoch, previous = state.currentUser;
+    const fresh = await api("/me");
+    if (generation !== session || request !== actorEpoch) return null;
+    if ((fresh.uid || fresh.id) !== (previous.uid || previous.id)) {
+      this.clearSession();
+      this.notify("The signed-in account changed. Reload before continuing.", "warning");
+      return null;
+    }
+    const changed = fresh.role !== previous.role || fresh.company_id !== previous.company_id;
+    if (changed) {
+      this.clearCompany();
+      state.users = [];
+      if (fresh.role !== "super" && state.selectedCompany?.id !== fresh.company_id) {
+        state.selectedCompany = null; state.companies = [];
+      }
+      this.notify("Your access changed. The workspace has been refreshed; paid receipts remain on this device.", "warning");
+    }
+    state.currentUser = fresh;
+    state.sessionVerified = true;
+    const p = permissionsFor(fresh);
+    if (!p.costsRead) {
+      state.products = stripConfidential(state.products);
+      state.transactions = stripConfidential(state.transactions);
+      state.companies = stripConfidential(state.companies);
+      if (state.selectedCompany) state.selectedCompany = stripConfidential(state.selectedCompany);
+    }
+    if (!p.expensesRead) state.expenses = [];
+    if (!p.activityRead) state.activities = [];
+    if (!p.stockHistoryRead) state.stock_movements = [];
+    if (!p.usersManage) state.users = [];
+    if (!p.suppliersRead) state.clients = state.clients.filter(c => c.type !== "Supplier");
+    return fresh;
+  },
+  async login(email, password) {
+    try {
+      if (localSettings.getItem("myfin-logout-pending")) {
+        await api("/auth/sign-out", { method: "POST" });
+        localSettings.removeItem("myfin-logout-pending");
+      }
+      await api("/auth/sign-in/email", {
+        method: "POST",
+        body: { email: email.trim(), password },
+      });
+      await this.loadSession();
+      return true;
+    } catch {
+      this.notify("Sign-in failed. Check your email and password.", "error");
+      return false;
+    }
+  },
+  async logout() {
+    if (state.pendingSales.length)
+      this.notify(
+        "Paid receipts remain safely queued on this device. Sign in as the same operator to sync them.",
+        "warning",
+      );
+    localSettings.setItem("myfin-logout-pending", "1");
+    try {
+      await api("/auth/sign-out", { method: "POST" });
+      localSettings.removeItem("myfin-logout-pending");
+    } catch {
+      this.notify(
+        "Server sign-out could not be confirmed. Reconnect to revoke the session.",
+        "warning",
+      );
+    }
+    localSettings.removeItem("myfin-last-operator");
+    this.clearSession();
+  },
   clearCompany() {
-    companyEpoch++; stop(companyStops);
-    for (const key of ['products', 'transactions', 'expenses', 'clients', 'activities', 'pendingSales']) state[key] = [];
-    state.dataError = ''; state.dataLoading = false;
+    companyEpoch++;
+    refreshEpoch++;
+    reviewEpoch++;
+    for (const key of [
+      "products",
+      "transactions",
+      "expenses",
+      "clients",
+      "activities",
+      "stock_movements",
+      "pendingSales",
+      "receiptReviews",
+    ])
+      state[key] = [];
+    state.dataError = "";
+    state.dataLoading = false;
+    state.fromCache = true;
+  },
+  async loadSession() {
+    const generation = ++session;
+    directoryEpoch++; actorEpoch++;
+    state.sessionVerified = false;
+    this.clearCompany();
+    state.currentUser = null;
+    state.selectedCompany = null;
+    state.companies = [];
+    state.users = [];
+    try {
+      if (localSettings.getItem("myfin-logout-pending")) {
+        await api("/auth/sign-out", { method: "POST" });
+        localSettings.removeItem("myfin-logout-pending");
+        return;
+      }
+      await localPos.ready().catch(() => this.notify("Device storage needs an update. Close other MyFin tabs and reload before checkout.", "warning"));
+      const user = await api("/me");
+      if (generation !== session) return;
+      state.currentUser = user;
+      state.sessionVerified = true;
+      localSettings.setItem("myfin-last-operator", user.uid);
+      await this.startListeners();
+      if (generation === session)
+        await localPos
+          .putProfile(user.uid, { user, companies: state.companies, verifiedAt: new Date().toISOString() })
+          .catch(() =>
+            this.notify(
+              "Offline profile could not be saved on this device.",
+              "warning",
+            ),
+          );
+    } catch (e) {
+      if (generation !== session) return;
+      if (e.network && !localSettings.getItem("myfin-logout-pending")) {
+        const uid = localSettings.getItem("myfin-last-operator");
+        const saved = uid && (await localPos.getProfile(uid));
+        if (generation !== session) return;
+        if (saved) {
+          state.currentUser = saved.user;
+          state.sessionVerified = false;
+          state.companies = saved.companies;
+          this.notify(
+            "Offline checkout uses your last verified access. Access changes cannot reach a disconnected device; reconnect before syncing.",
+            "warning",
+          );
+          const co =
+            saved.companies.find(
+              (c) => c.id === localSettings.getItem("myfin-store-" + uid),
+            ) || saved.companies[0];
+          if (co) this.selectCompany(co);
+        }
+      } else
+        this.notify(
+          "Please sign in again. Pending receipts remain on this device.",
+          "warning",
+        );
+    } finally {
+      if (generation === session) state.isLoading = false;
+    }
   },
   init() {
-    if (initialized) return; initialized = true;
-    const setOnline = () => { state.online = navigator.onLine; if (state.online) this.syncSales(); };
-    window.addEventListener('online', setOnline); window.addEventListener('offline', setOnline); setOnline();
-    onAuthStateChanged(auth, user => {
-      const generation = ++session;
-      profileStop?.(); stop(globalStops); this.clearCompany();
-      state.currentUser = null; state.selectedCompany = null; state.companies = []; state.users = [];
-      if (!user) { state.isLoading = false; return; }
-      state.isLoading = true;
-      profileStop = onSnapshot(doc(db, 'users', user.uid), snapshot => {
-        if (generation !== session) return;
-        if (!snapshot.exists()) {
-          state.currentUser = null; this.clearCompany(); stop(globalStops); state.selectedCompany = null;
-          state.isLoading = false; this.notify('Your account has no store access. Contact your administrator.', 'error'); return;
-        }
-        const next = { ...snapshot.data(), id: snapshot.id, uid: user.uid };
-        const changed = !state.currentUser || state.currentUser.role !== next.role || state.currentUser.company_id !== next.company_id;
-        state.currentUser = next;
-        if (changed) { stop(globalStops); this.clearCompany(); state.selectedCompany = null; this.startListeners(); }
-        state.isLoading = false;
-      }, error => { if (generation === session) { state.isLoading = false; this.notify(`Unable to load your profile: ${error.message}`, 'error'); } });
+    if (initialized) return;
+    initialized = true;
+    onSessionExpired(() => {
+      localSettings.removeItem("myfin-last-operator");
+      this.clearSession();
+      this.notify(
+        "Session expired. Sign in again to sync pending receipts.",
+        "warning",
+      );
     });
+    const network = () => {
+      state.online = navigator.onLine;
+      if (!state.online) {
+        state.sessionVerified = false;
+        state.products = stripConfidential(state.products);
+        state.transactions = stripConfidential(state.transactions);
+        state.expenses = []; state.activities = []; state.users = []; state.receiptReviews = [];
+        state.stock_movements = []; state.clients = state.clients.filter(c => c.type !== "Supplier");
+        state.companies = state.companies.map(safeCompany);
+        if (state.selectedCompany) state.selectedCompany = safeCompany(state.selectedCompany);
+      }
+      if (state.online) {
+        if (state.currentUser) {
+          this.startListeners()
+            .then(() => this.refreshData())
+            .then(() => this.syncSales())
+            .catch((e) => this.notify(e.message, "warning"));
+        } else this.loadSession();
+      }
+    };
+    window.addEventListener("online", network);
+    window.addEventListener("offline", network);
+    state.online = navigator.onLine;
+    this.loadSession();
+    setInterval(() => {
+      if (state.online && state.currentUser)
+        this.startListeners()
+          .then(() => this.refreshData())
+          .catch((e) => {
+            state.dataError = e.message;
+          });
+    }, 30000);
   },
-  startListeners() {
-    stop(globalStops);
-    const user = state.currentUser, generation = session;
-    if (!user) return;
-    const fail = e => { if (generation === session) { state.dataError = e.message; this.notify(`Unable to load store data: ${e.message}`, 'error'); } };
-    if (user.role === 'super') {
-      globalStops.push(onSnapshot(collection(db, 'companies'), snap => {
-        if (generation !== session) return;
-        state.companies = records(snap);
-        if (!state.selectedCompany) {
-          try { const last = state.companies.find(c => c.id === localStorage.getItem(`myfin-store-${user.uid}`)); if (last) this.selectCompany(last); } catch { /* Company selection still works without localStorage. */ }
-        }
-        if (state.selectedCompany) {
-          const co = state.companies.find(c => c.id === state.selectedCompany.id);
-          if (co) { state.selectedCompany = co; state.preferences = { ...co.preferences }; }
-          else this.selectCompany(null);
-        }
-      }, fail));
-    } else if (user.company_id) {
-      globalStops.push(onSnapshot(doc(db, 'companies', user.company_id), snap => {
-        if (generation !== session) return;
-        if (!snap.exists()) { state.companies = []; this.selectCompany(null); return; }
-        const co = { ...snap.data(), id: snap.id }; state.companies = [co]; this.selectCompany(co);
-      }, fail));
-    }
-    const usersQuery = user.role === 'super' ? collection(db, 'users') : query(collection(db, 'users'), where('company_id', '==', user.company_id || 'unassigned'));
-    globalStops.push(onSnapshot(usersQuery, snap => { if (generation === session) state.users = records(snap); }, fail));
+  async startListeners() {
+    const generation = session, request = ++directoryEpoch;
+    if (!state.currentUser || !state.online) return;
+    const user = await this.refreshActor();
+    if (!user || generation !== session || request !== directoryEpoch) return;
+    const p = permissionsFor(user);
+    const [companies, users] = await Promise.all([
+      api("/companies"), p.usersManage ? api("/users") : Promise.resolve([]),
+    ]);
+    if (generation !== session || request !== directoryEpoch || state.currentUser?.role !== user.role) return;
+    state.companies = p.costsRead ? companies : stripConfidential(companies);
+    state.users = users;
+    const chosen = state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
+    const co = state.companies.find(c => c.id === chosen) || (user.role !== "super" ? state.companies[0] : null);
+    this.selectCompany(co || null);
+    await localPos.putProfile(user.uid, { user, companies: state.companies, verifiedAt:new Date().toISOString() })
+      .catch(() => this.notify("Offline profile could not be saved on this device.", "warning"));
   },
   selectCompany(company) {
-    if (company && state.currentUser?.role !== 'super' && company.id !== state.currentUser?.company_id) return;
+    if (company && !state.companies.some((c) => c.id === company.id)) return;
     const changed = company?.id !== state.selectedCompany?.id;
+    if (changed) this.clearCompany();
     state.selectedCompany = company;
-    try { if (company) localStorage.setItem(`myfin-store-${state.currentUser.uid}`, company.id); else localStorage.removeItem(`myfin-store-${state.currentUser?.uid}`); } catch { /* IndexedDB still protects checkout. */ }
-    state.preferences = { theme: 'light', ...(company?.preferences || {}) };
-    if (changed) { this.clearCompany(); if (company) this.startCompanyDataListeners(company.id); }
+    state.preferences = { theme: "light", ...(company?.preferences || {}) };
+    if (company)
+      localSettings.setItem("myfin-store-" + state.currentUser.uid, company.id);
+    else if (state.currentUser)
+      localSettings.removeItem("myfin-store-" + state.currentUser.uid);
+    if (changed && company) this.startCompanyDataListeners(company.id);
   },
-  startCompanyDataListeners(companyId) {
-    const generation = companyEpoch;
-    state.dataLoading = true;
-    const waiting = new Set(['products', 'transactions', 'expenses', 'clients', 'activities']);
-    for (const name of waiting) {
-      companyStops.push(onSnapshot(query(collection(db, name), where('company_id', '==', companyId)), { includeMetadataChanges: true }, snap => {
-        if (generation !== companyEpoch || state.selectedCompany?.id !== companyId) return;
-        state[name] = records(snap).map(row => name === 'products' ? normalizeProduct(row) : row);
-        state.fromCache = snap.metadata.fromCache;
-        waiting.delete(name); state.dataLoading = waiting.size > 0;
-        if (name === 'transactions' && !snap.metadata.fromCache && state.pendingSales.length) this.syncSales();
-      }, error => {
-        if (generation !== companyEpoch) return;
-        waiting.delete(name); state.dataLoading = waiting.size > 0; state.dataError = `${name}: ${error.message}`;
-      }));
+  async startCompanyDataListeners(companyId) {
+    const uid = state.currentUser?.uid,
+      generation = companyEpoch;
+    const cached = await localPos.getCatalog(uid, companyId).catch(() => null);
+    if (generation !== companyEpoch) return;
+    if (cached && state.fromCache) {
+      state.products = stripConfidential(cached.products || []);
+      state.clients = (cached.clients || []).filter(c => c.type !== "Supplier");
+      state.fromCache = true;
     }
-    this.refreshPending().then(() => this.syncSales());
+    await this.refreshPending();
+    if (state.online) {
+      await this.refreshData();
+      await this.syncSales();
+    }
+  },
+  async refreshData() {
+    const uid = state.currentUser?.uid,
+      co = state.selectedCompany?.id,
+      generation = companyEpoch,
+      request = ++refreshEpoch,
+      actorRole = state.currentUser?.role;
+    if (!uid || !co || !state.online) return;
+    state.dataLoading = true;
+    try {
+      const names = hydrationCollections(state.currentUser);
+      for (const key of ["expenses","activities","stock_movements"]) if (!names.includes(key)) state[key] = [];
+      const values = await Promise.all(
+        names.map((n) =>
+          listAll("/companies/" + encodeURIComponent(co) + "/" + n),
+        ),
+      );
+      if (
+        generation !== companyEpoch ||
+        request !== refreshEpoch ||
+        state.currentUser?.uid !== uid || state.currentUser?.role !== actorRole
+      )
+        return;
+      const permissions = permissionsFor(state.currentUser);
+      names.forEach((name, i) => {
+        let rows = name === "products" ? values[i].map(normalizeProduct) : values[i];
+        if (!permissions.costsRead) rows = stripConfidential(rows);
+        if (name === "clients" && !permissions.suppliersRead) rows = rows.filter(c => c.type !== "Supplier");
+        state[name] = rows;
+      });
+      await this.refreshReceiptReviews();
+      if (generation !== companyEpoch || request !== refreshEpoch || state.currentUser?.uid !== uid || state.currentUser?.role !== actorRole) return;
+      state.fromCache = false;
+      state.dataError = "";
+      await localPos
+        .putCatalog(uid, co, {
+          products: state.products,
+          clients: state.clients,
+        })
+        .catch(() =>
+          this.notify(
+            "Offline catalog could not be saved. Keep this device online.",
+            "warning",
+          ),
+        );
+    } catch (e) {
+      if (e.status === 403 && state.currentUser) await this.refreshActor().catch(() => {});
+      if (generation === companyEpoch && request === refreshEpoch) {
+        state.fromCache = true;
+        state.dataError = e.message;
+      }
+    } finally {
+      if (generation === companyEpoch && request === refreshEpoch)
+        state.dataLoading = false;
+    }
+  },
+  async refreshReceiptReviews() {
+    const uid = state.currentUser?.uid, role = state.currentUser?.role,
+      co = state.selectedCompany?.id, generation = companyEpoch, request = ++reviewEpoch;
+    if (!uid || !co || !state.online || !this.can("checkout")) return;
+    const rows = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews");
+    if (generation !== companyEpoch || request !== reviewEpoch || state.currentUser?.uid !== uid || state.currentUser?.role !== role) return;
+    state.receiptReviews = rows;
+  },
+  async requestReceiptReview(sale) {
+    if (!state.online || !this.can("checkout") || sale.cashierId !== state.currentUser?.uid || sale.company_id !== state.selectedCompany?.id)
+      throw new Error("Reconnect as the original cashier in this workspace to request payment review.");
+    const result = await api("/companies/" + encodeURIComponent(sale.company_id) + "/receipt-reviews", {
+      method:"POST", body:{sale:checkoutPayload(sale)},
+    });
+    await this.refreshReceiptReviews();
+    return result;
+  },
+  async preserveUnconfirmedSale(sale, error) {
+    await localPos.putSale({...sale, syncError:error.message});
+    if (error.status === 409 && needsReceiptReview(error)) {
+      // The queue remains the recovery authority until checkout confirms this ID.
+      // Review submission may itself fail after committing; retry is idempotent.
+      await this.requestReceiptReview(sale).catch(() => {});
+    }
+  },
+  async approveReceiptReview(id, reason) {
+    if (!state.online || !this.can("documentsIssue")) throw new Error("An online manager or owner must approve this payment.");
+    if (reason.trim().length < 3) throw new Error("Explain why the original recorded payment is approved (at least 3 characters).");
+    const co = state.selectedCompany?.id;
+    if (!co) throw new Error("Choose a workspace first.");
+    const result = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews/" + encodeURIComponent(id) + "/approve", {
+      method:"POST", body:{reason:reason.trim()},
+    });
+    await this.refreshReceiptReviews();
+    await this.refreshData();
+    return result;
   },
   async refreshPending() {
-    const uid = state.currentUser?.uid, companyId = state.selectedCompany?.id;
+    const uid = state.currentUser?.uid,
+      companyId = state.selectedCompany?.id;
     if (!uid || !companyId) return;
-    try { const sales = await localPos.sales(uid, companyId); if (state.currentUser?.uid === uid && state.selectedCompany?.id === companyId) state.pendingSales = sales; }
-    catch { this.notify('Device storage is unavailable. Checkout needs local storage enabled.', 'error'); }
+    try {
+      const sales = await localPos.sales(uid, companyId);
+      if (
+        state.currentUser?.uid === uid &&
+        state.selectedCompany?.id === companyId
+      )
+        state.pendingSales = sales;
+    } catch {
+      this.notify(
+        "Device storage is unavailable. Checkout needs local storage enabled.",
+        "error",
+      );
+    }
   },
   async syncSales() {
-    if (syncing || !state.online || !state.currentUser || !state.selectedCompany) return;
-    syncing = true; state.syncing = true;
-    const uid = state.currentUser.uid, companyId = state.selectedCompany.id;
+    if (
+      syncing ||
+      !state.online ||
+      !state.currentUser ||
+      !state.selectedCompany
+    )
+      return;
+    syncing = true;
+    state.syncing = true;
     try {
+      const actor = await this.refreshActor();
+      if (!actor || !state.selectedCompany || !this.can("checkout")) return;
+      const uid = actor.uid, companyId = state.selectedCompany.id;
       for (const sale of await localPos.sales(uid, companyId)) {
-        if (state.currentUser?.uid !== uid || state.selectedCompany?.id !== companyId) break;
-        try { await confirmSale(sale); await localPos.removeSale(sale.id); }
-        catch (error) { await localPos.putSale({ ...sale, syncError: error.message }); }
+        if (
+          state.currentUser?.uid !== uid ||
+          state.selectedCompany?.id !== companyId
+        )
+          break;
+        try {
+          await confirmSale(sale);
+          await localPos.removeSale(sale.id);
+        } catch (error) {
+          await this.preserveUnconfirmedSale(sale, error);
+        }
       }
       await this.refreshPending();
-    } finally { syncing = false; state.syncing = false; }
+      await this.refreshData();
+    } finally {
+      syncing = false;
+      state.syncing = false;
+    }
   },
   async completeSale(sale, draftKey, nextDraft) {
+    if (!this.can("checkout") || sale.cashierId !== state.currentUser?.uid || sale.company_id !== state.selectedCompany?.id)
+      throw new Error("Sign in to the correct workspace before taking payment.");
+    sale = safePaidSale(sale);
     await localPos.acceptSale(sale, draftKey, nextDraft);
     if (state.online && !state.fromCache) {
-      try { const saved = await confirmSale(sale); await localPos.removeSale(sale.id); await this.refreshPending(); return { ...saved, syncStatus: 'synced' }; }
-      catch (error) {
-        await localPos.putSale({ ...sale, syncError: error.message }); await this.refreshPending();
-        return { ...sale, syncStatus: 'pending', syncError: error.message };
+      try {
+        const saved = await confirmSale(sale);
+        await localPos.removeSale(sale.id);
+        await this.refreshPending();
+        await this.refreshData();
+        return { ...saved, syncStatus: "synced" };
+      } catch (error) {
+        await this.preserveUnconfirmedSale(sale, error);
+        await this.refreshPending();
+        return { ...sale, syncStatus: "pending", syncError: error.message };
       }
     }
-    await this.refreshPending(); return { ...sale, syncStatus: 'pending' };
+    await this.refreshPending();
+    return { ...sale, syncStatus: "pending" };
   },
-  addTransaction(t) { return financeModule.addTransaction(this, t); },
-  updateTransaction(t) { return financeModule.updateTransaction(this, t); },
-  deleteTransaction(id) { return financeModule.deleteTransaction(this, id); },
-  assignProject(data) { return financeModule.assignProject(this, data); },
-  addProduct(p) { return inventoryModule.addProduct(this, p); },
-  updateProduct(p) { return inventoryModule.updateProduct(this, p); },
-  deleteProduct(id) { return inventoryModule.deleteProduct(this, id); },
-  addExpense(e) { return financeModule.addExpense(this, e); },
-  deleteExpense(id) { return financeModule.deleteExpense(this, id); },
-  addClient(c) { return financeModule.addClient(this, c); },
-  deleteClient(id) { return financeModule.deleteClient(this, id); },
-  addCompany(c) { return companiesModule.addCompany(this, c); },
-  updateCompany(c) { return companiesModule.updateCompany(this, c); },
-  deleteCompany(id) { return companiesModule.deleteCompany(this, id); },
-  addUser(u) { return authModule.addUser(this, u); },
-  updateUser(u) { return authModule.updateUser(this, u); },
-  deleteUser(id) { return authModule.deleteUser(this, id); },
-  updateSelf(data) { return authModule.updateSelf(this, data); },
-  async resetUserPassword(email) { try { await sendPasswordResetEmail(auth, email); this.notify('Password reset email sent.'); } catch (e) { this.notify(e.message, 'error'); } },
-  notify(message, type = 'success') { clearTimeout(notifyTimer); state.notification = { show: true, message, type }; notifyTimer = setTimeout(() => state.notification.show = false, 6000); },
-  logActivity(action, details) {
-    if (!state.selectedCompany || !state.currentUser) return;
-    return addDoc(collection(db, 'activities'), { company_id: state.selectedCompany.id, company: state.selectedCompany.name, user: state.currentUser.username || state.currentUser.email, actorId: state.currentUser.uid, action, details, date: new Date().toISOString() }).catch(() => this.notify('Changes saved, but the activity log could not be written.', 'warning'));
+  addTransaction(t) {
+    return financeModule.addTransaction(this, t);
   },
-  canDelete() { return ['super', 'company_admin'].includes(state.currentUser?.role); },
-  updatePreferences(prefs) { return companiesModule.updatePreferences(this, prefs); },
-  saveCompanyStyle(style) { return this.updatePreferences(style); }
+  updateTransaction(t) {
+    return financeModule.updateTransaction(this, t);
+  },
+  deleteTransaction(id) {
+    return financeModule.deleteTransaction(this, id);
+  },
+  assignProject(data) {
+    return financeModule.assignProject(this, data);
+  },
+  addProduct(p) {
+    return inventoryModule.addProduct(this, p);
+  },
+  updateProduct(p) {
+    return inventoryModule.updateProduct(this, p);
+  },
+  deleteProduct(id) {
+    return inventoryModule.deleteProduct(this, id);
+  },
+  addExpense(e) {
+    return financeModule.addExpense(this, e);
+  },
+  deleteExpense(id) {
+    return financeModule.deleteExpense(this, id);
+  },
+  addClient(c) {
+    return financeModule.addClient(this, c);
+  },
+  deleteClient(id) {
+    return financeModule.deleteClient(this, id);
+  },
+  addCompany(c) {
+    return companiesModule.addCompany(this, c);
+  },
+  updateCompany(c) {
+    return companiesModule.updateCompany(this, c);
+  },
+  deleteCompany(id) {
+    return companiesModule.deleteCompany(this, id);
+  },
+  addUser(u) {
+    return authModule.addUser(this, u);
+  },
+  updateUser(u) {
+    return authModule.updateUser(this, u);
+  },
+  deleteUser(id) {
+    return authModule.deleteUser(this, id);
+  },
+  updateSelf(data) {
+    return authModule.updateSelf(this, data);
+  },
+  notify(message, type = "success") {
+    clearTimeout(notifyTimer);
+    state.notification = { show: true, message, type };
+    notifyTimer = setTimeout(() => (state.notification.show = false), 6000);
+  },
+  logActivity() {
+    /* Mutations and their audit records are committed by the server. */
+  },
+  canDelete() {
+    return ["super", "company_admin"].includes(state.currentUser?.role);
+  },
+  updatePreferences(prefs) {
+    return companiesModule.updatePreferences(this, prefs);
+  },
+  saveCompanyStyle(style) {
+    return this.updatePreferences(style);
+  },
 });

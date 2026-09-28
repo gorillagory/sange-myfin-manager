@@ -1,32 +1,15 @@
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import {api,companyPath} from '../services/api';
+import {Store} from '../store';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 
 export function useStorage() {
-    const storage = getStorage();
-
-    /**
-     * Uploads a file to Firebase Storage
-     */
-    const uploadFile = async (file, path) => {
-        const fileRef = storageRef(storage, path);
-        await uploadBytes(fileRef, file);
-        const url = await getDownloadURL(fileRef);
-        return { url, path: fileRef.fullPath };
+    const uploadFile = async (file,path) => {
+      const kind=path.startsWith('products/')?'products':'receipts';
+      const body=new FormData();body.append('file',file);
+      return api(companyPath(Store,'/files/'+kind),{method:'POST',body});
     };
-
-    /**
-     * Deletes a file from Firebase Storage
-     */
-    const removeFile = async (path) => {
-        if (!path) return;
-        try {
-            const fileRef = storageRef(storage, path);
-            await deleteObject(fileRef);
-        } catch (err) {
-            console.warn("[Storage] File not found or already deleted", err);
-        }
-    };
+    const removeFile = async path => {if(path)await api('/files/'+encodeURIComponent(path),{method:'DELETE'});};
 
     /**
      * Resizes an image using an HTML Canvas to prevent massive Base64 strings.

@@ -9,7 +9,9 @@ export const state = reactive({
     products: [],
     users: [],
     currentUser: null,
+    sessionVerified: false,
     activities: [],
+    stock_movements: [],
     notification: { show: false, message: '', type: 'success' },
     preferences: { theme: 'light' },
     isLoading: true,
@@ -19,5 +21,6 @@ export const state = reactive({
     dataError: '',
     offlineStatus: '',
     pendingSales: [],
+    receiptReviews: [],
     syncing: false
 });

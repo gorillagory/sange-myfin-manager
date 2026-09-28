@@ -21,3 +21,8 @@ await test('worker does not intercept Firebase or outgoing writes',()=>{
   const w=worker();let intercepted=false;
   for(const request of [{method:'GET',url:'https://firestore.googleapis.com/data'},{method:'POST',url:'https://example.test/data'}])w.events.fetch({request,respondWith:()=>intercepted=true});assert.equal(intercepted,false);
 });
+await test('API and private file navigation never uses cache or SPA fallback',()=>{
+ const w=worker();let intercepted=false;
+ for(const path of ['/api','/api/me','/api/files/private','/api/auth/get-session','/%61pi/files/private','//api/files/private','/api%2ffiles%2fprivate'])for(const mode of ['navigate','cors'])w.events.fetch({request:{method:'GET',url:'https://example.test'+path,mode},respondWith:()=>intercepted=true});
+ assert.equal(intercepted,false);
+});
