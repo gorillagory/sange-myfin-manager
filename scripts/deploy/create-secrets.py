@@ -5,7 +5,7 @@ if len(sys.argv)!=2:raise SystemExit('Usage: create-secrets.py /absolute/private
 p=pathlib.Path(sys.argv[1]).resolve();repo=pathlib.Path(__file__).resolve().parents[2]
 if not p.is_absolute() or p.exists() or p.is_relative_to(repo):raise SystemExit('Use a new absolute directory outside Git')
 p.mkdir(mode=0o700)
-for name in ['runtime','migrator','auth','seed','pos-code','pos-session']:
+for name in ['runtime','migrator','auth','seed','genesis','pos-code','pos-session']:
  f=p/(name+'.secret')
  with f.open('x') as out:out.write(secrets.token_urlsafe(48)+'\n')
  f.chmod(0o600)

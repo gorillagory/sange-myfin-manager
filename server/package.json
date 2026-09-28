@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test test/*.test.js",
-    "migrate": "node src/migrate-cli.js"
+    "migrate": "node src/migrate-cli.js",
+    "genesis": "node src/genesis-cli.js"
   },
   "dependencies": {
     "@fastify/multipart": "9.4.0",

@@ -37,6 +37,8 @@ Production is prepared as `myfin-prod`, database `myfin_prod`, independent owner
 
 Production operator commands are deliberately separate from development: `production-build.sh`, `production-provision.sh`, `production-migrate.sh`, `production-up.sh`, and `production-smoke.sh` all source `production-common.sh`, which refuses any project, database, upload volume, root domain, or host policy outside the reviewed production values. Provisioning remains an explicit later cutover step; preparing these scripts does not create or modify production resources.
 
+SuperAdmin bootstrap is also environment-separated. [GENESIS_SUPERADMIN.md](GENESIS_SUPERADMIN.md) defines the offline, one-time development and production commands, the zero-active-SuperAdmin guard, database-owner execution, transaction lock, protected password input and audit event. There is no public genesis route. Once the first SuperAdmin exists, the authenticated SuperAdmin management flow is the only path for adding another.
+
 The development and production databases are logically isolated on the current shared PostgreSQL service and still share the same `nexus-docker`/PostgreSQL failure domain. Backups and restore drills must therefore be independent.
 
 ## Git and promotion
