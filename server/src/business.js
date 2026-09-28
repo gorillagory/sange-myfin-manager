@@ -665,7 +665,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
           await audit(c, req.identity, co, `Delete ${name}`, id);
           return { ok: true };
         },
-        true,
+        name !== "expenses",
       ),
     );
   }
