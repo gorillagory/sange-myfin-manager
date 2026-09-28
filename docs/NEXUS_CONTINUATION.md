@@ -8,7 +8,7 @@ Read [WORKSPACE_ROUTING_ACCESS_PHASE06.md](WORKSPACE_ROUTING_ACCESS_PHASE06.md) 
 
 ## Latest state — Phase05, 13 September 2026
 
-The workspace-routing development release is deployed at **https://dev-pos.bayam.live**. Production remains unprovisioned and the Firebase production application remains unchanged. SuperAdmin genesis is an offline, one-time database bootstrap described in [GENESIS_SUPERADMIN.md](GENESIS_SUPERADMIN.md); it refuses once any active SuperAdmin exists, while later SuperAdmins use authenticated management.
+The workspace-routing development release is deployed at **https://dev-pos.bayam.live**. Its API now runs `myfin-api:phase07-ad37cbd`; public readiness and the guarded SuperAdmin refusal path are verified. Production remains unprovisioned and the Firebase production application remains unchanged. SuperAdmin genesis is an offline, one-time database bootstrap described in [GENESIS_SUPERADMIN.md](GENESIS_SUPERADMIN.md); it refuses once any active SuperAdmin exists, while later SuperAdmins use authenticated management.
 
 Read [DOCUMENTS_ACCESS_PHASE05.md](DOCUMENTS_ACCESS_PHASE05.md) for the access policy and document behavior, and [MYFIN_DEV_ACCEPTANCE.md](MYFIN_DEV_ACCEPTANCE.md) for current browser acceptance and recovery. Staff prepare their own or assigned quote/invoice drafts and process their own checkout receipts. Managers issue documents, record payments, publish templates and manage Staff accounts. Purchase costs, margins, expenses and company financial reports remain owner-only; managers retain cost-free inventory exports.
 
