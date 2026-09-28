@@ -35,6 +35,8 @@ Development remains the `myfin-dev` Compose project, database `myfin_dev`, port 
 
 Production is prepared as `myfin-prod`, database `myfin_prod`, independent owner/migrator/runtime roles, independent auth/POS secrets, `myfin-prod-uploads`, and port `192.168.1.100:8084`. Production routing uses the existing Cloudflare Tunnel plus a proxied `*.finn3.com` record. `admin.finn3.com` is the control hostname. PostgreSQL remains private on `nexus-data` and is never a Cloudflare origin.
 
+Production operator commands are deliberately separate from development: `production-build.sh`, `production-provision.sh`, `production-migrate.sh`, `production-up.sh`, and `production-smoke.sh` all source `production-common.sh`, which refuses any project, database, upload volume, root domain, or host policy outside the reviewed production values. Provisioning remains an explicit later cutover step; preparing these scripts does not create or modify production resources.
+
 The development and production databases are logically isolated on the current shared PostgreSQL service and still share the same `nexus-docker`/PostgreSQL failure domain. Backups and restore drills must therefore be independent.
 
 ## Git and promotion
