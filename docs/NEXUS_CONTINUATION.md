@@ -1,8 +1,10 @@
 # MyFin continuation on nexus-pbund
 
-## Phase 06 in progress — 28 September 2026
+## Phase 06 deployed — awaiting user browser confirmation, 29 September 2026
 
-The active implementation moves tenancy from Company to Workspace, adds exact workspace/company hostname mappings, multi-company Manager/Operator assignments, company-scoped six-digit POS access, password-only administration, immutable expense voiding and the approved Manager report projection. Read [WORKSPACE_ROUTING_ACCESS_PHASE06.md](WORKSPACE_ROUTING_ACCESS_PHASE06.md) for the model, environment split, Git promotion policy and rollout gates. The Phase 05 deployment remains active until Phase 06 passes isolated PostgreSQL and browser acceptance.
+Development release `0de74b294f6c429e69a8e328f8eb2cc63380d808` is healthy at **https://dev-pos.bayam.live** on `nexus-docker`. It moves tenancy from Company to Workspace, adds exact workspace/company hostname mappings, multi-company Manager/Operator assignments, company-scoped six-digit POS access, password-only administration, manager-approved immutable expense voiding and the approved Manager report projection. The live route resolves `Bayam Food Services Sdn Bhd / bfsb` to `Ba|Li Coffee / bali`; migration `0013_workspace_routing_access.sql` is applied. Public password authentication and the exact report projection passed automated HTTPS acceptance.
+
+Read [WORKSPACE_ROUTING_ACCESS_PHASE06.md](WORKSPACE_ROUTING_ACCESS_PHASE06.md) and `/root/myfin-jobs/phase06-workspace-routing-20260928/reports/result.json` for the model, test evidence, verified pre-migration backup, restore check and rollout status. `staging` and tag `dev-phase06-20260929` point at the deployed code; `develop` also contains this continuation update. Production Firebase and production PostgreSQL remain unchanged. The old `dev-pos.finn3.com` route is temporarily retained as a redirect during browser acceptance. Removing that Cloudflare route, activating the new-host-only runtime file, disabling the database alias and fast-forwarding `main` are the remaining acceptance actions.
 
 ## Latest state — Phase05, 13 September 2026
 
