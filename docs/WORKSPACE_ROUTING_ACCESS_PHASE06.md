@@ -31,7 +31,7 @@ Password sessions remain host-only. Company switching uses a 90-second, single-u
 
 ## Environments
 
-Development remains the `myfin-dev` Compose project, database `myfin_dev`, port `192.168.1.100:8083`, independent secrets and `myfin-dev-uploads`. Its temporary external acceptance address is `dev-pos.bayam.live`; it will be removed after acceptance so development and its database are reachable only through LAN/Tailscale/SSH operations.
+Development remains the `myfin-dev` Compose project, database `myfin_dev`, port `192.168.1.100:8083`, independent secrets and `myfin-dev-uploads`. Its temporary external acceptance address is `dev-pos.bayam.live`; that exact hostname is a tenant route rather than a control surface, so it selects the intended workspace and company. It will be removed after acceptance so development and its database are reachable only through LAN/Tailscale/SSH operations.
 
 Production is prepared as `myfin-prod`, database `myfin_prod`, independent owner/migrator/runtime roles, independent auth/POS secrets, `myfin-prod-uploads`, and port `192.168.1.100:8084`. Production routing uses the existing Cloudflare Tunnel plus a proxied `*.finn3.com` record. `admin.finn3.com` is the control hostname. PostgreSQL remains private on `nexus-data` and is never a Cloudflare origin.
 
