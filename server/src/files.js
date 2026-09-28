@@ -7,7 +7,7 @@ import { resolve, join } from "node:path";
 import { authorize, audit } from "./business.js";
 import { parse, id, fail } from "./validation.js";
 import { managementLock,managementSession } from "./management.js";
-import { owner,requireCapability,recordVisible } from "./access.js";
+import { owner,manager,operator,requireCapability,recordVisible } from "./access.js";
 
 export async function registerFiles(app, { database: db, uploadDir }) {
   const sessionGuard=async(c,req)=>{await managementLock(c);await managementSession(c,req);};
@@ -31,7 +31,7 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       if (!["products", "receipts"].includes(kind))
         fail(400, "invalid_file_kind");
       // Authorize before consuming upload bytes and recheck inside metadata transaction.
-      await db.transaction(async(c) => {await sessionGuard(c,req);await authorize(c, req.identity, company);requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesWrite");});
+      await db.transaction(async(c) => {await sessionGuard(c,req);await authorize(c, req.identity, company);requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesCreate");});
       const file = await req.file();
       if (!file) fail(400, "file_required");
       const bytes = await file.toBuffer();
@@ -73,7 +73,7 @@ export async function registerFiles(app, { database: db, uploadDir }) {
         await db.transaction(async (c) => {
           await sessionGuard(c,req);
           await authorize(c, req.identity, company);
-          requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesWrite");
+          requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesCreate");
           await c.query(
             "INSERT INTO myfin.files(id,company_id,actor_id,kind,mime,size) VALUES($1,$2,$3,$4,$5,$6)",
             [fileId, company, req.identity.id, kind, type.mime, bytes.length],
@@ -98,8 +98,8 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       await authorize(c, req.identity, r.rows[0].company_id);
       if(!owner(req.identity)){
         const url="/api/files/"+fileId,co=r.rows[0].company_id;
-        const expense=await c.query("SELECT 1 FROM myfin.expenses WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3) LIMIT 1",[co,fileId,url]);
-        if(expense.rowCount)fail(403,"access_denied");
+        const expense=await c.query("SELECT created_by FROM myfin.expenses WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3) LIMIT 1",[co,fileId,url]);
+        if(expense.rowCount&&!manager(req.identity)&&expense.rows[0].created_by!==req.identity.id)fail(403,"access_denied");
         const refs=await c.query("SELECT * FROM myfin.transactions WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3)",[co,fileId,url]);
         if(refs.rows.some(row=>!recordVisible(row,req.identity)))fail(403,"access_denied");
         if(r.rows[0].kind==="receipts"&&!refs.rows.some(row=>recordVisible(row,req.identity)))fail(403,"access_denied");
@@ -136,7 +136,7 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       );
       if (!r.rowCount) fail(404, "not_found");
       await authorize(c, req.identity, r.rows[0].company_id);
-      requireCapability(req.identity,r.rows[0].kind==="products"?"inventoryWrite":"expensesWrite");
+      requireCapability(req.identity,r.rows[0].kind==="products"?"inventoryWrite":"expensesCreate");
       if(!owner(req.identity)&&r.rows[0].actor_id!==req.identity.id)fail(403,"access_denied");
       for (const table of ["products", "expenses", "transactions"]) {
         const refs = await c.query(

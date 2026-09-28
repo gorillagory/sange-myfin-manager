@@ -79,7 +79,7 @@ export const Store = reactive({
     if (changed) {
       this.clearCompany();
       state.users = [];
-      if (fresh.role !== "super" && state.selectedCompany?.id !== fresh.company_id) {
+      if (fresh.role !== "super_admin" && state.selectedCompany?.id !== fresh.company_id) {
         state.selectedCompany = null; state.companies = [];
       }
       this.notify("Your access changed. The workspace has been refreshed; paid receipts remain on this device.", "warning");
@@ -117,6 +117,14 @@ export const Store = reactive({
       return false;
     }
   },
+  async posLogin(code) {
+    try {
+      await api("/pos-auth/sign-in",{method:"POST",body:{code:String(code).trim()}});
+      await this.loadSession();return true;
+    } catch (error) {
+      this.notify(error.message==="pos_login_locked"?"Too many attempts. Wait 15 minutes before trying again.":"That access code is not valid for this company.","error");return false;
+    }
+  },
   async logout() {
     if (state.pendingSales.length)
       this.notify(
@@ -125,7 +133,8 @@ export const Store = reactive({
       );
     localSettings.setItem("myfin-logout-pending", "1");
     try {
-      await api("/auth/sign-out", { method: "POST" });
+      if(state.currentUser?.authLevel==="pos_code")await api("/pos-auth/sign-out",{method:"POST"});
+      else {await api("/session-handoffs/sign-out",{method:"POST"}).catch(()=>{});await api("/auth/sign-out", { method: "POST" });}
       localSettings.removeItem("myfin-logout-pending");
     } catch {
       this.notify(
@@ -249,7 +258,15 @@ export const Store = reactive({
     window.addEventListener("online", network);
     window.addEventListener("offline", network);
     state.online = navigator.onLine;
-    this.loadSession();
+    api("/tenant-context").then(async context=>{
+      state.tenantContext=context;state.tenantInvalid=false;
+      if(context.redirectTo){const target=new URL(context.redirectTo);target.pathname=location.pathname;target.search=location.search;location.replace(target.href);return;}
+      if(location.pathname==="/session-handoff"){
+        const token=new URLSearchParams(location.hash.slice(1)).get("token");if(!token)throw new Error("handoff_expired");
+        await api("/session-handoffs/consume",{method:"POST",body:{token}});history.replaceState({},"","/overview");
+      }
+      return this.loadSession();
+    }).catch(()=>{state.tenantInvalid=true;state.isLoading=false;});
     setInterval(() => {
       if (state.online && state.currentUser)
         this.startListeners()
@@ -271,8 +288,8 @@ export const Store = reactive({
     if (generation !== session || request !== directoryEpoch || state.currentUser?.role !== user.role) return;
     state.companies = p.costsRead ? companies : stripConfidential(companies);
     state.users = users;
-    const chosen = state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
-    const co = state.companies.find(c => c.id === chosen) || (user.role !== "super" ? state.companies[0] : null);
+    const chosen = state.tenantContext?.company?.id || state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
+    const co = state.companies.find(c => c.id === chosen) || (user.role !== "super_admin" ? state.companies[0] : null);
     this.selectCompany(co || null);
     await localPos.putProfile(user.uid, { user, companies: state.companies, verifiedAt:new Date().toISOString() })
       .catch(() => this.notify("Offline profile could not be saved on this device.", "warning"));
@@ -282,12 +299,22 @@ export const Store = reactive({
     const changed = company?.id !== state.selectedCompany?.id;
     if (changed) this.clearCompany();
     state.selectedCompany = company;
-    state.preferences = { theme: "light", ...(company?.preferences || {}) };
+    let device={};try{device=JSON.parse(localSettings.getItem("myfin-device-preferences-"+company?.id)||"{}");}catch{}
+    state.preferences = { theme: "light", ...(company?.preferences || {}), ...device };
     if (company)
       localSettings.setItem("myfin-store-" + state.currentUser.uid, company.id);
     else if (state.currentUser)
       localSettings.removeItem("myfin-store-" + state.currentUser.uid);
     if (changed && company) this.startCompanyDataListeners(company.id);
+  },
+  async switchCompany(company){
+    if(!company)return this.selectCompany(null);
+    const current=location.hostname.toLowerCase();
+    if(company.hostname&&company.hostname.toLowerCase()!==current){
+      try{const result=await api("/session-handoffs",{method:"POST",body:{targetHostname:company.hostname.toLowerCase()}});location.assign(result.url);return;}
+      catch(error){this.notify(error.message,"error");return;}
+    }
+    this.selectCompany(company);
   },
   async startCompanyDataListeners(companyId) {
     const uid = state.currentUser?.uid,
@@ -533,7 +560,7 @@ export const Store = reactive({
     /* Mutations and their audit records are committed by the server. */
   },
   canDelete() {
-    return ["super", "company_admin"].includes(state.currentUser?.role);
+    return ["super_admin", "workspace_owner", "manager"].includes(state.currentUser?.role);
   },
   updatePreferences(prefs) {
     return companiesModule.updatePreferences(this, prefs);

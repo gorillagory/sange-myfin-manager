@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { fromNodeHeaders } from "better-auth/node";
 import { z } from "zod";
 import * as v from "./validation.js";
-import { registerManagement, managementLock, managementSession } from "./management.js";
+import { registerManagement, managementLock, managementSession, requirePasswordSession } from "./management.js";
 import {
   canonical,
   deductItems,
@@ -13,30 +13,36 @@ import {
   expenseRecords,
 } from "../../src/domain/pos.js";
 import { validateProduct } from "../../src/domain/inventoryCsv.js";
-import { owner,requireCapability,containsConfidential,publicProduct,publicClient,publicTransaction,recordVisible,recordOutput,publicStockMovement } from "./access.js";
+import { owner,manager,operator,requireCapability,containsConfidential,publicProduct,publicClient,publicTransaction,recordVisible,recordOutput,publicStockMovement } from "./access.js";
 import { registerDocuments,publishedTemplate } from "./documents.js";
 import { templateDefaults } from "../../src/domain/documents.js";
 import { registerReceiptReviews } from "./receipt-reviews.js";
+import { posIdentity,verifyManagerCode } from "./pos-auth.js";
+import { registerWorkspaces } from "./workspaces.js";
+import { handoffSubject,createHandoff } from "./session-handoff.js";
 
-export async function identity(db, subject) {
-  const { rows } = await db.query(
-    `SELECT i.id,i.display_name AS username,i.is_super,i.disabled_at,u.email,
- m.company_id,m.role,c.archived_at AS company_archived_at FROM myfin.identity_mappings x JOIN myfin.app_identities i ON i.id=x.identity_id
- JOIN myfin.auth_user u ON u.id=x.subject LEFT JOIN myfin.memberships m ON m.identity_id=i.id
-  LEFT JOIN myfin.companies c ON c.id=m.company_id
- WHERE x.provider='better-auth' AND x.subject=$1`,
-    [subject],
-  );
-  const r = rows[0];
-  if (!r || r.disabled_at || (!r.is_super && r.company_archived_at)) v.fail(401, "session_required");
-  return {
-    id: r.id,
-    uid: r.id,
-    username: r.username,
-    email: r.email,
-    role: r.is_super ? "super" : r.role,
-    company_id: r.company_id || "",
-  };
+export async function identity(db, subject, tenant=null) {
+  const r = (await db.query(
+    `SELECT i.id,i.display_name AS username,i.is_super,i.disabled_at,u.email
+       FROM myfin.identity_mappings x JOIN myfin.app_identities i ON i.id=x.identity_id
+       JOIN myfin.auth_user u ON u.id=x.subject
+      WHERE x.provider='better-auth' AND x.subject=$1`,[subject])).rows[0];
+  if (!r || r.disabled_at) v.fail(401, "session_required");
+  const workspaces=(await db.query(`SELECT wm.workspace_id,wm.role FROM myfin.workspace_memberships wm
+    JOIN myfin.workspaces w ON w.id=wm.workspace_id WHERE wm.identity_id=$1 AND wm.suspended_at IS NULL
+    AND w.suspended_at IS NULL AND w.archived_at IS NULL ORDER BY wm.workspace_id`,[r.id])).rows;
+  const companies=(await db.query(`SELECT m.company_id,m.role,c.workspace_id FROM myfin.memberships m
+    JOIN myfin.companies c ON c.id=m.company_id JOIN myfin.workspaces w ON w.id=c.workspace_id
+    WHERE m.identity_id=$1 AND c.suspended_at IS NULL AND c.archived_at IS NULL
+      AND w.suspended_at IS NULL AND w.archived_at IS NULL ORDER BY m.company_id`,[r.id])).rows;
+  const target=tenant?.surface==="tenant"?tenant.company_id:companies[0]?.company_id||"";
+  const company=companies.find(x=>x.company_id===target),workspaceId=tenant?.workspace_id||company?.workspace_id||workspaces[0]?.workspace_id||"";
+  const workspaceOwner=workspaces.some(x=>x.workspace_id===workspaceId);
+  const role=r.is_super?"super_admin":workspaceOwner?"workspace_owner":company?.role;
+  if(!role&&!r.is_super)v.fail(403,"access_denied");
+  return {id:r.id,uid:r.id,username:r.username,email:r.email,role,globalRole:r.is_super?"super_admin":"",
+    workspace_id:workspaceId,company_id:target,workspaceMemberships:workspaces,companyMemberships:companies,
+    authLevel:"password",host_company_id:tenant?.surface==="tenant"?tenant.company_id:""};
 }
 export async function authorize(c, who, companyId, admin = false) {
   const { rows } = await c.query(
@@ -45,18 +51,21 @@ export async function authorize(c, who, companyId, admin = false) {
   );
   if (!rows[0]) v.fail(401, "session_required");
   const company = await c.query(
-    "SELECT id FROM myfin.companies WHERE id=$1 AND archived_at IS NULL FOR SHARE",
+    "SELECT id,workspace_id FROM myfin.companies WHERE id=$1 AND archived_at IS NULL AND suspended_at IS NULL FOR SHARE",
     [companyId],
   );
   if (!company.rowCount) v.fail(404, "not_found");
-  if (rows[0].is_super) {who.role="super";who.company_id="";return;}
+  if(who.host_company_id&&who.host_company_id!==companyId)v.fail(404,"not_found");
+  if (rows[0].is_super) {who.role="super_admin";who.globalRole="super_admin";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;return;}
+  const wm=await c.query("SELECT 1 FROM myfin.workspace_memberships WHERE identity_id=$1 AND workspace_id=$2 AND suspended_at IS NULL",[who.id,company.rows[0].workspace_id]);
+  if(wm.rowCount){who.role="workspace_owner";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;return;}
   const m = await c.query(
     "SELECT role FROM myfin.memberships WHERE identity_id=$1 AND company_id=$2 FOR SHARE",
     [who.id, companyId],
   );
-  if (!m.rowCount || (admin && m.rows[0].role !== "company_admin"))
+  if (!m.rowCount || (admin && m.rows[0].role !== "manager"))
     v.fail(403, "access_denied");
-  who.role=m.rows[0].role;who.company_id=companyId;
+  who.role=m.rows[0].role;who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;
 }
 async function requireSuper(c, who) {
   const r = await c.query(
@@ -236,8 +245,8 @@ export async function checkout(c, who, companyId, input, approval=null) {
     return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice:Number(variant?.price??product.price)};
   });
   const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0);
-  if(!approval&&who.role==="company_user"&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
-  if(!approval&&who.role==="company_admin"&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
+  if(!approval&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
+  if(!approval&&manager(who)&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
   sale.items=canonicalItems.map(({catalogPrice,...item})=>item);
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");
   if(approval)Object.assign(expectedStore,sale.storeSnapshot);
@@ -265,7 +274,7 @@ export async function checkout(c, who, companyId, input, approval=null) {
       [companyId, sale.client_id],
     );
     if(!owner(who)&&customer.rows[0]?.data.type==="Supplier")v.fail(403,"supplier_restricted");
-    if (sale.customerEmail && (!customer.rowCount || who.role!=="company_user")) {
+    if (sale.customerEmail && (!customer.rowCount || !operator(who))) {
       const data = {
         ...(customer.rows[0]?.data || {
           name: sale.customerName,
@@ -332,17 +341,31 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   app.decorateRequest("identity", null);
   app.decorateRequest("authSessionId", null);
   app.addHook("preHandler", async (req) => {
-    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/auth/"))
+    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/auth/") || req.url.startsWith("/api/pos-auth/") || req.url==="/api/tenant-context" || req.url==="/api/session-handoffs/consume" || req.url==="/api/session-handoffs/sign-out")
       return;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
     });
-    if (!session) v.fail(401, "session_required");
-    req.identity = await identity(db, session.user.id);
-    req.authSessionId = session.session.id;
+    if (session) {
+      req.identity = await identity(db, session.user.id,req.tenant);
+      req.authSessionId = session.session.id;
+      req.authLevel="password";
+      return;
+    }
+    const handoff=await handoffSubject(db,req,authOptions);
+    if(handoff){req.identity=await identity(db,handoff.subject,req.tenant);req.identity.authLevel="handoff_password";req.identity.handoffSessionDigest=handoff.digest;req.authLevel="handoff_password";return;}
+    req.identity=await posIdentity(db,req,authOptions);
+    if(!req.identity)v.fail(401,"session_required");
+    req.authLevel="pos_code";
   });
   app.get("/api/me", async (req) => req.identity);
+  app.post("/api/session-handoffs",async req=>db.transaction(async c=>{
+    requirePasswordSession(req);await managementLock(c);await managementSession(c,req);
+    const {targetHostname}=v.parse(z.strictObject({targetHostname:z.string().trim().toLowerCase().max(253)}),req.body);
+    return createHandoff(c,req,authOptions,targetHostname);
+  }));
   app.patch("/api/me", async (req) => {
+    requirePasswordSession(req);
     const data = v.parse(
       z.strictObject({ username: z.string().min(1).max(120) }),
       req.body,
@@ -364,6 +387,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
     return { ok: true };
   });
   registerManagement(app, { db, authOptions, authorize, requireSuper, validateFileRefs, audit });
+  registerWorkspaces(app,{db,authOptions,authorize,audit,validateFileRefs});
   registerDocuments(app,{db,authorize,audit});
   registerReceiptReviews(app,{db,authorize,checkout,audit});
   const scoped = (req, fn, admin = false) => {
@@ -381,16 +405,47 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
     const span=(Date.parse(to)-Date.parse(from))/86400000;
     if(!Number.isInteger(span)||span<0||span>366||new Date(from).toISOString().slice(0,10)!==from||new Date(to).toISOString().slice(0,10)!==to)v.fail(400,"invalid_report_range");
     const tx=(await c.query("SELECT * FROM myfin.transactions WHERE company_id=$1",[co])).rows;
-    const exp=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1",[co])).rows.map(asRecord);
+    const exp=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1 AND voided_at IS NULL",[co])).rows.map(asRecord);
     const payments=(await c.query("SELECT amount,paid_at FROM myfin.document_payments WHERE company_id=$1",[co])).rows;
-    const days=new Map();for(let i=0;i<=span;i++){const day=new Date(Date.parse(from)+i*86400000).toISOString().slice(0,10);days.set(day,{date:day,collected:0,expenses:0});}
+    const days=new Map();for(let i=0;i<=span;i++){const day=new Date(Date.parse(from)+i*86400000).toISOString().slice(0,10);days.set(day,{date:day,sales:0,tax:0,cashIn:0,expenses:0});}
     const add=(date,kind,amount)=>{const row=days.get(date);if(row)row[kind]+=cents(amount);};
-    for(const row of tx)if(row.source==="pos"||(row.document_state==="legacy"&&row.data.type==="Invoice"&&["Paid","Cleared"].includes(row.data.status)))add(row.data.businessDate||businessDate(row.data.date),"collected",row.total);
-    for(const payment of payments)add(businessDate(payment.paid_at),"collected",payment.amount);
+    for(const row of tx){
+      const saleDate=row.data.businessDate||businessDate(row.issued_at||row.data.date);
+      if(row.source==="pos"){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.data.tax||0));add(saleDate,"cashIn",row.total);}
+      else if(row.document_state==="issued"&&row.data.type==="Invoice"){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.issued_snapshot?.tax??row.data.tax??0));}
+      else if(row.document_state==="legacy"&&row.data.type==="Invoice"&&["Paid","Cleared"].includes(row.data.status)){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.data.tax||0));add(saleDate,"cashIn",row.total);}
+    }
+    for(const payment of payments)add(businessDate(payment.paid_at),"cashIn",payment.amount);
     for(const expense of expenseRecords({expenses:exp,transactions:tx.filter(row=>row.document_state==="legacy").map(asRecord)}))add(businessDate(expense.date),"expenses",expense.amount);
-    const daily=[...days.values()].map(row=>({...row,collected:row.collected/100,expenses:row.expenses/100,cashSurplus:(row.collected-row.expenses)/100}));
-    const collected=daily.reduce((sum,row)=>sum+cents(row.collected),0)/100,expenses=daily.reduce((sum,row)=>sum+cents(row.expenses),0)/100;
-    return {from,to,collected,expenses,cashSurplus:(cents(collected)-cents(expenses))/100,daily,basis:"POS business date; payments paid date; historical paid document date; expense date"};
+    const daily=[...days.values()].map(row=>({date:row.date,sales:row.sales/100,tax:row.tax/100,cashIn:row.cashIn/100,expenses:row.expenses/100,cashFlow:(row.cashIn-row.expenses)/100}));
+    const sum=key=>daily.reduce((total,row)=>total+cents(row[key]),0)/100;
+    const sales=sum("sales"),tax=sum("tax"),cashIn=sum("cashIn"),expenses=sum("expenses"),cashFlow=(cents(cashIn)-cents(expenses))/100;
+    return {from,to,sales,tax,expenses,cashIn,cashFlow,collected:cashIn,cashSurplus:cashFlow,daily,basis:"Sales and tax use POS business date or invoice issue date; cash uses receipts and invoice payments; expenses use expense date."};
+  }));
+  app.post("/api/companies/:company/stock-adjustments",req=>scoped(req,async(c,co)=>{
+    requireCapability(req.identity,"inventoryTransact");
+    const body=v.parse(z.strictObject({reason:z.string().trim().min(3).max(500),adjustments:z.array(z.strictObject({productId:v.id,variantId:z.string().max(128).optional(),quantity:z.number().min(-1e6).max(1e6).refine(n=>n!==0)})).min(1).max(100)}),req.body);
+    const ids=[...new Set(body.adjustments.map(x=>x.productId))].sort();
+    await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,8))",[co]);
+    const rows=await c.query("SELECT * FROM myfin.products WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE",[co,ids]);
+    if(rows.rowCount!==ids.length)v.fail(404,"product_not_found");
+    const movements=[];
+    for(const row of rows.rows){
+      const product=normalizeProduct(row.data);if(!product.trackStock)v.fail(409,"stock_tracking_required");
+      for(const item of body.adjustments.filter(x=>x.productId===row.id)){
+        const target=item.variantId?product.variants.find(x=>x.id===item.variantId):product;
+        if(!target||(product.variants.length&&!item.variantId))v.fail(404,"variant_not_found");
+        const after=Math.round((Number(target.stock)+item.quantity)*1000)/1000;if(after<0)v.fail(409,"stock_unavailable");
+        target.stock=after;movements.push({productId:row.id,variantId:item.variantId||"",quantity:item.quantity,stockAfter:after});
+      }
+      product.stock=product.variants.length?product.variants.reduce((n,x)=>n+Number(x.stock),0):product.stock;product.version=Number(row.version)+1;
+      await c.query("UPDATE myfin.products SET data=$3,stock=$4,version=version+1 WHERE company_id=$1 AND id=$2",[co,row.id,product,product.stock]);
+      for(const item of product.variants)await c.query("UPDATE myfin.product_variants SET stock=$4 WHERE company_id=$1 AND product_id=$2 AND id=$3",[co,row.id,item.id,item.stock]);
+    }
+    const id=randomUUID(),data={id,company_id:co,action:"Inventory transaction",reason:body.reason,date:new Date().toISOString(),cashierId:req.identity.id,movements};
+    await c.query("INSERT INTO myfin.stock_movements(company_id,id,actor_id,data) VALUES($1,$2,$3,$4)",[co,id,req.identity.id,data]);
+    await audit(c,req.identity,co,"Inventory transaction",`${id} · ${body.reason}`);
+    return publicStockMovement(data,req.identity);
   }));
   const schemas = {
     products: v.product,
@@ -415,9 +470,11 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         if(["expenses","activities"].includes(name))requireCapability(req.identity,name==="expenses"?"expensesRead":"activityRead");
         if(name==="stock_movements")requireCapability(req.identity,"stockHistoryRead");
         const predicates=["company_id=$1","id>$2"],args=[co,q.after||""];
+        if(name==="expenses")predicates.push("voided_at IS NULL");
+        if(name==="expenses"&&operator(req.identity)){args.push(req.identity.id);predicates.push(`created_by=$${args.length}`);}
         if(!owner(req.identity)&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
-          if(req.identity.role==="company_user"){args.push(req.identity.id);predicates.push("((source='pos' AND actor_id=$3) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$3 OR assigned_to=$3)))");}
+          if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
           else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')))");
         }
         args.push(q.limit+1);
@@ -440,7 +497,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
             input={...input,cost:prior?.cost||0,variants:(input.variants||[]).map(item=>({...item,cost:prior?.variants?.find(v=>v.id===item.id)?.cost||0}))};
           }
         }
-        if(name==="expenses")requireCapability(req.identity,"expensesWrite");
+        if(name==="expenses")requireCapability(req.identity,update?"expensesWrite":"expensesCreate");
         if(name==="transactions"){
           if(!owner(req.identity))v.fail(403,"use_document_workflow");
           if(!["Expense","Payment Voucher"].includes(input?.type))v.fail(409,"use_document_workflow");
@@ -550,8 +607,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
               );
             else
               await c.query(
-                "INSERT INTO myfin.expenses(company_id,id,data,amount) VALUES($1,$2,$3,$4)",
-                [co, id, data, data.amount],
+                "INSERT INTO myfin.expenses(company_id,id,data,amount,created_by) VALUES($1,$2,$3,$4,$5)",
+                [co, id, data, data.amount,req.identity.id],
               );
           } else if (update)
             await c.query(
@@ -587,7 +644,17 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
             [co, id],
           );
           if (!old.rowCount) v.fail(404, "not_found");
-          if(name==="expenses"||name==="transactions")requireCapability(req.identity,"expensesWrite");
+          if(name==="expenses"){
+            const approval=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000).optional(),managerCode:z.string().regex(/^\d{6}$/).optional()}),req.body||{});
+            if(operator(req.identity)){
+              if(!authOptions.pos||!approval.managerCode)v.fail(403,"manager_approval_required");
+              const approver=await verifyManagerCode(c,authOptions.pos,co,approval.managerCode);
+              await c.query("INSERT INTO myfin.action_approvals(id,company_id,actor_id,approver_id,action,subject_type,subject_id,reason) VALUES($1,$2,$3,$4,'void','expense',$5,$6)",[randomUUID(),co,req.identity.id,approver,id,approval.reason||"Manager-approved expense void"]);
+            }else requireCapability(req.identity,"expensesVoid");
+            await c.query("UPDATE myfin.expenses SET voided_at=coalesce(voided_at,now()),voided_by=coalesce(voided_by,$3),void_reason=coalesce(void_reason,$4) WHERE company_id=$1 AND id=$2",[co,id,req.identity.id,approval.reason||"Expense voided"]);
+            await audit(c,req.identity,co,"Void expense",id);return {ok:true};
+          }
+          if(name==="transactions")v.fail(409,"financial_history_immutable");
           if(name==="transactions"&&old.rows[0].document_state!=="legacy")v.fail(409,"use_document_workflow");
           if(name==="clients"&&!owner(req.identity)&&old.rows[0].data.type==="Supplier")v.fail(403,"supplier_restricted");
           if (old.rows[0].source === "pos") v.fail(409, "posted_pos_immutable");

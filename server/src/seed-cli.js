@@ -21,13 +21,14 @@ try {
   db = createDatabase(config.database);
   await db.transaction(async (c) => {
     await c.query(
-      'INSERT INTO myfin.companies(id,name,data) VALUES(\'synthetic-dev\',\'Synthetic development shop\',\'{"preferences":{"currency":"RM","taxRate":0}}\')',
+      `INSERT INTO myfin.workspaces(id,name,slug,data) VALUES('synthetic-dev-workspace','Synthetic development workspace','synthetic-dev','{}');
+       INSERT INTO myfin.companies(id,workspace_id,slug,name,data) VALUES('synthetic-dev','synthetic-dev-workspace','shop','Synthetic development shop','{"preferences":{"currency":"RM","taxRate":0}}')`,
     );
     await createIdentity(c, {
       email,
       username: "Development operator",
       password,
-      role: "super",
+      role: "super_admin",
       company_id: "",
     });
   });

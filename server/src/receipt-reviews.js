@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as v from "./validation.js";
 import { canonical,totalsFor,cents,businessDate } from "../../src/domain/pos.js";
 import { stripConfidential } from "../../src/domain/permissions.js";
-import { requireCapability,publicTransaction,owner } from "./access.js";
+import { requireCapability,publicTransaction,operator } from "./access.js";
 import { managementLock,managementSession } from "./management.js";
 export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
  const scope=(req,fn)=>db.transaction(async c=>{await managementLock(c);await managementSession(c,req);const co=v.parse(v.id,req.params.company);await authorize(c,req.identity,co);return fn(c,co,req.identity);});
@@ -23,14 +23,14 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   await audit(c,who,co,"Request paid receipt review",sale.id);return {id:sale.id,status:"pending",reasonCode:reason};
  }));
  app.get("/api/companies/:company/receipt-reviews",req=>scope(req,async(c,co,who)=>{
-  requireCapability(who,"checkout");const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND ($2 OR actor_id=$3) ORDER BY created_at DESC LIMIT 1001",[co,who.role!=="company_user",who.id]);if(r.rowCount>1000)v.fail(409,"receipt_review_list_limit");return r.rows.map(row=>output(row,who));
+  requireCapability(who,"checkout");const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND ($2 OR actor_id=$3) ORDER BY created_at DESC LIMIT 1001",[co,!operator(who),who.id]);if(r.rowCount>1000)v.fail(409,"receipt_review_list_limit");return r.rows.map(row=>output(row,who));
  }));
  app.post("/api/companies/:company/receipt-reviews/:id/approve",req=>scope(req,async(c,co,who)=>{
   requireCapability(who,"documentsIssue");const {reason}=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000)}),req.body),id=v.parse(v.id,req.params.id);
   const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,id]);if(!r.rowCount)v.fail(404,"not_found");const row=r.rows[0];
   const actor=(await c.query("SELECT id,display_name AS username FROM myfin.app_identities WHERE id=$1",[row.actor_id])).rows[0];if(!actor)v.fail(409,"original_cashier_unavailable");
   // Approval is server context; clients cannot pass an approver to ordinary checkout.
-  const receipt=await checkout(c,{...actor,role:"company_user",company_id:co},co,row.payload,{who,reason});
+  const receipt=await checkout(c,{...actor,role:"operator",company_id:co},co,row.payload,{who,reason});
   if(row.status!=="approved")await c.query("UPDATE myfin.receipt_reviews SET status='approved',approved_by=$3,approval_reason=$4,approved_at=now() WHERE company_id=$1 AND id=$2",[co,id,who.id,reason]);
   return {id,status:"approved",receipt:publicTransaction(receipt,who)};
  }));

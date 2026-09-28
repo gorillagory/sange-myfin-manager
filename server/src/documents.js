@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as v from "./validation.js";
 import { totalsFor,cents,businessDate,canonical } from "../../src/domain/pos.js";
 import { templateDefaults,buildDocumentViewModel } from "../../src/domain/documents.js";
-import { requireCapability,owner,containsConfidential,recordVisible,recordOutput,publicTemplate } from "./access.js";
+import { requireCapability,owner,manager,operator,containsConfidential,recordVisible,recordOutput,publicTemplate } from "./access.js";
 import { managementLock,managementSession } from "./management.js";
 const text=z.string().max(10000),short=z.string().max(120),date=z.union([z.literal(""),z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(x=>Number.isFinite(Date.parse(x))&&new Date(x).toISOString().slice(0,10)===x)]);
 const settings=z.strictObject({layout:z.enum(["clean","modern","corporate"]),primaryColor:z.string().regex(/^#[0-9a-fA-F]{6}$/),fontFamily:z.enum(["system","serif","sans"]),labels:z.strictObject({title:short,billTo:short,total:short}),showLogo:z.boolean(),showPaymentQr:z.boolean(),showSignature:z.boolean(),signatureLabel:short,paymentInstructions:text,bankName:short.default(""),accountName:short.default(""),accountNumber:short.default(""),terms:text,footer:text,paperWidth:z.enum(["A4","58","80"])});
@@ -28,7 +28,7 @@ export function registerDocuments(app,{db,authorize,audit}){
  };
  const output=async(c,co,id,who)=>recordOutput(await get(c,co,id,who),who);
  app.get("/api/companies/:company/documents",req=>scope(req,async(c,co,who)=>{
-  const r=await c.query("SELECT t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount FROM myfin.transactions t WHERE company_id=$1 AND source<>'pos' AND ($2 OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote') AND ($3 OR (document_state='draft' AND (actor_id=$4 OR assigned_to=$4))))) ORDER BY id LIMIT 10001",[co,owner(who),who.role==="company_admin",who.id]);
+  const r=await c.query("SELECT t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount FROM myfin.transactions t WHERE company_id=$1 AND source<>'pos' AND ($2 OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote') AND ($3 OR (document_state='draft' AND (actor_id=$4 OR assigned_to=$4))))) ORDER BY id LIMIT 10001",[co,owner(who),manager(who),who.id]);
   if(r.rowCount>10000)v.fail(409,"document_list_limit");return r.rows.filter(row=>row.source!=="pos"&&recordVisible(row,who)).map(row=>recordOutput(row,who));
  }));
  app.get("/api/companies/:company/documents/:id",req=>scope(req,async(c,co,who)=>output(c,co,req.params.id,who)));
@@ -38,7 +38,7 @@ export function registerDocuments(app,{db,authorize,audit}){
   const old=update?await get(c,co,id,who):null;
   if(old&&(old.document_state!=="draft"||old.source==="pos"))v.fail(409,"issued_document_immutable");
   if(old&&(data.version!==old.document_version||data.type!==old.data.type))v.fail(409,"document_changed");
-  if(who.role==="company_user"&&data.assignedTo!==(old?.assigned_to||""))v.fail(403,"assignment_restricted");
+  if(operator(who)&&data.assignedTo!==(old?.assigned_to||""))v.fail(403,"assignment_restricted");
   if(data.assignedTo){const r=await c.query("SELECT i.id FROM myfin.app_identities i JOIN myfin.memberships m ON m.identity_id=i.id WHERE i.id=$1 AND m.company_id=$2 AND i.disabled_at IS NULL",[data.assignedTo,co]);if(!r.rowCount)v.fail(400,"invalid_assignee");}
   if(data.client_id){const r=await c.query("SELECT data FROM myfin.clients WHERE company_id=$1 AND id=$2",[co,data.client_id]);if(!r.rowCount||(!owner(who)&&r.rows[0].data.type==="Supplier"))v.fail(404,"customer_not_found");}
   if(data.templateId)await publishedTemplate(c,co,data.type,data.templateId);
@@ -63,7 +63,7 @@ export function registerDocuments(app,{db,authorize,audit}){
   const row=await get(c,co,req.params.id,who);if(row.document_state==="issued")return recordOutput(row,who);if(row.document_state!=="draft")v.fail(409,"draft_required");
   if(options.version!==undefined&&options.version!==row.document_version)v.fail(409,"document_changed");
   const company=(await c.query("SELECT * FROM myfin.companies WHERE id=$1",[co])).rows[0];
-  if(who.role==="company_admin"&&row.data.discount>Number(company.data.preferences?.staffDiscountLimit||0)&&(!options.reason||options.reason.trim().length<3))v.fail(409,"manager_override_reason_required");
+  if(manager(who)&&row.data.discount>Number(company.data.preferences?.staffDiscountLimit||0)&&(!options.reason||options.reason.trim().length<3))v.fail(409,"manager_override_reason_required");
   const client=row.data.client_id?(await c.query("SELECT data FROM myfin.clients WHERE company_id=$1 AND id=$2",[co,row.data.client_id])).rows[0]?.data:{};
   if(row.data.client_id&&!client)v.fail(409,"customer_not_found");if(!owner(who)&&client?.type==="Supplier")v.fail(403,"supplier_restricted");
   const template=await publishedTemplate(c,co,row.data.type,row.data.templateId);
@@ -107,7 +107,7 @@ export function registerDocuments(app,{db,authorize,audit}){
  }));
  app.get("/api/companies/:company/templates",req=>scope(req,async(c,co,who)=>{
   const r=await c.query("SELECT t.*,v.settings AS published_settings,d.version AS default_version FROM myfin.document_templates t LEFT JOIN myfin.document_template_versions v ON v.template_id=t.id AND v.version=t.published_version LEFT JOIN myfin.document_template_defaults d ON d.company_id=t.company_id AND d.kind=t.kind AND d.template_id=t.id WHERE t.company_id=$1 ORDER BY t.kind,t.name",[co]);
-  return r.rows.filter(row=>who.role!=="company_user"||row.published_version).map(row=>({id:row.id,name:row.name,kind:row.kind,settings:publicTemplate(who.role==="company_user"?row.published_settings:row.settings),version:who.role==="company_user"?row.published_version:row.version,published:!!row.published_version,publishedVersion:row.published_version,isDefault:row.default_version!=null&&row.default_version===row.published_version,defaultVersion:row.default_version??null,publishedSettings:row.published_settings?publicTemplate(row.published_settings):null}));
+  return r.rows.filter(row=>!operator(who)||row.published_version).map(row=>({id:row.id,name:row.name,kind:row.kind,settings:publicTemplate(operator(who)?row.published_settings:row.settings),version:operator(who)?row.published_version:row.version,published:!!row.published_version,publishedVersion:row.published_version,isDefault:row.default_version!=null&&row.default_version===row.published_version,defaultVersion:row.default_version??null,publishedSettings:row.published_settings?publicTemplate(row.published_settings):null}));
  }));
  app.post("/api/companies/:company/templates",req=>scope(req,async(c,co,who)=>{
   requireCapability(who,"templatesWrite");const data=v.parse(z.strictObject({name:short.min(1),kind:z.enum(["Invoice","Quote","Receipt"]),settings}),req.body),id=randomUUID();

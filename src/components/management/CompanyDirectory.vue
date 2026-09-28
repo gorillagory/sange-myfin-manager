@@ -13,8 +13,8 @@ const filtered = computed(() => companies.value.filter(company => {
   return (!term || [company.name,company.registration,company.email].some(value => (value || '').toLowerCase().includes(term))) && (!status.value || (status.value === 'archived' ? isArchived(company) : !isArchived(company)));
 }));
 const activeCount = computed(() => companies.value.filter(company => !isArchived(company)).length);
-const managers = company => Store.state.users.filter(user => user.company_id === company.id && user.role === 'company_admin' && !user.disabled).length;
-const teammates = company => Store.state.users.filter(user => user.company_id === company.id && !user.disabled).length;
+const managers = company => Store.state.users.filter(user => (user.assignments||[]).some(x=>x.company_id===company.id&&x.role==='manager') && !user.disabled).length;
+const teammates = company => Store.state.users.filter(user => (user.assignments||[]).some(x=>x.company_id===company.id) && !user.disabled).length;
 let refreshGeneration = 0;
 async function refresh() {
   const generation = ++refreshGeneration;
@@ -35,7 +35,7 @@ async function saved() {
   await Promise.all([refresh(), Store.startListeners().catch(failure => { error.value = managementError(failure); })]);
 }
 async function open(company) {
-  try { await Store.startListeners(); const current = Store.state.companies.find(c => c.id === company.id); if (current) Store.selectCompany(current); else error.value = 'This company is unavailable. Refresh the list and try again.'; }
+  try { await Store.startListeners(); const current = Store.state.companies.find(c => c.id === company.id); if (current) await Store.switchCompany(current); else error.value = 'This company is unavailable. Refresh the list and try again.'; }
   catch (failure) { error.value = managementError(failure); }
 }
 function edit(company = null) { editing.value = company; editor.value = true; }

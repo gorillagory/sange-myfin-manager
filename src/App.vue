@@ -13,11 +13,12 @@ const toast = computed(() => Store.state.notification);
 
 // --- VIEW LOGIC (Returning strings to match your original structure) ---
 const currentView = computed(() => {
+    if (Store.state.tenantInvalid) return 'not-found';
     // 1. Not Logged In -> Show Login Screen
     if (!currentUser.value) return 'auth';
     
     // 2. Super Admin + No Company Selected -> Show Command Center
-    if (currentUser.value.role === 'super' && !selectedCompany.value) {
+    if (currentUser.value.role === 'super_admin' && !selectedCompany.value) {
         return 'super';
     }
     
@@ -43,6 +44,8 @@ const currentView = computed(() => {
         <div v-if="currentView === 'auth'" key="auth" class="edition-app">
             <AuthManager />
         </div>
+
+        <div v-else-if="currentView === 'not-found'" key="not-found" class="ed-empty" style="min-height:100vh;display:grid;place-content:center;gap:12px;text-align:center"><h1>Workspace not found</h1><p>This address is not assigned to an active MyFin company.</p></div>
 
         <div v-else-if="currentView === 'super'" key="super">
             <SuperDashboard />

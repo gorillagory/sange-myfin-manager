@@ -9,6 +9,8 @@ export const state = reactive({
     products: [],
     users: [],
     currentUser: null,
+    tenantContext: null,
+    tenantInvalid: false,
     sessionVerified: false,
     activities: [],
     stock_movements: [],

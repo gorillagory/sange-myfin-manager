@@ -6,7 +6,7 @@ import Icon from '../ui/EditionIcon.vue';
 import CompanyEditor from '../management/CompanyEditor.vue';
 const company = computed(() => Store.state.selectedCompany);
 const editor = ref(false), error = ref('');
-const managers = computed(() => Store.state.users.filter(user => user.company_id === company.value?.id && user.role === 'company_admin' && !user.disabled).length);
+const managers = computed(() => Store.state.users.filter(user => (user.assignments||[]).some(x=>x.company_id===company.value?.id&&x.role==='manager') && !user.disabled).length);
 async function saved() { try { await Store.startListeners(); Store.notify('Company profile updated.'); } catch (failure) { error.value = managementError(failure); } }
 </script>
 <template>
@@ -17,7 +17,7 @@ async function saved() { try { await Store.startListeners(); Store.notify('Compa
     <div class="ed-management-profile">
       <div class="ed-management-profile-head"><img v-if="company.logo" :src="company.logo" :alt="company.name" class="ed-management-logo"><span v-else class="ed-avatar solid"><Icon name="building"/></span><div><h2>{{ company.name }}</h2><p class="ed-muted">{{ company.registration || 'Registration not provided' }}</p></div></div>
       <dl class="ed-management-details"><div><dt>Company email</dt><dd>{{ company.email || 'Not provided' }}</dd></div><div><dt>Phone</dt><dd>{{ company.phone || 'Not provided' }}</dd></div><div><dt>Business address</dt><dd>{{ company.address || 'Not provided' }}</dd></div><div><dt>Checkout settings</dt><dd>{{ company.preferences?.currency || 'RM' }} · {{ company.preferences?.taxRate ?? company.preferences?.tax ?? 0 }}% default tax</dd></div><div><dt>Payment QR</dt><dd>{{ company.qrCode || company.qrCodeUrl ? 'Configured' : 'Not configured' }}</dd></div><div><dt>Company managers</dt><dd>{{ managers || 'Managed by workspace owners' }}</dd></div></dl>
-      <div class="ed-actions ed-management-space"><router-link class="ed-btn" to="/users"><Icon name="people"/>Manage teammates</router-link><button v-if="Store.state.currentUser?.role === 'super'" class="ed-btn" @click="Store.selectCompany(null)">All companies & enrollment</button></div>
+      <div class="ed-actions ed-management-space"><router-link class="ed-btn" to="/users"><Icon name="people"/>Manage teammates</router-link><button v-if="Store.state.currentUser?.role === 'super_admin'" class="ed-btn" @click="Store.selectCompany(null)">All workspaces & companies</button></div>
     </div>
     <CompanyEditor v-if="editor" :company="company" @close="editor=false" @saved="saved"/>
   </section>

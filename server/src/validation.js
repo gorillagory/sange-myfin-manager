@@ -208,8 +208,10 @@ export const user = z.strictObject({
   username: short.min(1),
   email: z.email().max(254),
   password: opt(z.string().min(12).max(128)),
-  role: z.enum(["super", "company_admin", "company_user"]),
+  role: z.enum(["super_admin", "workspace_owner", "manager", "operator", "super", "company_admin", "company_user"]),
   company_id: z.union([id, z.literal("")]),
+  workspace_id: opt(z.union([id,z.literal("")])),
+  assignments: opt(z.array(z.strictObject({company_id:id,role:z.enum(["manager","operator"])})).max(100)),
   disabled: opt(z.boolean()),
 });
 export function parse(schema, value) {

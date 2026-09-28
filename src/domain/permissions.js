@@ -1,14 +1,17 @@
 export const roleOf = user => user?.role || "";
 export function permissionsFor(user) {
-  const role=roleOf(user), owner=role==="super", manager=role==="company_admin", staff=role==="company_user", active=owner||manager||staff;
-  return {role,owner,manager,staff,active,checkout:active,documentsRead:active,documentsDraft:active,
+  const role=roleOf(user), superAdmin=["super_admin","super"].includes(role), workspaceOwner=role==="workspace_owner",
+    owner=superAdmin||workspaceOwner, manager=["manager","company_admin"].includes(role), operator=["operator","company_user"].includes(role), staff=operator, active=owner||manager||operator;
+  return {role,superAdmin,workspaceOwner,owner,manager,operator,staff,active,checkout:active,documentsRead:active,documentsDraft:active,
     documentsIssue:owner||manager,documentsConvert:owner||manager,documentsPayment:owner||manager,
     documentsCorrect:owner||manager,inventoryRead:active,inventoryWrite:owner||manager,
-    costsRead:owner,costsWrite:owner,expensesRead:owner,expensesWrite:owner,financialReports:owner,
+    inventoryTransact:active,costsRead:owner,costsWrite:owner,expensesRead:active,expensesCreate:active,
+    expensesWrite:owner||manager,expensesVoid:owner||manager,financialReports:owner||manager,
     bulkExport:owner,clientsRead:active,clientsCreate:active,clientsWrite:owner||manager,
     suppliersRead:owner,suppliersWrite:owner,templatesWrite:owner||manager,
-    companyWrite:owner||manager,companyEnroll:owner,usersManage:owner||manager,
-    managersManage:owner,activityRead:owner,stockHistoryRead:owner||manager};
+    companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,
+    deviceSettingsWrite:active,workspaceWrite:owner,companyEnroll:owner,usersManage:owner||manager,
+    managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager};
 }
 export const capabilities = permissionsFor;
 export const can = (user,action) => permissionsFor(user)[action] === true;

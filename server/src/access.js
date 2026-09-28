@@ -1,7 +1,9 @@
 import { cents } from "../../src/domain/pos.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { fail } from "./validation.js";
-export const owner=who=>who.role==="super";
+export const owner=who=>["super_admin","super","workspace_owner"].includes(who.role);
+export const manager=who=>["manager","company_admin"].includes(who.role);
+export const operator=who=>["operator","company_user"].includes(who.role);
 export function requireCapability(who,capability){if(!permissionsFor(who)[capability])fail(403,"access_denied");}
 const confidential=/^(cost|unitCost|purchasePrice|costPrice|margin|profit|grossProfit|netProfit|expense|expenses|valuation|inventoryValue|costTotal)$/i;
 export function containsConfidential(value){if(!value||typeof value!=="object")return false;return Object.entries(value).some(([key,v])=>confidential.test(key)||containsConfidential(v));}
@@ -21,8 +23,8 @@ export function publicSnapshot(data={}){const company=pick(data.companySnapshot|
 export function publicTransaction(data,who){if(owner(who))return data;return {...pick(data,[...snapshotKeys,"id","company_id","source","client_id","project","quoteId","convertedTo","schemaVersion","cashierId","cashierName","businessDate","paymentMethod","received","change","customerName","customerEmail","offline","stockShortage","createdBy","assignedTo","version","issuedAt","templateId","paymentStatus","paidAmount","outstandingAmount","overrideReason","receiptTemplateId","receiptTemplateVersion"]),items:(data.items||[]).map(item=>pick(item,itemKeys)),...(data.storeSnapshot?{storeSnapshot:pick(data.storeSnapshot,["name","address","phone","registration","currency","footer","paperWidth"])}:{}),...(data.companySnapshot?{companySnapshot:pick(data.companySnapshot,companyKeys)}:{}),...(data.templateSnapshot?{templateSnapshot:publicTemplate(data.templateSnapshot)}:{}),...(data.issuedSnapshot?{issuedSnapshot:publicSnapshot(data.issuedSnapshot)}:{}),...(data.payments?{payments:data.payments.map(payment=>pick(payment,["id","amount","method","reference","date"]))}:{})};}
 export function recordVisible(row,who){
  if(owner(who))return true;
- if(row.source==="pos")return who.role==="company_admin"||row.actor_id===who.id;
+ if(row.source==="pos")return manager(who)||row.actor_id===who.id;
  if(!["Invoice","Quote"].includes(row.data?.type)||row.document_state==="legacy")return false;
- return who.role==="company_admin"||(row.document_state==="draft"&&(row.actor_id===who.id||row.assigned_to===who.id));
+ return manager(who)||(row.document_state==="draft"&&(row.actor_id===who.id||row.assigned_to===who.id));
 }
 export function recordOutput(row,who){const paid=Number(row.paid_amount||0),total=Number(row.total||0);return publicTransaction({...row.data,id:row.id,company_id:row.company_id,createdBy:row.actor_id,assignedTo:row.assigned_to||"",documentState:row.source==="pos"?"issued":row.document_state,version:row.document_version,issuedAt:row.issued_at,issuedSnapshot:row.issued_snapshot,payments:row.payments||[],quoteId:row.quote_id||row.data.quoteId,convertedTo:row.converted_to||row.data.convertedTo,correctionOf:row.correction_of||row.data.correctionOf,...(row.document_state!=="legacy"&&row.source!=="pos"?{status:row.document_state==="draft"?"Draft":row.document_state==="voided"?"Voided":row.document_state==="corrected"?"Corrected":row.data.type==="Quote"?(row.converted_to?"Converted":"Issued"):(paid>=total?"Paid":paid>0?"Partially paid":"Pending"),paidAmount:paid,outstandingAmount:Math.max(0,cents(total)-cents(paid))/100}:{})},who);}

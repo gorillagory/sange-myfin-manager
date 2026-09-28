@@ -1,4 +1,4 @@
-name: myfin-dev
+name: ${MYFIN_COMPOSE_PROJECT:-myfin-dev}
 services:
   web:
     image: ${MYFIN_WEB_IMAGE:-myfin-web:phase02}
@@ -39,7 +39,13 @@ services:
       PGUSER: ${MYFIN_DB_USER:-myfin_dev_runtime}
       PGPASSWORD_FILE: /run/secrets/db_password
       AUTH_BASE_URL: ${AUTH_BASE_URL:?set exact external HTTPS origin}
+      AUTH_ALLOWED_HOSTS: ${AUTH_ALLOWED_HOSTS:?set reviewed host allowlist}
+      AUTH_CONTROL_HOSTS: ${AUTH_CONTROL_HOSTS:-}
+      PUBLIC_ROOT_DOMAIN: ${PUBLIC_ROOT_DOMAIN:-}
+      TENANT_HOST_ENFORCEMENT: ${TENANT_HOST_ENFORCEMENT:-true}
       AUTH_SECRET_FILE: /run/secrets/auth_secret
+      POS_CODE_SECRET_FILE: /run/secrets/pos_code_secret
+      POS_SESSION_SECRET_FILE: /run/secrets/pos_session_secret
       PG_TLS: disable
       PGPOOL_MAX: ${MYFIN_DB_POOL_MAX:-5}
       PG_CONNECT_TIMEOUT_MS: '2000'
@@ -47,7 +53,7 @@ services:
       PG_QUERY_TIMEOUT_MS: '4000'
       SHUTDOWN_TIMEOUT_MS: '10000'
       UPLOAD_DIR: /app/uploads
-    secrets: [db_password, auth_secret]
+    secrets: [db_password, auth_secret, pos_code_secret, pos_session_secret]
     volumes:
       - uploads:/app/uploads
     networks: [app, nexus-data]
@@ -83,3 +89,7 @@ secrets:
 
   auth_secret:
     file: ${MYFIN_AUTH_SECRET_FILE:?set absolute auth secret file path}
+  pos_code_secret:
+    file: ${MYFIN_POS_CODE_SECRET_FILE:?set absolute POS code secret file path}
+  pos_session_secret:
+    file: ${MYFIN_POS_SESSION_SECRET_FILE:?set absolute POS session secret file path}

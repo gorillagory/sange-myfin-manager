@@ -1,5 +1,9 @@
 # MyFin continuation on nexus-pbund
 
+## Phase 06 in progress — 28 September 2026
+
+The active implementation moves tenancy from Company to Workspace, adds exact workspace/company hostname mappings, multi-company Manager/Operator assignments, company-scoped six-digit POS access, password-only administration, immutable expense voiding and the approved Manager report projection. Read [WORKSPACE_ROUTING_ACCESS_PHASE06.md](WORKSPACE_ROUTING_ACCESS_PHASE06.md) for the model, environment split, Git promotion policy and rollout gates. The Phase 05 deployment remains active until Phase 06 passes isolated PostgreSQL and browser acceptance.
+
 ## Latest state — Phase05, 13 September 2026
 
 The document and role-access implementation has passed isolated acceptance. **Deployment status: deployed and verified; ready for user browser acceptance**. Public development remains **https://dev-pos.finn3.com**; **pos.finn3.com is reserved for future production and is not published**.

@@ -12,11 +12,11 @@ const props = defineProps({ companies: { type: Array, default: () => [] }, compa
 const emit = defineEmits(['profile','refresh']);
 const router = useRouter();
 const query = ref(''), role = ref(''), status = ref(''), companyFilter = ref(''), editor = ref(false), editing = ref(null), pending = ref(null), busy = ref(false), error = ref('');
-const people = computed(() => Store.state.users.filter(user => !props.companyId || user.company_id === props.companyId));
+const people = computed(() => Store.state.users.filter(user => !props.companyId || (user.assignments||[]).some(x=>x.company_id===props.companyId) || user.role==='workspace_owner'));
 const filtered = computed(() => matchesPeople(people.value, { query: query.value, role: role.value, status: status.value, companyId: companyFilter.value }));
 const activeCount = computed(() => people.value.filter(user => !user.disabled && user.login_available).length);
-const companyName = user => user.role === 'super' ? 'All companies' : props.companies.find(company => company.id === user.company_id)?.name || 'Unassigned';
-const archivedAssignment = user => isArchived(props.companies.find(company => company.id === user.company_id));
+const companyName = user => ['super_admin','workspace_owner'].includes(user.role) ? (user.role==='super_admin'?'All workspaces':'All workspace companies') : (user.assignments||[]).map(x=>props.companies.find(c=>c.id===x.company_id)?.name).filter(Boolean).join(', ') || 'Unassigned';
+const archivedAssignment = user => (user.assignments||[]).some(x=>isArchived(props.companies.find(company => company.id === x.company_id)));
 function edit(user = null) {
   if (user?.id === Store.state.currentUser?.id) { if (props.global) emit('profile'); else router.push('/profile'); return; }
   if(!manageableAccount(Store.state.currentUser,user))return;
@@ -45,13 +45,13 @@ async function applyAction() {
 </script>
 <template>
   <section class="ed-page ed-management">
-    <header class="ed-page-head"><div><div class="ed-eyebrow">{{ global ? 'WORKSPACE ADMINISTRATION' : 'COMPANY ADMINISTRATION' }}</div><h1>People & access.</h1><p>{{ global ? 'Manage the people behind every business.' : 'Give each teammate the access they need.' }}</p></div><button class="ed-btn primary" :disabled="!Store.state.online" @click="edit()"><Icon name="plus"/>Add teammate</button></header>
+    <header class="ed-page-head"><div><div class="ed-eyebrow">{{ global ? 'WORKSPACE ADMINISTRATION' : 'COMPANY ADMINISTRATION' }}</div><h1>People & access.</h1><p>Assign each person to one or more companies with an explicit role.</p></div><button class="ed-btn primary" :disabled="!Store.state.online" @click="edit()"><Icon name="plus"/>Add person</button></header>
     <div class="ed-management-stats"><span><strong>{{ people.length }}</strong> accounts</span><span><strong>{{ activeCount }}</strong> active</span><span><strong>{{ people.filter(user => user.disabled).length }}</strong> suspended</span></div>
     <div v-if="!Store.state.online" class="ed-notice warning">Access changes require an internet connection. Reconnect to create or update accounts.</div>
     <p v-if="error && !pending" class="ed-notice error" role="alert">{{ error }} <button class="ed-link" @click="error='';refresh()">Refresh</button></p>
     <div class="ed-filters ed-management-filters">
       <label class="ed-field ed-management-search"><span>Search people</span><input v-model="query" type="search" placeholder="Name or email"></label>
-      <label class="ed-field"><span>Role</span><select v-model="role"><option value="">All roles</option><option v-if="global" value="super">Workspace owner</option><option v-if="Store.can('managersManage')" value="company_admin">Manager</option><option value="company_user">Staff</option><option v-if="global" value="unassigned">Unassigned</option></select></label>
+      <label class="ed-field"><span>Role</span><select v-model="role"><option value="">All roles</option><option v-if="global" value="super_admin">SuperAdmin</option><option v-if="Store.can('managersManage')" value="workspace_owner">Workspace owner</option><option v-if="Store.can('managersManage')" value="manager">Manager</option><option value="operator">Operator</option><option v-if="global" value="unassigned">Unassigned</option></select></label>
       <label class="ed-field"><span>Status</span><select v-model="status"><option value="">All statuses</option><option value="active">Active</option><option value="disabled">Suspended</option></select></label>
       <label v-if="global" class="ed-field"><span>Company</span><select v-model="companyFilter"><option value="">All companies</option><option value="unassigned">Unassigned accounts</option><option v-for="company in companies" :key="company.id" :value="company.id">{{ company.name }}{{ isArchived(company) ? ' (archived)' : '' }}</option></select></label>
     </div>
@@ -67,9 +67,9 @@ async function applyAction() {
             <template v-if="user.login_available && user.id !== Store.state.currentUser?.id && manageableAccount(Store.state.currentUser,user)">
               <button v-if="!user.disabled" class="ed-btn small" :disabled="!Store.state.online" @click="confirmAction(user,'revoke')">Sign out sessions</button>
               <button v-if="!user.disabled" class="ed-btn small danger" :disabled="!Store.state.online" @click="confirmAction(user,'suspend')">Suspend</button>
-              <button v-else class="ed-btn small" :disabled="!Store.state.online || archivedAssignment(user) || (!user.company_id && user.role !== 'super')" @click="confirmAction(user,'reactivate')">Reactivate</button>
+              <button v-else class="ed-btn small" :disabled="!Store.state.online || archivedAssignment(user) || (!(user.assignments||[]).length && !['super_admin','workspace_owner'].includes(user.role))" @click="confirmAction(user,'reactivate')">Reactivate</button>
             </template>
-          </div><small v-if="!user.login_available">Historical records retained. This person has no sign-in account.</small><small v-else-if="user.disabled && !user.company_id && user.role !== 'super'">Assign a company and role before reactivating.</small><small v-else-if="user.disabled && archivedAssignment(user)">Restore the company or reassign this account first.</small></td>
+          </div><small v-if="!user.login_available">Historical records retained. This person has no sign-in account.</small><small v-else-if="user.disabled && !(user.assignments||[]).length && !['super_admin','workspace_owner'].includes(user.role)">Assign a company and role before reactivating.</small><small v-else-if="user.disabled && archivedAssignment(user)">Restore the company or reassign this account first.</small></td>
         </tr></tbody>
       </table>
     </div>

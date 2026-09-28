@@ -23,7 +23,7 @@ export const companiesModule = {
     await api("/companies/" + encodeURIComponent(id), { method: "DELETE" });
     await s.startListeners();
   },
-  selectCompany: (s, c) => s.selectCompany(c),
+  selectCompany: (s, c) => s.switchCompany(c),
   async updatePreferences(s, prefs) {
     const c = s.state.selectedCompany;
     if (!c) throw new Error("Choose a store first.");

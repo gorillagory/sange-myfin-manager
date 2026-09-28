@@ -5,7 +5,8 @@ import { canVisit } from '../domain/viewAccess';
 
 const routes = [
     { path: '/', redirect: '/overview' },
-    { path: '/:pathMatch(.*)*', redirect: '/overview' },
+    { path: '/poslog', component: () => import('../components/dashboard/OverviewTab.vue') },
+    { path: '/session-handoff', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/overview', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/analytics', component: () => import('../components/dashboard/AnalyticsTab.vue') },
@@ -21,7 +22,8 @@ const routes = [
     { path: '/users', component: () => import('../components/dashboard/UserManager.vue'), meta: { requiresAdmin: true } },
     { path: '/activity', component: () => import('../components/dashboard/ActivityTab.vue'), meta: { requiresAdmin: true } },
     { path: '/templates', component: () => import('../components/dashboard/TemplateStudio.vue'), meta: { requiresAdmin: true } },
-    { path: '/settings', component: () => import('../components/dashboard/SettingsTab.vue'), meta: { requiresAdmin: true } }
+    { path: '/settings', component: () => import('../components/dashboard/SettingsTab.vue'), meta: { requiresAdmin: true } },
+    { path: '/:pathMatch(.*)*', redirect: '/overview' }
 ];
 
 const router = createRouter({

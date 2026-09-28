@@ -1,6 +1,7 @@
-export const roleLabel = role => ({ super: 'Workspace owner', company_admin: 'Manager', company_user: 'Staff' }[role] || 'Unassigned');
+export const roleLabel = role => ({ super_admin:'SuperAdmin', workspace_owner:'Workspace owner', manager:'Manager', operator:'Operator', super:'SuperAdmin', company_admin:'Manager', company_user:'Operator' }[role] || 'Unassigned');
+const normalizedRole=role=>({super:'super_admin',company_admin:'manager',company_user:'operator'}[role]||role);
 export const isArchived = company => !!(company?.archived || company?.archived_at);
-export const eligibleAdministrators = users => users.filter(user => !user.disabled && user.login_available === true && user.role !== 'super' && !user.company_id);
+export const eligibleAdministrators = users => users.filter(user => !user.disabled && user.login_available === true && normalizedRole(user.role) !== 'super_admin' && !(user.assignments||[]).length && !(user.workspace_ids||[]).length && !user.company_id);
 export function companyPayload(company = {}) {
   company = company || {};
   const preferences = { ...(company.preferences || {}) };
@@ -18,11 +19,15 @@ export function companyPayload(company = {}) {
   };
 }
 export function userPayload(user, editing = false) {
+  const role=normalizedRole(user.role);
+  const companyIds=user.company_ids?.length?user.company_ids:(user.company_id?[user.company_id]:[]);
   return {
     username: user.username.trim(),
     email: user.email.trim().toLowerCase(),
-    role: user.role,
-    company_id: user.role === 'super' ? '' : (user.company_id || ''),
+    role,
+    company_id: ['super_admin','workspace_owner'].includes(role) ? '' : (companyIds[0] || ''),
+    workspace_id:role==='workspace_owner'?(user.workspace_id||''):'',
+    assignments:['manager','operator'].includes(role)?companyIds.map(company_id=>({company_id,role})):[],
     ...(editing ? { disabled: !!user.disabled } : { password: user.password }),
   };
 }
@@ -36,13 +41,12 @@ export function managementError(error) {
     origin_required: 'This page cannot submit the change. Reload the workspace and try again.',
     session_required: 'Your session has expired. Sign in again.',
     email_immutable: 'The sign-in email cannot be changed here.',
-    last_company_admin: 'Keep at least one active manager assigned to this company.',
-    last_active_company_admin: 'Assign another active manager before suspending, moving or demoting this manager.',
-    last_active_super: 'Keep at least one active workspace owner.',
+    last_active_workspace_owner: 'Assign another active workspace owner before suspending or changing this owner.',
+    last_active_super: 'Keep at least one active SuperAdmin.',
     email_change_not_supported: 'The sign-in email cannot be changed here.',
     administrator_not_eligible: 'Choose an active account that is not already assigned to a company.',
     enrollment_payload_changed: 'This enrollment was submitted with different details. Refresh the companies list to check its result.',
-    super_company_not_allowed: 'Workspace owners have access to all companies and do not need an individual assignment.',
+    super_scope_not_allowed: 'SuperAdmins use global access and cannot have a company assignment.',
     enrollment_conflict: 'This enrollment has already been submitted with different details.',
     internal_error: 'The server could not complete the request. Please retry.',
   })[error.message] || (error.status >= 500 ? 'The server could not complete the request. Please retry.' : 'The change could not be completed. Check the details and try again.');
@@ -51,8 +55,8 @@ export function matchesPeople(users, { query = '', role = '', status = '', compa
   const term = query.trim().toLowerCase();
   return users.filter(user =>
     (!term || [user.username, user.email].some(value => (value || '').toLowerCase().includes(term))) &&
-    (!role || (role === 'unassigned' ? !user.role : user.role === role)) &&
+    (!role || (role === 'unassigned' ? !user.role : normalizedRole(user.role) === normalizedRole(role))) &&
     (!status || (status === 'disabled' ? !!user.disabled : !user.disabled)) &&
-    (!companyId || (companyId === 'unassigned' ? !user.company_id && user.role !== 'super' : user.company_id === companyId))
+    (!companyId || (companyId === 'unassigned' ? !(user.assignments||[]).length && !user.company_id && normalizedRole(user.role) !== 'super_admin' : (user.assignments||[]).some(x=>x.company_id===companyId)||user.company_id===companyId))
   );
 }

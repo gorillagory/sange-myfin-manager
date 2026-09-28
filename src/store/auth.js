@@ -7,7 +7,7 @@ export const authModule = {
   fetchUserProfile: (s) => s.loadSession(),
   async addUser(s, u) {
     try {
-      if (!s.can("usersManage") || (!s.can("managersManage") && (u.role !== "company_user" || u.company_id !== s.state.currentUser.company_id))) throw new Error("Your account can create staff in your company only.");
+      if (!s.can("usersManage") || (!s.can("managersManage") && (u.role !== "operator" || !(u.assignments||[]).every(x=>x.company_id===s.state.currentUser.company_id&&x.role==="operator")))) throw new Error("Your account can create operators in this company only.");
       await api("/users", {
         method: "POST",
         body: Object.fromEntries(
@@ -25,7 +25,7 @@ export const authModule = {
   async updateUser(s, u) {
     try {
       const target = s.state.users.find(user => user.id === u.id);
-      if (!target || !manageableAccount(s.state.currentUser,target) || (!s.can("managersManage") && (u.role !== "company_user" || u.company_id !== s.state.currentUser.company_id))) throw new Error("Your account can manage staff in your company only.");
+      if (!target || !manageableAccount(s.state.currentUser,target) || (!s.can("managersManage") && (u.role !== "operator" || !(u.assignments||[]).every(x=>x.company_id===s.state.currentUser.company_id&&x.role==="operator")))) throw new Error("Your account can manage operators in this company only.");
       const { password, ...body } = u;
       if (body.disabled === undefined) {
         const current = s.state.users.find(user => user.id === u.id);
