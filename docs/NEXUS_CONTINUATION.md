@@ -1,5 +1,20 @@
 # MyFin continuation on nexus-pbund
 
+## Current production release — 30 September 2026
+
+MyFin is live at **https://pos.finn3.com** and the tenant URL
+**https://bfsb-bali.finn3.com** on the isolated `myfin-prod` web/API pair on
+nexus-docker. The SKU/inventory release was promoted first, then the Orders,
+navigation, financial reporting and stock camera-scan release was promoted
+from tested code `00c6ebd`. `develop`, `staging` and `main` contain that code.
+Development remains at **https://dev-pos.bayam.live** on a separate web/API
+pair and database. Read
+[PRODUCTION_OPERATIONS_RELEASE_20260930.md](PRODUCTION_OPERATIONS_RELEASE_20260930.md)
+and [PRODUCTION_FEATURES_RELEASE_20260930.md](PRODUCTION_FEATURES_RELEASE_20260930.md)
+for exact image IDs, off-host backup paths, acceptance and rollback. The
+dated Phase06 and earlier sections below are historical and do not describe
+the current deployment.
+
 ## Phase 06 deployed — awaiting user browser confirmation, 29 September 2026
 
 Development release `0de74b294f6c429e69a8e328f8eb2cc63380d808` is healthy at **https://dev-pos.bayam.live** on `nexus-docker`. It moves tenancy from Company to Workspace, adds exact workspace/company hostname mappings, multi-company Manager/Operator assignments, company-scoped six-digit POS access, password-only administration, manager-approved immutable expense voiding and the approved Manager report projection. The live route resolves `Bayam Food Services Sdn Bhd / bfsb` to `Ba|Li Coffee / bali`; migration `0013_workspace_routing_access.sql` is applied. Public password authentication and the exact report projection passed automated HTTPS acceptance.
