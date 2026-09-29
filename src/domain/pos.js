@@ -4,7 +4,7 @@ export const cents = value => Math.round((Number(value) + Number.EPSILON) * 100)
 export const lineTotal = item => Math.round(cents(item.price) * Number(item.qty)) / 100;
 export const money = (value, currency = 'RM') => `${currency} ${Number(value || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const isPaid = tx => tx.type === 'Invoice' && ['Paid', 'Cleared'].includes(tx.status);
-export const expenseRecords = state => [...state.expenses.map(e => ({ ...e, origin: 'expenses' })), ...state.transactions.filter(t => ['Expense', 'Payment Voucher'].includes(t.type)).map(t => ({ ...t, amount: t.amount ?? t.total ?? 0, description: t.description || t.payee || t.number || t.type, origin: 'transactions' }))];
+export const expenseRecords = state => [...state.expenses.map(e => ({ ...e, origin: 'expenses' })), ...state.transactions.filter(t => ['Expense', 'Payment Voucher'].includes(t.type) && String(t.status || '').toLowerCase() !== 'voided').map(t => ({ ...t, amount: t.amount ?? t.total ?? 0, description: t.description || t.payee || t.number || t.type, origin: 'transactions' }))];
 export function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));

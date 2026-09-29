@@ -24,7 +24,8 @@ export function publicTransaction(data,who){if(owner(who))return data;return {..
 export function recordVisible(row,who){
  if(owner(who))return true;
  if(row.source==="pos")return manager(who)||row.actor_id===who.id;
- if(!["Invoice","Quote"].includes(row.data?.type)||row.document_state==="legacy")return false;
+ if(row.document_state==="legacy")return manager(who)&&row.data?.type==="Invoice"&&["Paid","Cleared"].includes(row.data?.status);
+ if(!["Invoice","Quote"].includes(row.data?.type))return false;
  return manager(who)||(row.document_state==="draft"&&(row.actor_id===who.id||row.assigned_to===who.id));
 }
 export function recordOutput(row,who){const paid=Number(row.paid_amount||0),total=Number(row.total||0);return publicTransaction({...row.data,id:row.id,company_id:row.company_id,createdBy:row.actor_id,assignedTo:row.assigned_to||"",documentState:row.source==="pos"?"issued":row.document_state,version:row.document_version,issuedAt:row.issued_at,issuedSnapshot:row.issued_snapshot,payments:row.payments||[],quoteId:row.quote_id||row.data.quoteId,convertedTo:row.converted_to||row.data.convertedTo,correctionOf:row.correction_of||row.data.correctionOf,...(row.document_state!=="legacy"&&row.source!=="pos"?{status:row.document_state==="draft"?"Draft":row.document_state==="voided"?"Voided":row.document_state==="corrected"?"Corrected":row.data.type==="Quote"?(row.converted_to?"Converted":"Issued"):(paid>=total?"Paid":paid>0?"Partially paid":"Pending"),paidAmount:paid,outstandingAmount:Math.max(0,cents(total)-cents(paid))/100}:{})},who);}

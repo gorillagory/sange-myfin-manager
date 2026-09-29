@@ -15,11 +15,11 @@ const marker="myfin-phase06-pg-20260928",cfg=loadConfig();
 if(process.env.MYFIN_ISOLATED_ACCEPTANCE!==marker||cfg.database.host!=="127.0.0.1"||cfg.database.port!==25436||cfg.database.database!=="myfin_dev"||!process.env.MYFIN_TEST_PRIVATE)throw Error("unsafe_phase06_test_target");
 const admin=new pg.Client({...cfg.database,user:"postgres",password:(await readFile(process.env.MYFIN_TEST_PRIVATE+"/admin.secret","utf8")).trim()});await admin.connect();
 assert.equal((await admin.query("SHOW cluster_name")).rows[0].cluster_name,marker);
-const db=createDatabase(cfg.database),configured=authConfig(),authOptions={...configured,origin:"https://bfsb-bali.test",protocol:"https:",allowedHosts:["bfsb-bali.test","bfsb-other.test","unknown.test"],controlHosts:[],enforceTenantHosts:true,secure:true,rootDomain:"test"};
+const db=createDatabase(cfg.database),configured=authConfig(),authOptions={...configured,origin:"https://bfsb-bali.test",protocol:"https:",allowedHosts:["bfsb-bali.test","bfsb-other.test","pos.test","unknown.test"],controlHosts:["pos.test"],enforceTenantHosts:true,secure:true,rootDomain:"test"};
 const auth=createAuth(db.pool,authOptions),app=buildApp({database:db,authOptions,auth,uploadDir:process.env.UPLOAD_DIR});
 const password=(await readFile(process.env.MYFIN_TEST_PRIVATE+"/seed.secret","utf8")).trim(),tag=randomUUID().slice(0,8),email=key=>`${key}-${tag}@myfin.test`;
 const workspace=`workspace-${tag}`,companyA=`company-a-${tag}`,companyB=`company-b-${tag}`;
-let superId,ownerId,managerId,operatorId,superCookie,ownerCookie,managerCookie,operatorCookie,managerCode,expenseId;
+let superId,ownerId,managerId,operatorId,superCookie,ownerCookie,managerCookie,managerControlCookie,operatorCookie,managerCode,expenseId;
 const headers=(host,cookie,origin=true)=>({host,...(origin?{origin:`https://${host}`}:{}) ,...(cookie?{cookie}:{})});
 async function request(host,path,{cookie,method="GET",body,origin=true}={}){return app.inject({url:"/api"+path,method,headers:headers(host,cookie,origin),...(body===undefined?{}:{payload:body})});}
 async function json(host,path,options){const r=await request(host,path,options);assert.equal(r.statusCode,200,`${host}${path}: ${r.statusCode} ${r.body}`);return r.json();}
@@ -39,6 +39,7 @@ await test("fixtures preserve workspace ownership and multi-company assignments"
   await c.query("INSERT INTO myfin.memberships(company_id,identity_id,role) VALUES($1,$2,'manager'),($1,$3,'operator')",[companyB,managerId,operatorId]);
  });
  [superCookie,ownerCookie,managerCookie,operatorCookie]=await Promise.all([login("bfsb-bali.test",email("super")),login("bfsb-bali.test",email("owner")),login("bfsb-bali.test",email("manager")),login("bfsb-bali.test",email("operator"))]);
+ managerControlCookie=await login("pos.test",email("manager"));
  assert.equal((await json("bfsb-bali.test","/me",{cookie:ownerCookie})).role,"workspace_owner");
  assert.equal((await json("bfsb-bali.test","/me",{cookie:managerCookie})).role,"manager");
  assert.equal((await json("bfsb-bali.test","/me",{cookie:operatorCookie})).role,"operator");
@@ -56,6 +57,32 @@ await test("manager reports expose only sales, tax, expenses and cash flow",asyn
  assert.deepEqual(Object.keys(report.daily[0]).sort(),["cashFlow","date","expenses","sales","tax"]);
  assert.equal(JSON.stringify(report).match(/cashIn|collected|cost|margin|profit|surplus|valuation/i),null);
  assert.equal((await request("bfsb-bali.test",`/companies/${companyA}/reports/summary`,{cookie:operatorCookie})).statusCode,403);
+ const range=`?from=${report.from}&to=${report.to}`;
+ const detail=await json("bfsb-bali.test",`/companies/${companyA}/reports/details${range}`,{cookie:managerCookie});
+ assert.deepEqual(detail.totals,{sales:106,tax:6,expenses:20,cashFlow:86});
+ assert.equal(detail.sales.length,1);assert.equal(detail.expenses.length,1);assert.equal(JSON.stringify(detail).match(/cost|margin|profit|valuation/i),null);
+ assert.equal((await request("bfsb-bali.test",`/companies/${companyA}/reports/details${range}`,{cookie:operatorCookie})).statusCode,403);
+ assert.equal((await request("bfsb-bali.test",`/companies/${companyB}/reports/details${range}`,{cookie:managerCookie})).statusCode,404);
+ const consolidated=await json("bfsb-bali.test",`/reports/consolidation${range}`,{cookie:managerCookie});
+ assert.equal(consolidated.companies.length,1);assert.equal(consolidated.companies[0].id,companyA);assert.equal(consolidated.companies[0].sales,106);
+ const crossCompany=await json("pos.test",`/reports/consolidation${range}`,{cookie:managerControlCookie});
+ assert.equal(crossCompany.companies.length,2);assert.equal(crossCompany.companies.find(row=>row.id===companyB).sales,0);
+ assert.equal((await request("bfsb-bali.test",`/reports/consolidation${range}`,{cookie:operatorCookie})).statusCode,403);
+ assert.equal((await request("bfsb-bali.test",`/reports/consolidation${range}&workspaceId=another-workspace`,{cookie:managerCookie})).statusCode,403);
+ // A UTC evening timestamp belongs to the next Kuala Lumpur business day.
+ // The indexed date-prefix query must fetch the adjacent UTC day, then apply
+ // the same businessDate rule as the summary endpoint.
+ const boundaryDate='2025-01-01T16:30:00Z',boundaryRange='?from=2025-01-02&to=2025-01-02';
+ await db.query("INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,data) VALUES($1,$2,$3,'pos',7.50,$4)",[companyA,'boundary-sale-'+tag,operatorId,{type:'Receipt',date:boundaryDate,total:7.5,tax:.5}]);
+ await db.query("INSERT INTO myfin.expenses(company_id,id,data,amount,created_by) VALUES($1,$2,$3,2.25,$4)",[companyA,'boundary-expense-'+tag,{date:boundaryDate,description:'Boundary expense',amount:2.25},operatorId]);
+ const boundarySummary=await json('bfsb-bali.test',`/companies/${companyA}/reports/summary${boundaryRange}`,{cookie:managerCookie});
+ const boundaryDetail=await json('bfsb-bali.test',`/companies/${companyA}/reports/details${boundaryRange}`,{cookie:managerCookie});
+ assert.deepEqual(boundaryDetail.totals,{sales:boundarySummary.sales,tax:boundarySummary.tax,expenses:boundarySummary.expenses,cashFlow:boundarySummary.cashFlow});
+ assert.deepEqual(boundaryDetail.totals,{sales:7.5,tax:.5,expenses:2.25,cashFlow:5.25});
+ const boundaryConsolidation=await json('bfsb-bali.test',`/reports/consolidation${boundaryRange}`,{cookie:managerCookie});
+ assert.equal(boundaryConsolidation.companies.find(row=>row.id===companyA).cashFlow,5.25);
+ const reportingIndexes=(await db.query("SELECT indexname FROM pg_indexes WHERE schemaname='myfin' AND indexname LIKE '%_report_%'")).rows.map(row=>row.indexname);
+ for(const name of ['transactions_report_business_date_idx','transactions_report_issued_at_idx','transactions_report_payload_date_idx','transactions_report_unusual_date_idx','expenses_report_payload_date_idx','expenses_report_unusual_date_idx','document_payments_report_paid_at_idx'])assert.ok(reportingIndexes.includes(name),`missing ${name}`);
 });
 await test("company-scoped POS code cannot enter password administration",async()=>{
  managerCode=(await json("bfsb-bali.test",`/companies/${companyA}/users/${managerId}/pos-code`,{cookie:ownerCookie,method:"POST",body:{}})).code;

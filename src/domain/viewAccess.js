@@ -1,12 +1,13 @@
 import { permissionsFor } from './permissions.js';
 export const ROUTE_CAPABILITIES = {
-  '/overview':'checkout', '/pos':'checkout', '/sales':'documentsRead',
+  '/overview':'checkout', '/pos':'checkout', '/orders':'checkout', '/sales':'documentsRead', '/documents':'documentsRead',
   '/receipt-reviews':'checkout', '/products':'inventoryRead', '/contacts':'clientsRead', '/profile':'active',
-  '/analytics':'financialReports', '/expenses':'expensesRead', '/stock':'inventoryRead',
+  '/analytics':'financialReports', '/consolidation':'financialReports', '/finance-sales':'financialReports', '/expenses':'expensesRead', '/stock':'inventoryRead',
   '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead',
   '/templates':'templatesWrite', '/settings':'deviceSettingsWrite',
 };
 export function canVisit(user,path) {
+  if (path === '/consolidation' && user?.authLevel === 'pos_code') return false;
   return permissionsFor(user)[ROUTE_CAPABILITIES[path] || 'active'] === true;
 }
 export function hydrationCollections(user) {

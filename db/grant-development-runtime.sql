@@ -13,6 +13,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON myfin.auth_user, myfin.auth_session,
 GRANT SELECT, INSERT, UPDATE ON myfin.stock_items TO myfin_dev_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON myfin.stock_packagings TO myfin_dev_runtime;
 GRANT SELECT, INSERT ON myfin.stock_ledger TO myfin_dev_runtime;
+GRANT SELECT, INSERT, UPDATE ON myfin.orders TO myfin_dev_runtime;
+GRANT SELECT, INSERT ON myfin.order_events TO myfin_dev_runtime;
 GRANT SELECT, INSERT ON myfin.expense_import_batches TO myfin_dev_runtime;
 GRANT SELECT, INSERT ON myfin.activities, myfin.stock_movements,
  myfin.company_enrollments, myfin.management_events,

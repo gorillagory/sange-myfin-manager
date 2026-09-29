@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cents, totalsFor, roundToFiveSen, checkoutTotalsFor, saleTotalsFor, normalizeProduct, cartItem, createSale, deductItems, isPaid, businessDate } from '../src/domain/pos.js';
+import { cents, totalsFor, roundToFiveSen, checkoutTotalsFor, saleTotalsFor, normalizeProduct, cartItem, createSale, deductItems, isPaid, businessDate, expenseRecords } from '../src/domain/pos.js';
 const company={id:'shop',name:'Shop',preferences:{tax:6,currency:'RM'}},user={uid:'cashier',username:'Cashier'};
 const product=normalizeProduct({id:'coffee',name:'Coffee',sku:'COF-1',price:0.1,stock:3,trackStock:true});
 test('currency rounds at line and tax boundaries',()=>{const totals=totalsFor([{qty:3,price:0.1}],6);assert.equal(totals.total,0.32);assert.equal(totals.tax,0.02);assert.equal(cents(36.5),3650);});
@@ -16,3 +16,4 @@ test('legacy SKU, tax, variants and service stock adapt without data migration',
 test('deduction aggregates quantities, isolates variants and rejects overselling',()=>{const p=normalizeProduct({id:'v',name:'Cup',trackStock:true,variants:[{id:'a',name:'A',price:10,stock:2},{id:'b',name:'B',price:10,stock:4}]});const result=deductItems([p],[{...cartItem(p,p.variants[0]),qty:2}]);assert.equal(result.updates[0].variants[0].stock,0);assert.equal(result.updates[0].variants[1].stock,4);assert.equal(p.variants[0].stock,2);assert.throws(()=>deductItems([product],[{...cartItem(product),qty:4}]));});
 test('accepted offline sale preserves stock shortage for review',()=>{const result=deductItems([product],[{...cartItem(product),qty:4}],true);assert.equal(result.updates[0].stock,-1);assert.equal(result.shortage,true);});
 test('reports agree on legacy paid statuses and Malaysian dates',()=>{assert.ok(isPaid({type:'Invoice',status:'Cleared'}));assert.ok(isPaid({type:'Invoice',status:'Paid'}));assert.equal(isPaid({type:'Quote',status:'Paid'}),false);assert.equal(businessDate('2026-09-09T18:00:00Z'),'2026-09-10');assert.equal(businessDate('2026-09-09'),'2026-09-09');});
+test('voided historical expenses do not appear in expense records or report inputs',()=>{const rows=expenseRecords({expenses:[],transactions:[{id:'active',type:'Expense',status:'Paid',total:12},{id:'voided',type:'Payment Voucher',status:'Voided',total:40}]});assert.deepEqual(rows.map(row=>[row.id,row.amount]),[['active',12]]);});

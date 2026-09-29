@@ -34,6 +34,8 @@ await test('one shared permission matrix controls routes, data hydration and sta
  assert.equal(permissionsFor(staff).expensesRead,true);
  for(const actor of [owner,manager,staff])assert.ok(canVisit(actor,'/receipt-reviews'));
  for(const path of ['/analytics','/expenses','/activity'])assert.equal(canVisit(manager,path),true);
+ assert.equal(canVisit(manager,'/consolidation'),true);
+ assert.equal(canVisit({...manager,authLevel:'pos_code'},'/consolidation'),false);
  assert.equal(canVisit(staff,'/expenses'),true);
  for(const path of ['/analytics','/activity'])assert.equal(canVisit(staff,path),false);
  assert.equal(canVisit(staff,'/users'),false);assert.equal(canVisit(manager,'/templates'),true);

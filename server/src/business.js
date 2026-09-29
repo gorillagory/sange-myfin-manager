@@ -24,6 +24,8 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
+import { companyRows } from "./reporting.js";
+import { assertOrderCreated, registerOrders } from "./orders.js";
 
 export async function identity(db, subject, tenant=null) {
   const r = (await db.query(
@@ -313,6 +315,7 @@ export async function checkout(c, who, companyId, input, approval=null) {
     "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data) VALUES($1,$2,$3,'pos',$4,$5,$6)",
     [companyId, sale.id, who.id, sale.total, fingerprint, saved],
   );
+  await assertOrderCreated(c, companyId, sale.id);
   for (const p of updates) {
     p.version++;
     await c.query(
@@ -414,15 +417,15 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   };
   registerExpenseImport(app,{scoped,audit});
   registerStock(app,{scoped,audit});
+  registerOrders(app,{scoped,audit});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}),req.query);
     const to=dates.to||businessDate(),from=dates.from||businessDate(new Date(Date.now()-6*86400000));
     const span=(Date.parse(to)-Date.parse(from))/86400000;
     if(!Number.isInteger(span)||span<0||span>366||new Date(from).toISOString().slice(0,10)!==from||new Date(to).toISOString().slice(0,10)!==to)v.fail(400,"invalid_report_range");
-    const tx=(await c.query("SELECT * FROM myfin.transactions WHERE company_id=$1",[co])).rows;
-    const exp=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1 AND voided_at IS NULL",[co])).rows.map(asRecord);
-    const payments=(await c.query("SELECT amount,paid_at FROM myfin.document_payments WHERE company_id=$1",[co])).rows;
+    const {transactions:tx,expenses:expenseRows,payments}=await companyRows(c,[co],from,to);
+    const exp=expenseRows.map(asRecord);
     const days=new Map();for(let i=0;i<=span;i++){const day=new Date(Date.parse(from)+i*86400000).toISOString().slice(0,10);days.set(day,{date:day,sales:0,tax:0,cashIn:0,expenses:0});}
     const add=(date,kind,amount)=>{const row=days.get(date);if(row)row[kind]+=cents(amount);};
     for(const row of tx){
@@ -492,7 +495,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         if(!permissionsFor(req.identity).suppliersRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
           if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
-          else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')))");
+          else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Paid','Cleared')))");
         }
         args.push(q.limit+1);
         const select=name==="transactions"?"t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount":"*";

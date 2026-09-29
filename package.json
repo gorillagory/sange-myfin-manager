@@ -12,6 +12,7 @@
     "test:management": "node --test tests/management.test.mjs"
   },
   "dependencies": {
+    "@zxing/browser": "^0.2.1",
     "chart.js": "^4.5.1",
     "html2pdf.js": "^0.14.0",
     "jsbarcode": "^3.12.3",
