@@ -3,14 +3,15 @@ import { ref, watch } from 'vue';
 import { stripConfidential } from '../../../domain/permissions';
 import Modal from '../../ui/EditionModal.vue';
 import { useProductLogic } from '../../../composables/useProductLogic';
-const props = defineProps({show:Boolean,busy:Boolean,product:Object,categories:Array,currency:String,showCosts:Boolean});
+const props = defineProps({show:Boolean,busy:Boolean,product:Object,categories:Array,subcategories:Array,currency:String,showCosts:Boolean});
 const emit = defineEmits(['close','save']);
 const {generateSKU} = useProductLogic();
 const form=ref({}), imageFile=ref(null), preview=ref(''), fileError=ref('');
 watch(()=>props.show, visible=>{
   if (!visible) { if(preview.value) URL.revokeObjectURL(preview.value); preview.value=''; return; }
   imageFile.value=null;fileError.value='';
-  form.value = props.product ? JSON.parse(JSON.stringify(props.product)) : {name:'',sku:generateSKU('Retail'),category:'Retail',unit:'pcs',description:'',barcode:'',imageUrl:'',trackStock:true,price:0,...(props.showCosts?{cost:0}:{}),stock:0,variants:[]};
+  form.value = props.product ? JSON.parse(JSON.stringify(props.product)) : {name:'',sku:generateSKU('Retail'),category:'Retail',subcategory:'',unit:'pcs',description:'',barcode:'',imageUrl:'',trackStock:true,price:0,...(props.showCosts?{cost:0}:{}),stock:0,variants:[]};
+  form.value.subcategory ||= '';
   if(!props.showCosts)form.value=stripConfidential(form.value);
   form.value.hasVariants=!!form.value.variants?.length;form.value.variants ||= [];
 });
@@ -31,7 +32,8 @@ function save(){if(!props.busy)emit('save',{...form.value,variants:form.value.ha
       <div class="ed-form-grid">
         <label class="ed-field"><span>Product name *</span><input v-model="form.name" required maxlength="120" placeholder="e.g. Latte" autofocus></label>
         <label class="ed-field"><span>Product SKU *</span><div class="ed-actions ed-sku-input"><input v-model.trim="form.sku" required maxlength="64" placeholder="BEV-LATTE"><button type="button" class="ed-btn" aria-label="Generate SKU" @click="form.sku=generateSKU(form.category)">Generate</button></div></label>
-        <label class="ed-field"><span>Category</span><select v-model="form.category" @change="categoryChanged"><option v-for="c in categories" :key="c">{{ c }}</option></select></label>
+        <label class="ed-field"><span>Category *</span><input v-model.trim="form.category" list="inventory-category-list" maxlength="120" required placeholder="e.g. Menu" @change="categoryChanged"><datalist id="inventory-category-list"><option v-for="c in categories" :key="c" :value="c" /></datalist></label>
+        <label class="ed-field"><span>Subcategory</span><input v-model.trim="form.subcategory" list="inventory-subcategory-list" maxlength="120" placeholder="e.g. Beverages"><datalist id="inventory-subcategory-list"><option v-for="c in subcategories" :key="c" :value="c" /></datalist><small>Optional second level used for grouping and filters.</small></label>
         <label class="ed-field"><span>Unit</span><input v-model="form.unit" required maxlength="24" placeholder="pcs, cup, kg"></label>
         <label class="ed-check"><input v-model="form.trackStock" type="checkbox" :disabled="form.category==='Service'">Track stock</label>
         <label class="ed-check"><input v-model="form.hasVariants" type="checkbox">This product has variants</label>

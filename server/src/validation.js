@@ -90,6 +90,7 @@ export const product = z.strictObject({
   code: opt(short),
   barcode: opt(short),
   category: opt(short),
+  subcategory: opt(short),
   unit: opt(short),
   price: number,
   cost: number,

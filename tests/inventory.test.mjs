@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseCsv,importProductsCsv,exportProductsCsv,templateCsv,validateProduct,validEmail} from '../src/domain/inventoryCsv.js';
+import {parseCsv,importProductsCsv,exportProductsCsv,templateCsv,validateProduct,validEmail,filterInventoryProducts,inventoryFacets,categoryPath} from '../src/domain/inventoryCsv.js';
 import {createSale,cartItem} from '../src/domain/pos.js';
 import {receiptMailto,receiptLines,receiptPrintJob} from '../src/domain/receipt.js';
 test('template imports simple products and stable variant identities',()=>{
@@ -23,6 +23,21 @@ test('services ignore stock, leading-zero barcode is preserved, unsafe image URL
  assert.throws(()=>validateProduct({name:'Tea',sku:'A',price:0,hasVariants:true,variants:[{name:'Hot',sku:'A'}]}),/unique/);
 });
 test('spreadsheet exports neutralize formula cells',()=>{assert.match(exportProductsCsv([{name:'=HYPERLINK("bad")',sku:'A',price:1,stock:1}]),/"'=HYPERLINK/);});
+test('category hierarchy survives exports and upgrades legacy menu-section descriptions',()=>{
+ const legacy=importProductsCsv('sku,name,category,price,description\nBEV-A,Americano,Beverage,4.20,Menu section: CLASSIC SERIES')[0];
+ assert.deepEqual(categoryPath(legacy),['Beverage','CLASSIC SERIES']);
+ const explicit=importProductsCsv('sku,name,category,subcategory,price,description\nBEV-B,Latte,Menu,Beverages,8.90,Menu section: OLD VALUE')[0];
+ assert.deepEqual(categoryPath(explicit),['Menu','Beverages']);
+ const exported=exportProductsCsv([legacy,explicit]);
+ assert.match(exported,/"category","subcategory"/);
+ assert.deepEqual(importProductsCsv(exported).map(categoryPath),[['Beverage','CLASSIC SERIES'],['Menu','Beverages']]);
+});
+test('inventory category and subcategory filters return sorted catalog groups',()=>{
+ const rows=[{name:'Scone',sku:'P1',category:'Menu',subcategory:'Pastry'},{name:'Latte',sku:'B2',category:'Menu',subcategory:'Beverages'},{name:'Americano',sku:'B1',category:'Menu',subcategory:'Beverages'},{name:'Beans',sku:'R1',category:'Retail'}];
+ assert.deepEqual(inventoryFacets(rows,'Menu'),{categories:['Menu','Retail'],subcategories:['Beverages','Pastry']});
+ assert.deepEqual(filterInventoryProducts(rows,{category:'Menu',subcategory:'Beverages'}).map(row=>row.name),['Americano','Latte']);
+ assert.deepEqual(filterInventoryProducts(rows,{query:'pastry'}).map(row=>row.name),['Scone']);
+});
 test('email receipt snapshots and encoded drafts preserve receipt totals',()=>{
  const s=createSale({id:'email-test',company:{id:'store',name:'Test Store'},user:{uid:'cashier',email:'cashier@example.test'},items:[cartItem({id:'tea',name:'Tea & cake',sku:'TEA',price:3.5})],method:'Cash',received:5,customer:{name:'Test Customer',email:' customer@example.test '}});
  assert.equal(s.client_id,'pos-email-test');assert.equal(s.customerEmail,'customer@example.test');assert.equal(s.change,1.5);
