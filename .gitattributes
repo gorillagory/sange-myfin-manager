@@ -1,3 +1,4 @@
 scripts/deploy/public-operations-smoke.sh text eol=lf
 scripts/deploy/production-backup.sh text eol=lf
 scripts/deploy/production-restore-rehearsal.sh text eol=lf
+scripts/deploy/production-public-smoke.sh text eol=lf
