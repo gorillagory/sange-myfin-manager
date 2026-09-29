@@ -98,15 +98,13 @@ export async function companyRows(c, companyIds, from, to) {
     expenseBranch(`${standardPrefix} AND ${datePrefix} BETWEEN $2 AND $3`),
     expenseBranch(`data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`),
   ].join(' UNION ALL ');
-  const [transactions, expenses, payments] = await Promise.all([
-    c.query(transactionQuery, args),
-    c.query(expenseQuery, [companyIds, fromPad, toPad]),
-    c.query(`SELECT p.company_id,p.id,p.amount,p.paid_at,t.data->>'number' AS number
+  const transactions = await c.query(transactionQuery, args);
+  const expenses = await c.query(expenseQuery, [companyIds, fromPad, toPad]);
+  const payments = await c.query(`SELECT p.company_id,p.id,p.amount,p.paid_at,t.data->>'number' AS number
       FROM myfin.document_payments p LEFT JOIN myfin.transactions t ON t.company_id=p.company_id AND t.id=p.document_id
       WHERE p.company_id=ANY($1::text[])
       AND p.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur')
-        AND p.paid_at < ($3::date::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur')`, [companyIds, from, toExclusive]),
-  ]);
+        AND p.paid_at < ($3::date::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur')`, [companyIds, from, toExclusive]);
   return { transactions: transactions.rows, expenses: expenses.rows, payments: payments.rows };
 }
 
