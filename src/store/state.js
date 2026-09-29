@@ -14,6 +14,8 @@ export const state = reactive({
     sessionVerified: false,
     activities: [],
     stock_movements: [],
+    stock_items: [],
+    stock_ledger: [],
     notification: { show: false, message: '', type: 'success' },
     preferences: { theme: 'light' },
     isLoading: true,

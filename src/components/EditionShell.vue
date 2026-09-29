@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, watchEffect } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Store } from '../store';
 import Icon from './ui/EditionIcon.vue';
@@ -7,17 +7,25 @@ import Modal from './ui/EditionModal.vue';
 import { money } from '../domain/pos';
 import { needsReceiptReview } from '../domain/offlinePolicy';
 import { canVisit } from '../domain/viewAccess';
+import { applyThemeVariables, DEFAULT_THEME_COLOR } from '../domain/theme';
 const route = useRoute(), router = useRouter();
 const menu = ref(false), search = ref(false), query = ref(''), pending = ref(false), switcher = ref(false);
 const admin = computed(() => Store.can('usersManage'));
 const company = computed(() => Store.state.selectedCompany || {});
 const user = computed(() => Store.state.currentUser || {});
-const nav = computed(() => [
-  ['/overview','Overview','grid'], ['/pos','Checkout','bag'], ['/sales',Store.permissions().staff?'My documents':'Sales & documents','receipt'], ['/products','Inventory','box'],
-  ['/receipt-reviews','Payment reviews','clock'], ['/contacts','Contacts','people'], ['/expenses','Expenses','wallet'], ['/analytics','Financial reports','chart'], ['/settings','Device & printing','settings'],
+const workspaceNav = computed(() => [
+  ['/overview','Overview','grid'], ['/pos','Checkout','bag'], ['/sales',Store.permissions().staff?'My documents':'Sales & documents','receipt'], ['/products','Inventory','box'], ['/stock','Stock records','truck'],
+  ['/receipt-reviews','Payment reviews','clock'], ['/expenses','Expenses','wallet'],
+].filter(item => canVisit(Store.state.currentUser,item[0])));
+const administrationNav = computed(() => [
+  ['/contacts','Customers & suppliers','people'], ['/analytics','Financial reports','chart'], ['/settings','Device & printing','settings'],
   ...(admin.value ? [['/users','Team & access','shield'], ['/companies','Company profile','building'], ['/templates','Templates','edit'], ['/activity','Activity','clock']] : [])
 ].filter(item => canVisit(Store.state.currentUser,item[0])));
-const allPages = computed(() => nav.value);
+const navSections = computed(() => [
+  { label:'WORKSPACE', items:workspaceNav.value },
+  { label:'ADMINISTRATION', items:administrationNav.value },
+].filter(section => section.items.length));
+const allPages = computed(() => navSections.value.flatMap(section => section.items));
 const page = computed(() => allPages.value.find(n => route.path === n[0])?.[1] || 'My profile');
 const matches = computed(() => allPages.value.filter(n => n[1].toLowerCase().includes(query.value.toLowerCase())));
 const initials = value => (value || 'MF').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
@@ -28,7 +36,13 @@ function exportPending() {
   const a = document.createElement('a'); a.href = url; a.download = 'myfin-unsynced-receipts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
 }
 onMounted(() => window.addEventListener('keydown', shortcut));
-onBeforeUnmount(() => window.removeEventListener('keydown', shortcut));
+watchEffect(() => {
+  if (typeof document !== 'undefined') applyThemeVariables(document.documentElement, Store.state.preferences.primaryColor || company.value.preferences?.primaryColor);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', shortcut);
+  if (typeof document !== 'undefined') applyThemeVariables(document.documentElement, DEFAULT_THEME_COLOR);
+});
 </script>
 <template>
   <div class="ed-shell" :class="{'ed-compact':Store.state.preferences.density==='compact','ed-reduce-motion':Store.state.preferences.reduceMotion}">
@@ -38,15 +52,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut));
       <router-link to="/overview" class="ed-brand"><span class="ed-brandmark"><i></i><i></i><i></i><i></i></span>myfin<small>edition</small></router-link>
       <button class="ed-icon-button ed-drawer-close" aria-label="Close menu" @click="menu=false"><Icon name="close" /></button>
       <button class="ed-store" :disabled="!['super_admin','workspace_owner'].includes(user.role)" @click="switcher=true"><span class="ed-avatar solid">{{ initials(company.name) }}</span><span><strong>{{ company.name }}</strong><small>{{ ['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Your company' }}</small></span><Icon v-if="['super_admin','workspace_owner'].includes(user.role)" name="down" /></button>
-      <div class="ed-nav-label">WORKSPACE</div>
-      <nav class="ed-nav"><template v-for="(item,index) in nav" :key="item[0]"><div v-if="index===7" class="ed-nav-label">ADMINISTRATION</div><router-link :to="item[0]" @click="menu=false"><Icon :name="item[2]" />{{ item[1] }}</router-link></template></nav>
+      <nav class="ed-nav" aria-label="Workspace navigation"><template v-for="section in navSections" :key="section.label"><div class="ed-nav-label">{{ section.label }}</div><router-link v-for="item in section.items" :key="item[0]" :to="item[0]" @click="menu=false"><Icon :name="item[2]" />{{ item[1] }}</router-link></template></nav>
       <div class="ed-sidebar-bottom"><div class="ed-actions" style="justify-content:space-between;margin-bottom:17px"><span class="ed-status" :class="{offline:!Store.state.online||Store.state.fromCache}">{{ !Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Connected' }}</span><button class="ed-icon-button" aria-label="Sign out" title="Sign out" @click="Store.logout()"><Icon name="logout" /></button></div><router-link to="/profile" class="ed-profile" @click="menu=false"><span class="ed-avatar">{{ initials(user.username) }}</span><span><strong>{{ user.username || user.email }}</strong><small>{{ user.role==='super_admin'?'SuperAdmin':user.role==='workspace_owner'?'Workspace owner':user.role==='manager'?'Manager':'Operator' }} · {{ user.authLevel==='pos_code'?'POS code':'Password' }}</small></span><Icon name="settings" /></router-link></div>
     </aside>
     <div class="ed-workspace"><header class="ed-topbar"><div class="ed-breadcrumb"><button class="ed-icon-button ed-menu-toggle" aria-label="Open navigation" @click="menu=true"><Icon name="menu" /></button><span>Workspace</span><span>/</span><strong>{{ page }}</strong></div><div class="ed-top-actions"><button class="ed-search-trigger" aria-label="Search workspace" @click="query='';search=true"><Icon name="search" /><span>Find your next step</span><kbd>Ctrl K</kbd></button><button v-if="Store.state.pendingSales.length" class="ed-pill warning" @click="pending=true">{{ Store.state.pendingSales.length }} to sync</button><span v-else class="ed-status" :class="{offline:Store.state.fromCache || !Store.state.online}">{{ !Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Live data' }}</span></div></header>
       <main id="workspace-main" class="ed-main" tabindex="-1">
         <div v-if="Store.state.dataError" class="ed-notice error" role="alert"><Icon name="alert" /><div><strong>Some data could not be loaded</strong>{{ Store.state.dataError }} <button class="ed-link" @click="Store.selectCompany(null)">Return to store selection</button></div></div>
         <div v-if="Store.state.dataLoading" class="ed-notice" role="status">Loading your store records…</div>
-        <router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="company.id+user.role" :class="{'ed-legacy':!['/overview','/pos','/settings','/activity','/expenses','/products','/contacts','/users','/companies'].includes(route.path)}" /></router-view>
+        <router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="company.id+user.role" :class="{'ed-legacy':!['/overview','/pos','/settings','/activity','/expenses','/products','/stock','/contacts','/users','/companies'].includes(route.path)}" /></router-view>
         <footer class="ed-footer"><span>MYFIN / EDITION<span v-if="Store.state.offlineStatus"> · {{ Store.state.offlineStatus }}</span></span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
       </main>
     </div>

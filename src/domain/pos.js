@@ -37,12 +37,29 @@ export function totalsFor(items, taxRate = 0, discount = 0) {
   const taxCents = Math.round((subtotalCents - discountCents) * rate / 100);
   return { subtotal: subtotalCents / 100, discountAmount: discountCents / 100, tax: taxCents / 100, total: (subtotalCents - discountCents + taxCents) / 100, taxRate: rate, discount: off };
 }
+export function roundToFiveSen(value) {
+  const totalCents = cents(value);
+  if (!Number.isSafeInteger(totalCents) || totalCents < 0) throw new Error('The counter total must be a valid amount.');
+  const remainder = totalCents % 5;
+  const adjustmentCents = remainder === 0 ? 0 : remainder <= 2 ? -remainder : 5 - remainder;
+  return { totalBeforeRounding: totalCents / 100, rounding: adjustmentCents / 100, total: (totalCents + adjustmentCents) / 100 };
+}
+export function checkoutTotalsFor(items, taxRate = 0, discount = 0) {
+  const totals = totalsFor(items, taxRate, discount);
+  return { ...totals, ...roundToFiveSen(totals.total) };
+}
+export function saleTotalsFor(sale = {}) {
+  const hasBefore=sale.totalBeforeRounding!==undefined,hasAdjustment=sale.rounding!==undefined;
+  if(sale.schemaVersion===2){if(hasBefore||hasAdjustment)throw new Error('Legacy receipts cannot contain counter-rounding fields.');return totalsFor(sale.items,sale.taxRate,sale.discount);}
+  if(sale.schemaVersion===3){if(!hasBefore||!hasAdjustment)throw new Error('Counter-rounding fields are required.');return checkoutTotalsFor(sale.items,sale.taxRate,sale.discount);}
+  throw new Error('The receipt version is not supported.');
+}
 export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, overrideReason = "" }) {
   if (!items.length) throw new Error('Add an item to this order first.');
   if (overrideReason.trim() && (overrideReason.trim().length < 3 || overrideReason.trim().length > 1000)) throw new Error('Use 3 to 1,000 characters for the manager override reason.');
   if (!company?.id || !user?.uid) throw new Error('Sign in and choose a store first.');
   if (!['Cash', 'QR Pay', 'Card'].includes(method)) throw new Error('Choose a payment method.');
-  const totals = totalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount);
+  const totals = checkoutTotalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount);
   if (totals.total <= 0) throw new Error('The order total must be greater than zero.');
   const tender = method === 'Cash' ? cents(received) : cents(totals.total);
   if (!Number.isFinite(tender) || tender < cents(totals.total)) throw new Error('Enter enough cash to cover this order.');
@@ -51,7 +68,7 @@ export function createSale({ id, items, company, user, method, received, confirm
   if (!validEmail(customerEmail)) throw new Error('Enter a valid customer email.');
   const customerId = customer?.id || (customerEmail ? `pos-${id}` : '');
   const date = new Date().toISOString();
-  return { id, schemaVersion: 2, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
+  return { id, schemaVersion: 3, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
 }
 export function deductItems(products, items, allowShortage = false) {
   const updates = new Map(), movements = [];

@@ -16,7 +16,7 @@ export function safeCompany(company = {}) {
   const data = stripConfidential(copy(company));
   const allowed = ['id','name','address','phone','email','registration','logo','logoUrl','logoPath','qrCode','qrCodeUrl','qrCodePath','archived','archived_at','receiptTemplate'];
   const preferences = data.preferences || {};
-  const preferenceKeys = ['currency','tax','taxRate','staffDiscountLimit','receiptFooter','paperWidth','density','reduceMotion','theme','receiptTemplate','receiptTemplateSnapshot'];
+  const preferenceKeys = ['currency','tax','taxRate','staffDiscountLimit','receiptFooter','paperWidth','density','reduceMotion','theme','baseTheme','primaryColor','fontFamily','receiptTemplate','receiptTemplateSnapshot'];
   return {
     ...Object.fromEntries(allowed.filter(key => data[key] !== undefined).map(key => [key,data[key]])),
     preferences: Object.fromEntries(preferenceKeys.filter(key => preferences[key] !== undefined).map(key => [key,preferences[key]])),

@@ -7,6 +7,7 @@ import {
   canonical,
   deductItems,
   totalsFor,
+  saleTotalsFor,
   normalizeProduct,
   cents,
   businessDate,
@@ -20,6 +21,9 @@ import { registerReceiptReviews } from "./receipt-reviews.js";
 import { posIdentity,verifyManagerCode } from "./pos-auth.js";
 import { registerWorkspaces } from "./workspaces.js";
 import { handoffSubject,createHandoff } from "./session-handoff.js";
+import { permissionsFor } from "../../src/domain/permissions.js";
+import { registerExpenseImport } from "./expense-import.js";
+import { registerStock } from "./stock.js";
 
 export async function identity(db, subject, tenant=null) {
   const r = (await db.query(
@@ -92,6 +96,14 @@ async function validateFileRefs(c, companyId, data) {
     );
     if (!r.rowCount) v.fail(403, "invalid_file_reference");
   }
+}
+async function validateSupplierRef(c, companyId, supplierId) {
+  if (!supplierId) return;
+  const row = (await c.query(
+    "SELECT data FROM myfin.clients WHERE company_id=$1 AND id=$2 FOR KEY SHARE",
+    [companyId, supplierId],
+  )).rows[0];
+  if (!row || row.data.type !== "Supplier") v.fail(409, "supplier_not_found");
 }
 const asRecord = (r) => ({
   ...r.data,
@@ -194,6 +206,7 @@ async function saveProduct(c, companyId, data, create = false) {
 }
 export async function checkout(c, who, companyId, input, approval=null) {
   const sale = v.parse(v.sale, input);
+  let totals;try{totals=saleTotalsFor(sale);}catch{v.fail(400,"invalid_sale_rounding");}
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
   if (
@@ -227,6 +240,8 @@ export async function checkout(c, who, companyId, input, approval=null) {
       v.fail(409, "receipt_payload_changed");
     return publicTransaction(asRecord(existing.rows[0]),who);
   }
+  const reviewResolution=await c.query("SELECT status FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR SHARE",[companyId,sale.id]);
+  if(reviewResolution.rows[0]?.status==="dismissed")v.fail(409,"receipt_dismissed");
   const ids = [...new Set(sale.items.map((i) => i.productId))].sort();
   if (ids.length > 100) v.fail(400, "too_many_products");
   const rows = await c.query(
@@ -251,7 +266,6 @@ export async function checkout(c, who, companyId, input, approval=null) {
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");
   if(approval)Object.assign(expectedStore,sale.storeSnapshot);
   const companySnapshot={...expectedStore,email:company.email||"",logo:company.logo||"",qrCode:company.qrCode||company.qrCodeUrl||""};
-  const totals = totalsFor(sale.items, sale.taxRate, sale.discount);
   if (
     totals.total <= 0 ||
     Object.entries(totals).some(([k, n]) => sale[k] !== n) ||
@@ -398,6 +412,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
       return fn(c, company);
     });
   };
+  registerExpenseImport(app,{scoped,audit});
+  registerStock(app,{scoped,audit});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}),req.query);
@@ -473,7 +489,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         const predicates=["company_id=$1","id>$2"],args=[co,q.after||""];
         if(name==="expenses")predicates.push("voided_at IS NULL");
         if(name==="expenses"&&operator(req.identity)){args.push(req.identity.id);predicates.push(`created_by=$${args.length}`);}
-        if(!owner(req.identity)&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
+        if(!permissionsFor(req.identity).suppliersRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
           if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
           else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')))");
@@ -518,6 +534,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         data.id = id;
         data.company_id = co;
         await validateFileRefs(c, co, data);
+        if (name === "expenses") await validateSupplierRef(c, co, data.supplier_id);
         if (name === "products") {
           await c.query(
             "SELECT pg_advisory_xact_lock(hashtextextended($1,8))",
@@ -603,13 +620,13 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
             data.amount = cents(data.amount) / 100;
             if (update)
               await c.query(
-                "UPDATE myfin.expenses SET data=$3,amount=$4 WHERE company_id=$1 AND id=$2",
-                [co, id, data, data.amount],
+                "UPDATE myfin.expenses SET data=$3,amount=$4,supplier_id=$5 WHERE company_id=$1 AND id=$2",
+                [co, id, data, data.amount, data.supplier_id || null],
               );
             else
               await c.query(
-                "INSERT INTO myfin.expenses(company_id,id,data,amount,created_by) VALUES($1,$2,$3,$4,$5)",
-                [co, id, data, data.amount,req.identity.id],
+                "INSERT INTO myfin.expenses(company_id,id,data,amount,created_by,supplier_id) VALUES($1,$2,$3,$4,$5,$6)",
+                [co, id, data, data.amount,req.identity.id,data.supplier_id || null],
               );
           } else if (update)
             await c.query(

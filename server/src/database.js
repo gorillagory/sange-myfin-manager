@@ -17,7 +17,7 @@ export function createDatabase(config, { Pool = pg.Pool, onError = () => {} } = 
     async ready() {
       const result = await pool.query(`SELECT
         EXISTS (SELECT 1 FROM myfin.schema_migrations
-          WHERE version = '0012_document_invariants.sql') AS ready,
+          WHERE version = '0015_receipt_review_resolution.sql') AS ready,
         (SELECT id FROM myfin.companies LIMIT 0),
         (SELECT id FROM myfin.app_identities LIMIT 0),
         (SELECT subject FROM myfin.identity_mappings LIMIT 0),

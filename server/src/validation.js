@@ -15,6 +15,12 @@ const stock = z
   .min(-1e9)
   .max(1e9)
   .refine((n) => Math.abs(n * 1000 - Math.round(n * 1000)) < 1e-6);
+const rounding = z
+  .number()
+  .finite()
+  .min(-0.02)
+  .max(0.02)
+  .refine((n) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6);
 const opt = (x) => x.optional();
 const date = z
   .string()
@@ -162,6 +168,7 @@ export const expense = z.strictObject({
   description: text,
   payee: opt(text),
   category: opt(short),
+  supplier_id: opt(z.union([id, z.literal("")])),
   receiptUrl: opt(z.string().max(500)),
   receiptPath: opt(z.string().max(500)),
   attachmentUrl: opt(z.string().max(500)),
@@ -174,7 +181,7 @@ export const sale = z.strictObject({
   cashierName: short,
   date: z.string().datetime(),
   businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  schemaVersion: z.literal(2),
+  schemaVersion: z.union([z.literal(2), z.literal(3)]),
   source: z.literal("pos"),
   type: z.literal("Invoice"),
   number: short,
@@ -184,6 +191,8 @@ export const sale = z.strictObject({
     .min(1)
     .max(500),
   ...totals,
+  totalBeforeRounding: opt(number),
+  rounding: opt(rounding),
   paymentMethod: z.enum(["Cash", "QR Pay", "Card"]),
   received: number,
   change: number,

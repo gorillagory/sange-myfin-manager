@@ -20,6 +20,7 @@ export const financeModule = {
   },
   addExpense(s,e) { if(e.id?!s.can("expensesWrite"):!s.can("expensesCreate")) throw new Error(e.id?"Ask a manager to edit an existing expense.":"You cannot record expenses in this company."); return writeRecord(s,"expenses",e,!!e.id); },
   async deleteExpense(s,id,approval={}) { if(!s.can("expensesVoid")&&!s.permissions().operator) throw new Error("You cannot void this expense.");await api(companyPath(s,"/expenses/"+encodeURIComponent(id)),{method:"DELETE",body:approval});await s.refreshData(); },
+  async importExpenses(s,batch){if(!s.can('expensesWrite'))throw new Error('Ask a manager to import expenses.');const result=await api(companyPath(s,'/import-expenses'),{method:'POST',body:batch});await s.refreshData();return result;},
   async addClient(s, c) {
     const exists = c.id && s.state.clients.some((x) => x.id === c.id);
     if(c.type === "Supplier" && !s.can("suppliersWrite")) throw new Error("Only an owner can manage supplier details.");

@@ -28,11 +28,16 @@ await test('new owner caches and paid-queue rewrites remain costless; retry erro
  await localPos.putSale({...original,syncError:'receipt_review_required'});assert.deepEqual((await localPos.sales('staff','a'))[0],{...safePaidSale(original),syncError:'receipt_review_required'});
 });
 await test('one shared permission matrix controls routes, data hydration and staff-account management',()=>{
- for(const actor of [manager,staff])for(const action of ['costsRead','costsWrite','financialReports','expensesRead','expensesWrite','suppliersRead','bulkExport','managersManage'])assert.equal(permissionsFor(actor)[action],false);
+ for(const actor of [manager,staff])for(const action of ['costsRead','costsWrite','bulkExport','managersManage'])assert.equal(permissionsFor(actor)[action],false);
+ for(const action of ['financialReports','expensesRead','expensesWrite','suppliersRead'])assert.equal(permissionsFor(manager)[action],true);
+ for(const action of ['financialReports','expensesWrite','suppliersRead'])assert.equal(permissionsFor(staff)[action],false);
+ assert.equal(permissionsFor(staff).expensesRead,true);
  for(const actor of [owner,manager,staff])assert.ok(canVisit(actor,'/receipt-reviews'));
- for(const actor of [manager,staff])for(const path of ['/analytics','/expenses','/activity'])assert.equal(canVisit(actor,path),false);
+ for(const path of ['/analytics','/expenses','/activity'])assert.equal(canVisit(manager,path),true);
+ assert.equal(canVisit(staff,'/expenses'),true);
+ for(const path of ['/analytics','/activity'])assert.equal(canVisit(staff,path),false);
  assert.equal(canVisit(staff,'/users'),false);assert.equal(canVisit(manager,'/templates'),true);
- assert.deepEqual(hydrationCollections(staff),['products','transactions','clients']);assert.deepEqual(hydrationCollections(manager),['products','transactions','clients','stock_movements']);assert.equal(hydrationCollections(owner).length,6);
+ assert.deepEqual(hydrationCollections(staff),['products','transactions','clients','expenses','stock_items']);assert.deepEqual(hydrationCollections(manager),['products','transactions','clients','expenses','activities','stock_items','stock_movements','stock_ledger']);assert.equal(hydrationCollections(owner).length,8);
  assert.equal(manageableAccount(manager,staff),true);assert.equal(manageableAccount(manager,{...staff,company_id:'b'}),false);assert.equal(manageableAccount(manager,{...manager,uid:'other-manager'}),false);assert.equal(manageableAccount(staff,staff),false);
 });
 await test('manager inventory CSV has no cost column or values and rejects owner cost imports',()=>{
@@ -44,7 +49,7 @@ await test('manager inventory CSV has no cost column or values and rejects owner
 await test('discount totals and immutable template reference retain receipt ID with presentation stored separately',()=>{
  const company={id:'a',name:'Merchant',receiptTemplate:{id:'published-v',version:3,settings:{accent:'#123456'}},preferences:{taxRate:6,currency:'RM'}};
  const sale=createSale({id:'fixed-paid-id',items:[{productId:'p',qty:2,price:10}],company,user:staff,method:'Cash',received:50,discount:5,overrideReason:'Approved offer'});
- assert.equal(sale.total,20.14);assert.equal(sale.received,50);assert.equal(sale.change,29.86);assert.equal(sale.id,'fixed-paid-id');assert.equal(sale.receiptTemplateVersion,3);assert.equal(sale.templateSnapshot,undefined);assert.equal(sale.companySnapshot,undefined);
+ assert.equal(sale.schemaVersion,3);assert.equal(sale.totalBeforeRounding,20.14);assert.equal(sale.rounding,.01);assert.equal(sale.total,20.15);assert.equal(sale.received,50);assert.equal(sale.change,29.85);assert.equal(sale.id,'fixed-paid-id');assert.equal(sale.receiptTemplateVersion,3);assert.equal(sale.templateSnapshot,undefined);assert.equal(sale.companySnapshot,undefined);
  const local=localReceiptPresentation(sale,company);assert.deepEqual(local.templateSnapshot,company.receiptTemplate.settings);assert.equal(local.companySnapshot.name,'Merchant');assert.equal(local.id,sale.id);assert.equal(local.total,sale.total);
 });
 

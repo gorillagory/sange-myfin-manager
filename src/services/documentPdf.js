@@ -71,7 +71,7 @@ export async function createDocumentPdf(doc, options = {}) {
     if(doc.project)line('Project: '+doc.project,{point:9});
   }
   y+=6;ensure(24);
-  const currency=doc.currency||'RM', amount=value=>money(value||0,currency);
+  const currency=doc.currency||'RM', amount=value=>money(value||0,currency),signedAmount=value=>{const number=Number(value)||0;return `${number>0?'+':number<0?'-':''}${amount(Math.abs(number))}`;};
   autoTable(pdf,{
     startY:y,margin:{left:margin,right:margin,top:headerBottom,bottom},
     head:receipt?[['Description','Amount']]:[['Description','Qty','Unit price','Amount']],
@@ -83,7 +83,7 @@ export async function createDocumentPdf(doc, options = {}) {
     didDrawPage(data){if(!first)runningHeader();first=false;},
   });
   y=pdf.lastAutoTable.finalY+6;
-  const totals=[['Subtotal',doc.subtotal],...(doc.discountAmount?[[`Discount (${doc.discount}%)`,-doc.discountAmount]]:[]),...(doc.tax||doc.taxRate?[[`Tax (${doc.taxRate}%)`,doc.tax]]:[]),[doc.settings.labels.total,doc.total],...(doc.paymentMethod?[['Payment',doc.paymentMethod]]:[]),...(doc.received!=null?[['Received',doc.received]]:[]),...(doc.change!=null?[['Change',doc.change]]:[]),...(!receipt&&doc.amountPaid?[['Payments recorded',doc.amountPaid]]:[]),...(!receipt&&doc.kind==='Invoice'&&!doc.isDraft&&doc.balance!=null?[['Balance due',doc.balance]]:[])];
+  const totals=[['Subtotal',doc.subtotal],...(doc.discountAmount?[[`Discount (${doc.discount}%)`,-doc.discountAmount]]:[]),...(doc.tax||doc.taxRate?[[`Tax (${doc.taxRate}%)`,doc.tax]]:[]),...(doc.totalBeforeRounding!=null?[['Total before rounding',doc.totalBeforeRounding]]:[]),...(doc.rounding!=null?[['Rounding',signedAmount(doc.rounding)]]:[]),[doc.settings.labels.total,doc.total],...(doc.paymentMethod?[['Payment',doc.paymentMethod]]:[]),...(doc.received!=null?[['Received',doc.received]]:[]),...(doc.change!=null?[['Change',doc.change]]:[]),...(!receipt&&doc.amountPaid?[['Payments recorded',doc.amountPaid]]:[]),...(!receipt&&doc.kind==='Invoice'&&!doc.isDraft&&doc.balance!=null?[['Balance due',doc.balance]]:[])];
   for(const [label,value] of totals)line(label+': '+(typeof value==='number'?amount(value):value),{bold:label===doc.settings.labels.total,point:label===doc.settings.labels.total?(receipt?10:12):size});
   section('Payment instructions',doc.paymentInstructions);
   if(qr){ensure(34);pdf.addImage(qr.data,'PNG',margin,y+3,28,28);y+=34;}

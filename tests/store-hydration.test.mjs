@@ -14,6 +14,7 @@ const vite = await createServer({
   optimizeDeps: { noDiscovery: true, include: [] },
 });
 const { Store } = await vite.ssrLoadModule("/src/store/editionStore.js");
+const { hydrationCollections } = await vite.ssrLoadModule("/src/domain/viewAccess.js");
 const respond = (rows) => ({
   ok: true,
   status: 200,
@@ -45,7 +46,7 @@ try {
     };
     const first = Store.refreshData();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(pending.length, 6);
+    assert.equal(pending.length, hydrationCollections(Store.state.currentUser).length);
     Store.selectCompany(Store.state.companies[1]);
     assert.equal(Store.state.products.length, 0);
     assert.equal(Store.state.transactions.length, 0);

@@ -8,10 +8,11 @@ export function permissionsFor(user) {
     inventoryTransact:active,costsRead:owner,costsWrite:owner,expensesRead:active,expensesCreate:active,
     expensesWrite:owner||manager,expensesVoid:owner||manager,financialReports:owner||manager,
     bulkExport:owner,clientsRead:active,clientsCreate:active,clientsWrite:owner||manager,
-    suppliersRead:owner,suppliersWrite:owner,templatesWrite:owner||manager,
+    suppliersRead:owner||manager,suppliersWrite:owner,templatesWrite:owner||manager,
     companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,
     deviceSettingsWrite:active,workspaceWrite:owner,companyEnroll:owner,usersManage:owner||manager,
-    managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager};
+    managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager,
+    receiptReviewsResolve:owner||manager};
 }
 export const capabilities = permissionsFor;
 export const can = (user,action) => permissionsFor(user)[action] === true;

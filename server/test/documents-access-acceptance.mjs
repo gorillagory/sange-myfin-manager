@@ -108,8 +108,8 @@ await test("checkout retains exactly-once stock, own receipt scope and strips ol
  const mine=await json(route("/transactions"),{cookie:staffCookie});assert.ok(mine.rows.some(x=>x.id===sale.id));noFinancial(mine);
  const others=await json(route("/transactions"),{cookie:peerCookie});assert.ok(!others.rows.some(x=>x.id===sale.id));
  const row=(await db.query("SELECT data FROM myfin.transactions WHERE company_id=$1 AND id=$2",[co,sale.id])).rows[0];assert.equal(row.data.items[0].cost,77191.37);
- const legacy=intent(undefined,{id:randomUUID()});const legacyData={...legacy,items:legacy.items.map(x=>({...x,cost:4444})),stockShortage:false};
- const crypto=await import("node:crypto");const canonical=await import("../../src/domain/pos.js");const original={...legacy,items:legacy.items.map(x=>({...x,cost:4444}))};
+ const legacy=intent(undefined,{id:randomUUID()}),canonical=await import("../../src/domain/pos.js");Object.assign(legacy,canonical.totalsFor(legacy.items,legacy.taxRate,legacy.discount),{schemaVersion:2});delete legacy.totalBeforeRounding;delete legacy.rounding;legacy.change=(canonical.cents(legacy.received)-canonical.cents(legacy.total))/100;const legacyData={...legacy,items:legacy.items.map(x=>({...x,cost:4444})),stockShortage:false};
+ const crypto=await import("node:crypto");const original={...legacy,items:legacy.items.map(x=>({...x,cost:4444}))};
  await db.query("INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data) VALUES($1,$2,$3,'pos',$4,$5,$6)",[co,legacy.id,staff,legacy.total,crypto.createHash("sha256").update(JSON.stringify(canonical.canonical(original))).digest("hex"),legacyData]);
  noFinancial(await json(route("/checkout"),{cookie:staffCookie,method:"POST",body:legacy}));
  assert.equal((await db.query("SELECT stock FROM myfin.products WHERE company_id=$1 AND id=$2",[co,product.id])).rows[0].stock,"19.000");
@@ -117,7 +117,7 @@ await test("checkout retains exactly-once stock, own receipt scope and strips ol
  assert.equal((await request(route("/assign-project"),{cookie:managerCookie,method:"POST",body:{ids:[sale.id],projectName:"Immutable"}})).statusCode,409);
 });
 await test("paid offline policy drift enters review and concurrent approvals post original intent once",async()=>{
- const sale=intent(undefined,{offline:true});sale.items[0].price=5;Object.assign(sale,{subtotal:5,discountAmount:0,tax:0,total:5,received:10000,change:9995});
+ const sale=intent(undefined,{offline:true});sale.items[0].price=5;Object.assign(sale,{subtotal:5,discountAmount:0,tax:0,totalBeforeRounding:5,rounding:0,total:5,received:10000,change:9995});
  assert.equal((await request(route("/checkout"),{cookie:staffCookie,method:"POST",body:sale})).statusCode,409);
  assert.equal((await request(route("/receipt-reviews"),{cookie:peerCookie,method:"POST",body:{sale}})).statusCode,403);
  const review=await json(route("/receipt-reviews"),{cookie:staffCookie,method:"POST",body:{sale}});assert.equal(review.status,"pending");
@@ -148,7 +148,7 @@ await test("manager overrides require reason, supplier side effects denied, and 
  const captured=intent(undefined,{offline:true});captured.receiptTemplateId=receiptTemplate.id;captured.receiptTemplateVersion=1;
  await json(route("/templates/"+receiptTemplate.id),{cookie:managerCookie,method:"PUT",body:{name:"Receipt changed",version:1,settings:{...templateDefaults("Receipt"),footer:"Changed footer"}}});await json(route("/templates/"+receiptTemplate.id+"/publish"),{cookie:managerCookie,method:"POST",body:{version:2}});
  const saved=await json(route("/checkout"),{cookie:staffCookie,method:"POST",body:captured});assert.equal(saved.templateSnapshot.footer,"Original receipt footer");
- const override=intent(undefined,{user:manager});override.items[0].price=5;Object.assign(override,{subtotal:5,discountAmount:0,tax:0,total:5,change:9995});assert.equal((await request(route("/checkout"),{cookie:managerCookie,method:"POST",body:override})).statusCode,409);
+ const override=intent(undefined,{user:manager});override.items[0].price=5;Object.assign(override,{subtotal:5,discountAmount:0,tax:0,totalBeforeRounding:5,rounding:0,total:5,change:9995});assert.equal((await request(route("/checkout"),{cookie:managerCookie,method:"POST",body:override})).statusCode,409);
  noFinancial(await json(route("/checkout"),{cookie:managerCookie,method:"POST",body:{...override,overrideReason:"Authorized price exception"}}));
  const supplierAttempt=intent();supplierAttempt.client_id=supplier.id;supplierAttempt.customerEmail="changed@myfin.test";assert.equal((await request(route("/checkout"),{cookie:staffCookie,method:"POST",body:supplierAttempt})).statusCode,403);
 });

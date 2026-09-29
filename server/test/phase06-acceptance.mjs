@@ -8,6 +8,8 @@ import { loadConfig } from "../src/config.js";
 import { createDatabase } from "../src/database.js";
 import { authConfig,createAuth,createIdentity } from "../src/auth.js";
 import { buildApp } from "../src/app.js";
+import { createSale,cartItem,totalsFor,cents } from "../../src/domain/pos.js";
+import { stripConfidential } from "../../src/domain/permissions.js";
 
 const marker="myfin-phase06-pg-20260928",cfg=loadConfig();
 if(process.env.MYFIN_ISOLATED_ACCEPTANCE!==marker||cfg.database.host!=="127.0.0.1"||cfg.database.port!==25436||cfg.database.database!=="myfin_dev"||!process.env.MYFIN_TEST_PRIVATE)throw Error("unsafe_phase06_test_target");
@@ -81,5 +83,66 @@ await test("single-use handoff creates a host-only full session for another assi
 await test("membership constraint permits multiple companies and protects uniqueness per company",async()=>{
  const roles=(await db.query("SELECT company_id,role FROM myfin.memberships WHERE identity_id=$1 ORDER BY company_id",[operatorId])).rows;assert.deepEqual(roles,[{company_id:companyA,role:"operator"},{company_id:companyB,role:"operator"}]);
  await assert.rejects(db.query("INSERT INTO myfin.memberships(company_id,identity_id,role) VALUES($1,$2,'operator')",[companyA,operatorId]),error=>error.code==="23505");
+});
+await test("v2 and v3 paid retries keep their original totals and never deduct stock twice",async()=>{
+ const product=await json("bfsb-bali.test",`/companies/${companyA}/products`,{cookie:ownerCookie,method:"POST",body:{name:"Receipt retry item",sku:`RETRY-${tag}`,price:19.93,cost:7.77,stock:12,trackStock:true,variants:[]}});
+ const merchant={id:companyA,name:"Ba|Li",preferences:{currency:"RM",taxRate:6,staffDiscountLimit:0}};
+ const make=id=>createSale({id,items:[cartItem(product)],company:merchant,user:{uid:operatorId,username:"Operator"},method:"Cash",received:100});
+ const v3=make(`rounded-${tag}`),v2=make(`legacy-${tag}`),legacyTotals=totalsFor(v2.items,v2.taxRate,v2.discount);
+ Object.assign(v2,{schemaVersion:2,...legacyTotals,change:(cents(v2.received)-cents(legacyTotals.total))/100});delete v2.totalBeforeRounding;delete v2.rounding;
+ assert.notEqual(v3.total,v2.total,"the fixture must distinguish rounded and legacy receipts");
+ for(const sale of [v2,v3]){
+  const path=`/companies/${companyA}/checkout`,first=await json("bfsb-bali.test",path,{cookie:operatorCookie,method:"POST",body:sale});
+  const stockAfter=(await db.query("SELECT stock FROM myfin.products WHERE company_id=$1 AND id=$2",[companyA,product.id])).rows[0].stock;
+  const retry=stripConfidential({...sale,cashierName:"Name changed after payment"});
+  const second=await json("bfsb-bali.test",path,{cookie:operatorCookie,method:"POST",body:retry});
+  assert.equal(first.id,sale.id);assert.equal(first.schemaVersion,sale.schemaVersion);assert.equal(first.total,sale.total);
+  assert.equal(second.id,sale.id);assert.equal(second.total,sale.total);assert.equal(second.change,sale.change);
+  assert.equal((await db.query("SELECT stock FROM myfin.products WHERE company_id=$1 AND id=$2",[companyA,product.id])).rows[0].stock,stockAfter);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM myfin.stock_movements WHERE company_id=$1 AND sale_id=$2",[companyA,sale.id])).rows[0].n,1);
+  const changed={...retry,items:[{...retry.items[0],price:retry.items[0].price+1}]};
+  const rejected=await request("bfsb-bali.test",path,{cookie:operatorCookie,method:"POST",body:changed});
+  assert.equal(rejected.statusCode,409);assert.equal(rejected.json().error,"receipt_payload_changed");
+ }
+});
+await test("a cashier dismissal request is immutable and only a manager can resolve an unposted payment",async()=>{
+ const product=(await json("bfsb-bali.test",`/companies/${companyA}/products`,{cookie:operatorCookie})).rows.find(row=>row.sku===`RETRY-${tag}`);
+ const sale=stripConfidential(createSale({id:`dismiss-${tag}`,items:[cartItem(product)],company:{id:companyA,name:"Ba|Li",preferences:{currency:"RM",taxRate:6,staffDiscountLimit:0}},user:{uid:operatorId,username:"Operator"},method:"Cash",received:100,offline:true}));
+ const requests=`/companies/${companyA}/receipt-dismissal-requests`,reviews=`/companies/${companyA}/receipt-reviews`,decision=`${reviews}/${sale.id}`;
+ const pending=await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale}});
+ assert.deepEqual({id:pending.id,status:pending.status,reasonCode:pending.reasonCode},{id:sale.id,status:"pending",reasonCode:"cashier_requested_dismissal"});
+ assert.equal((await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale}})).status,"pending");
+ assert.equal((await request("bfsb-bali.test",requests,{cookie:managerCookie,method:"POST",body:{sale}})).statusCode,403);
+ const changed={...sale,received:101,change:Math.round((101-sale.total)*100)/100};
+ const conflict=await request("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale:changed}});
+ assert.equal(conflict.statusCode,409);assert.equal(conflict.json().error,"receipt_payload_changed");
+ assert.equal((await request("bfsb-bali.test",`${decision}/dismiss`,{cookie:operatorCookie,method:"POST",body:{reason:"Duplicate payment"}})).statusCode,403);
+ assert.equal((await request("bfsb-bali.test",`${decision}/dismiss`,{cookie:managerCookie,method:"POST",body:{reason:"No"}})).statusCode,400);
+ const dismissed=await json("bfsb-bali.test",`${decision}/dismiss`,{cookie:managerCookie,method:"POST",body:{reason:"Payment was not recorded"}});
+ assert.deepEqual(dismissed,{id:sale.id,status:"dismissed"});
+ assert.equal((await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale}})).status,"dismissed");
+ const listed=(await json("bfsb-bali.test",reviews,{cookie:operatorCookie})).find(row=>row.id===sale.id);
+ assert.equal(listed.status,"dismissed");assert.equal(listed.dismissalReason,"Payment was not recorded");
+ assert.equal((await request("bfsb-bali.test",`${decision}/approve`,{cookie:managerCookie,method:"POST",body:{reason:"Post it anyway"}})).statusCode,409);
+ const checkout=await request("bfsb-bali.test",`/companies/${companyA}/checkout`,{cookie:operatorCookie,method:"POST",body:sale});
+ assert.equal(checkout.statusCode,409);assert.equal(checkout.json().error,"receipt_dismissed");
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM myfin.transactions WHERE company_id=$1 AND id=$2",[companyA,sale.id])).rows[0].n,0);
+});
+await test("a pending dismissal cannot cancel a payment that the server posts first",async()=>{
+ const product=(await json("bfsb-bali.test",`/companies/${companyA}/products`,{cookie:operatorCookie})).rows.find(row=>row.sku===`RETRY-${tag}`);
+ const sale=stripConfidential(createSale({id:`posted-after-request-${tag}`,items:[cartItem(product)],company:{id:companyA,name:"Ba|Li",preferences:{currency:"RM",taxRate:6,staffDiscountLimit:0}},user:{uid:operatorId,username:"Operator"},method:"Cash",received:100}));
+ const requests=`/companies/${companyA}/receipt-dismissal-requests`,review=`/companies/${companyA}/receipt-reviews/${sale.id}`;
+ assert.equal((await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale}})).status,"pending");
+ assert.equal((await json("bfsb-bali.test",`/companies/${companyA}/checkout`,{cookie:operatorCookie,method:"POST",body:sale})).id,sale.id);
+ const raced=await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale}});
+ assert.equal(raced.status,"posted");assert.equal(raced.receipt.id,sale.id);
+ const rejected=await request("bfsb-bali.test",`${review}/dismiss`,{cookie:managerCookie,method:"POST",body:{reason:"Payment already posted"}});
+ assert.equal(rejected.statusCode,409);assert.equal(rejected.json().error,"receipt_already_posted");
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM myfin.transactions WHERE company_id=$1 AND id=$2",[companyA,sale.id])).rows[0].n,1);
+ const next=stripConfidential(createSale({id:`posted-before-request-${tag}`,items:[cartItem(product)],company:{id:companyA,name:"Ba|Li",preferences:{currency:"RM",taxRate:6,staffDiscountLimit:0}},user:{uid:operatorId,username:"Operator"},method:"Cash",received:100}));
+ await json("bfsb-bali.test",`/companies/${companyA}/checkout`,{cookie:operatorCookie,method:"POST",body:next});
+ const acknowledged=await json("bfsb-bali.test",requests,{cookie:operatorCookie,method:"POST",body:{sale:next}});
+ assert.equal(acknowledged.status,"posted");assert.equal(acknowledged.receipt.id,next.id);
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2",[companyA,next.id])).rows[0].n,0);
 });
 }finally{await app.close();await admin.end();}
