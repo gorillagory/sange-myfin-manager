@@ -1,5 +1,6 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { Store } from './store';
 
 // Components
@@ -10,6 +11,9 @@ import SuperDashboard from './components/SuperDashboard.vue';
 const currentUser = computed(() => Store.state.currentUser);
 const selectedCompany = computed(() => Store.state.selectedCompany);
 const toast = computed(() => Store.state.notification);
+const route = useRoute();
+const customerSurface = computed(() => route.meta.surface === 'customer');
+watch(customerSurface, customer => { if (!customer) Store.init(); }, { immediate: true });
 
 // --- VIEW LOGIC (Returning strings to match your original structure) ---
 const currentView = computed(() => {
@@ -31,6 +35,8 @@ const currentView = computed(() => {
 
 <template>
   <div class="edition-app min-h-screen">
+    <RouterView v-if="customerSurface" />
+    <template v-else>
     
     <Transition name="fade">
         <div v-if="Store.state.isLoading" class="spinner-overlay">
@@ -72,6 +78,7 @@ const currentView = computed(() => {
            </div>
       </div>
     </Transition>
+    </template>
 
   </div>
 </template>

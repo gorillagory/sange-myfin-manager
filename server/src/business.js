@@ -26,6 +26,10 @@ import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
 import { companyRows } from "./reporting.js";
 import { assertOrderCreated, registerOrders } from "./orders.js";
+import { registerStorefrontAdmin } from "./storefront-admin.js";
+import { registerCustomerOrders } from "./customer-orders.js";
+import { registerCustomerProfiles } from "./customer-profiles.js";
+import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
 export async function identity(db, subject, tenant=null) {
   const r = (await db.query(
@@ -149,6 +153,7 @@ async function saveProduct(c, companyId, data, create = false) {
     if (p.version !== Number(current.rows[0].version))
       v.fail(409, "Product changed. Refresh and reopen it before saving.");
     p.version++;
+    await assertProductReservationFloor(c,companyId,p);
   }
   const prior = await c.query(
     "SELECT id,data FROM myfin.products WHERE company_id=$1 ORDER BY id",
@@ -206,7 +211,7 @@ async function saveProduct(c, companyId, data, create = false) {
   }
   return { ...p, _adjustments: movements };
 }
-export async function checkout(c, who, companyId, input, approval=null) {
+export async function checkout(c, who, companyId, input, approval=null, options={}) {
   const sale = v.parse(v.sale, input);
   let totals;try{totals=saleTotalsFor(sale);}catch{v.fail(400,"invalid_sale_rounding");}
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
@@ -232,6 +237,7 @@ export async function checkout(c, who, companyId, input, approval=null) {
     [companyId, sale.id],
   );
   if (existing.rowCount) {
+    if(options.requireNewSale)v.fail(409,"sale_id_already_used");
     // Old paid queues may have had confidential cost fields scrubbed by the access
     // upgrade. Match their complete operational intent, never repost stock.
     const intent=value=>{
@@ -251,6 +257,7 @@ export async function checkout(c, who, companyId, input, approval=null) {
     [companyId, ids],
   );
   if (rows.rowCount !== ids.length) v.fail(409, "receipt_review_required_product_changed");
+  await assertUnreservedSaleStock(c,companyId,rows.rows,sale.items,options.reservationOrderId||"");
   const companyRow=(await c.query("SELECT name,data FROM myfin.companies WHERE id=$1",[companyId])).rows[0];
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
@@ -262,8 +269,8 @@ export async function checkout(c, who, companyId, input, approval=null) {
     return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice:Number(variant?.price??product.price)};
   });
   const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0);
-  if(!approval&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
-  if(!approval&&manager(who)&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
+  if(!approval&&!options.acceptedOrderQuote&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
+  if(!approval&&!options.acceptedOrderQuote&&manager(who)&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
   sale.items=canonicalItems.map(({catalogPrice,...item})=>item);
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");
   if(approval)Object.assign(expectedStore,sale.storeSnapshot);
@@ -358,7 +365,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   app.decorateRequest("identity", null);
   app.decorateRequest("authSessionId", null);
   app.addHook("preHandler", async (req) => {
-    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/auth/") || req.url.startsWith("/api/pos-auth/") || req.url==="/api/tenant-context" || req.url==="/api/session-handoffs/consume" || req.url==="/api/session-handoffs/sign-out")
+    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/public/") || req.url.startsWith("/api/auth/") || req.url.startsWith("/api/pos-auth/") || req.url==="/api/tenant-context" || req.url==="/api/session-handoffs/consume" || req.url==="/api/session-handoffs/sign-out")
       return;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
@@ -418,6 +425,9 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerExpenseImport(app,{scoped,audit});
   registerStock(app,{scoped,audit});
   registerOrders(app,{scoped,audit});
+  registerStorefrontAdmin(app,{scoped,authOptions,audit});
+  registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
+  registerCustomerProfiles(app,{scoped});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}),req.query);
@@ -459,6 +469,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         target.stock=after;movements.push({productId:row.id,variantId:item.variantId||"",quantity:item.quantity,stockAfter:after});
       }
       product.stock=product.variants.length?product.variants.reduce((n,x)=>n+Number(x.stock),0):product.stock;product.version=Number(row.version)+1;
+      await assertProductReservationFloor(c,co,product);
       await c.query("UPDATE myfin.products SET data=$3,stock=$4,version=version+1 WHERE company_id=$1 AND id=$2",[co,row.id,product,product.stock]);
       for(const item of product.variants)await c.query("UPDATE myfin.product_variants SET stock=$4 WHERE company_id=$1 AND product_id=$2 AND id=$3",[co,row.id,item.id,item.stock]);
     }

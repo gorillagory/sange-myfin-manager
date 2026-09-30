@@ -6,6 +6,9 @@ import { registerFiles } from './files.js';
 import { publicTenant, requestContext, requestOrigin } from './tenancy.js';
 import { registerPosAuth } from './pos-auth.js';
 import { registerHandoffPublic } from './session-handoff.js';
+import { registerStorefrontPublic } from './storefront-public.js';
+import { registerCustomerAccounts } from './customer-auth.js';
+import { registerCustomerOrderHistory } from './customer-order-history.js';
 
 export function buildApp({ database = null, logger = false, auth = null, authOptions = null, uploadDir = null } = {}) {
   const app = Fastify({
@@ -26,6 +29,9 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
     if (!authOptions || req.url.startsWith('/api/health/')) return;
     req.tenant=await requestContext(database,req,authOptions);
     if(authOptions.enforceTenantHosts&&!req.tenant)return reply.code(404).send({error:'not_found'});
+    const publicApi=req.url.startsWith('/api/public/');
+    if((req.tenant?.surface==='storefront')!==publicApi && req.url!=='/api/tenant-context')
+      return reply.code(404).send({error:'not_found'});
     if(req.tenant?.redirect_to&&!['GET','HEAD','OPTIONS'].includes(req.method))return reply.code(409).send({error:'canonical_host_required',redirectTo:`${authOptions.protocol}//${req.tenant.redirect_to}`});
     const origin=authOptions.enforceTenantHosts?requestOrigin(req,authOptions):authOptions.origin;
     if (!['GET','HEAD','OPTIONS'].includes(req.method) && (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site')) return reply.code(403).send({error:'origin_required'});
@@ -36,6 +42,9 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
       if(!req.tenant)return reply.code(404).send({error:'not_found'});
       return publicTenant(req.tenant);
     });
+    registerStorefrontPublic(app,{db:database,authOptions});
+    registerCustomerAccounts(app,{db:database,authOptions});
+    registerCustomerOrderHistory(app,{db:database,authOptions});
     registerPosAuth(app,{db:database,authOptions});
     registerHandoffPublic(app,{db:database,authOptions});
     const allowed = new Set(['/api/auth/sign-in/email','/api/auth/sign-out','/api/auth/get-session','/api/auth/change-password']);

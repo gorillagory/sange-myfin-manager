@@ -42,6 +42,9 @@ services:
       AUTH_ALLOWED_HOSTS: ${AUTH_ALLOWED_HOSTS:?set reviewed host allowlist}
       AUTH_CONTROL_HOSTS: ${AUTH_CONTROL_HOSTS:-}
       PUBLIC_ROOT_DOMAIN: ${PUBLIC_ROOT_DOMAIN:-}
+      # up.sh/production-up.sh derive the exact current web-container address.
+      # Empty is safe: public requests then share the direct proxy rate bucket.
+      PUBLIC_PROXY_ADDRESSES: ${PUBLIC_PROXY_ADDRESSES:-}
       TENANT_HOST_ENFORCEMENT: ${TENANT_HOST_ENFORCEMENT:-true}
       AUTH_SECRET_FILE: /run/secrets/auth_secret
       POS_CODE_SECRET_FILE: /run/secrets/pos_code_secret

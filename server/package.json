@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test test/*.test.js",
+    "test:acceptance:customer": "node --test test/customer-ordering-acceptance.mjs",
     "migrate": "node src/migrate-cli.js",
     "genesis": "node src/genesis-cli.js"
   },

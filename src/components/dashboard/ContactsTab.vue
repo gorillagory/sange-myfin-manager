@@ -2,17 +2,18 @@
 import { computed, ref } from 'vue';
 import { Store } from '../../store';
 import Modal from '../ui/EditionModal.vue';
+import RegisteredCustomerProfiles from './RegisteredCustomerProfiles.vue';
 import { validEmail } from '../../domain/inventoryCsv';
 import { canCreateDirectoryContact, canManageDirectoryContact, contactKind, contactTabsFor, filterDirectoryContacts } from '../../domain/contactDirectory';
 
-const search = ref(''), tab = ref('customers'), form = ref(null), busy = ref(false), deleting = ref(null), error = ref('');
+const search = ref(''), tab = ref('customers'), form = ref(null), busy = ref(false), deleting = ref(null), error = ref(''), registeredCount = ref(0);
 const permissions = computed(() => Store.permissions());
-const tabs = computed(() => contactTabsFor(permissions.value));
+const tabs = computed(() => [...contactTabsFor(permissions.value), ...((permissions.value.owner || permissions.value.manager) ? [{ id:'registered', label:'Registered profiles' }] : [])]);
 const contacts = computed(() => filterDirectoryContacts(Store.state.clients, { tab:tab.value, query:search.value }));
 const customerCount = computed(() => Store.state.clients.filter(contact => contactKind(contact) === 'customers').length);
 const supplierCount = computed(() => Store.state.clients.filter(contact => contactKind(contact) === 'suppliers').length);
-const canCreate = computed(() => canCreateDirectoryContact(permissions.value, tab.value));
-const activeLabel = computed(() => tab.value === 'suppliers' ? 'supplier' : 'customer');
+const canCreate = computed(() => tab.value !== 'registered' && canCreateDirectoryContact(permissions.value, tab.value));
+const activeLabel = computed(() => tab.value === 'suppliers' ? 'supplier' : tab.value === 'registered' ? 'registered customer' : 'customer');
 
 function canManage(contact) {
   return canManageDirectoryContact(permissions.value, contact);
@@ -82,10 +83,11 @@ async function remove() {
     </header>
     <div class="ed-tabs" role="tablist" aria-label="Contact directory type">
       <button v-for="item in tabs" :id="`contact-tab-${item.id}`" :key="item.id" role="tab" :class="{active:tab===item.id}" :aria-controls="`contact-panel-${item.id}`" :aria-selected="tab===item.id" :tabindex="tab===item.id ? 0 : -1" @click="tab=item.id" @keydown.left.prevent="moveTab(-1,$event)" @keydown.right.prevent="moveTab(1,$event)" @keydown.home.prevent="focusTab(0,$event)" @keydown.end.prevent="focusTab(tabs.length-1,$event)">
-        {{ item.label }} <span class="ed-tab-count">{{ item.id === 'suppliers' ? supplierCount : customerCount }}</span>
+        {{ item.label }} <span class="ed-tab-count">{{ item.id === 'suppliers' ? supplierCount : item.id === 'registered' ? registeredCount : customerCount }}</span>
       </button>
     </div>
-    <section :id="`contact-panel-${tab}`" role="tabpanel" :aria-labelledby="`contact-tab-${tab}`">
+    <RegisteredCustomerProfiles v-if="tab==='registered'" :id="`contact-panel-${tab}`" role="tabpanel" :aria-labelledby="`contact-tab-${tab}`" @count="registeredCount=$event" />
+    <section v-else :id="`contact-panel-${tab}`" role="tabpanel" :aria-labelledby="`contact-tab-${tab}`">
       <div class="ed-filters ed-contact-filters">
         <input v-model="search" class="ed-input" :aria-label="`Search ${activeLabel}s`" :placeholder="`Search ${activeLabel} name, phone, email or registration`">
         <span class="ed-muted">{{ contacts.length }} {{ contacts.length === 1 ? activeLabel : activeLabel + 's' }}</span>

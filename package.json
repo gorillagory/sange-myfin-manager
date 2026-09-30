@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build && node scripts/build-offline.mjs",
     "preview": "vite preview",
-    "test": "node --test tests/pos.test.mjs tests/inventory.test.mjs tests/operations.test.mjs",
+    "test": "node --test tests/pos.test.mjs tests/inventory.test.mjs tests/operations.test.mjs tests/customer-ordering.test.mjs tests/customer-orders.test.mjs",
+    "test:customer": "node --test tests/customer-ordering.test.mjs tests/customer-orders.test.mjs",
     "test:offline": "node --test tests/offline.test.mjs tests/service-worker.test.mjs tests/store-hydration.test.mjs",
     "test:management": "node --test tests/management.test.mjs"
   },

@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { readFileSync } from "node:fs";
 import { hashPassword } from "better-auth/crypto";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { normalizeHostname } from "./tenancy.js";
 
 export function authConfig(env = process.env) {
@@ -37,11 +38,14 @@ export function authConfig(env = process.env) {
   const posCodeSecret=readOptionalSecret("POS_CODE_SECRET_FILE"),posSessionSecret=readOptionalSecret("POS_SESSION_SECRET_FILE");
   if((posCodeSecret&&!posSessionSecret)||(!posCodeSecret&&posSessionSecret)||(env.NODE_ENV==="production"&&!posCodeSecret))throw new Error("invalid_pos_secrets");
   const rootDomain=(env.PUBLIC_ROOT_DOMAIN||"").trim().toLowerCase();
-  if(rootDomain&&normalizeHostname(rootDomain)!==rootDomain)throw new Error("invalid_public_root_domain");
+  if(rootDomain&&(normalizeHostname(rootDomain)!==rootDomain||isIP(rootDomain)||rootDomain==='localhost'||rootDomain.split('.').length<2))
+    throw new Error("invalid_public_root_domain");
   const sessionHours=Number(env.POS_SESSION_HOURS||8);if(!Number.isInteger(sessionHours)||sessionHours<1||sessionHours>24)throw new Error("invalid_pos_session_hours");
+  const publicProxyAddresses=(env.PUBLIC_PROXY_ADDRESSES||"").split(",").map(x=>x.trim()).filter(Boolean);
+  if(publicProxyAddresses.some(address=>!isIP(address)))throw new Error("invalid_public_proxy_addresses");
   return {
     origin: base.origin, protocol, allowedHosts, controlHosts,
-    rootDomain,
+    rootDomain, publicProxyAddresses,
     enforceTenantHosts:env.TENANT_HOST_ENFORCEMENT!=="false" && env.NODE_ENV!=="test",
     secret, secure: base.protocol === "https:",
     pos:posCodeSecret?{codeSecret:posCodeSecret,sessionSecret:posSessionSecret,sessionHours}:null,

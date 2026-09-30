@@ -2,9 +2,14 @@ import { watch } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import { Store } from '../store';
 import { canVisit } from '../domain/viewAccess';
+import { isStorefrontHostname } from '../domain/customerOrdering';
 
 const routes = [
-    { path: '/', redirect: '/overview' },
+    { path: '/shop', alias: '/menu', component: () => import('../components/customer/CustomerStorefront.vue'), meta: { surface: 'customer' } },
+    { path: '/privacy', component: () => import('../components/customer/CustomerPrivacyNotice.vue'), meta: { surface: 'customer' } },
+    { path: '/order/:code', component: () => import('../components/customer/CustomerOrderStatus.vue'), meta: { surface: 'customer' } },
+    { path: '/order', component: () => import('../components/customer/CustomerStorefront.vue'), meta: { surface: 'customer' } },
+    { path: '/', redirect: () => isStorefrontHostname(location.hostname) ? '/shop' : '/overview' },
     { path: '/poslog', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/session-handoff', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/overview', component: () => import('../components/dashboard/OverviewTab.vue') },
@@ -28,7 +33,7 @@ const routes = [
     { path: '/activity', component: () => import('../components/dashboard/ActivityTab.vue'), meta: { requiresAdmin: true } },
     { path: '/templates', component: () => import('../components/dashboard/TemplateStudio.vue'), meta: { requiresAdmin: true } },
     { path: '/settings', component: () => import('../components/dashboard/SettingsTab.vue'), meta: { requiresAdmin: true } },
-    { path: '/:pathMatch(.*)*', redirect: '/overview' }
+    { path: '/:pathMatch(.*)*', redirect: () => isStorefrontHostname(location.hostname) ? '/shop' : '/overview' }
 ];
 
 const router = createRouter({
@@ -39,13 +44,15 @@ const router = createRouter({
 
 // UI routing complements the API's authoritative permission checks.
 router.beforeEach(async to => {
+    if (isStorefrontHostname(location.hostname) && to.meta.surface !== 'customer') return '/shop';
+    if (to.meta.surface === 'customer') return true;
     if (Store.state.isLoading) await new Promise(resolve => {
         const unwatch=watch(() => Store.state.isLoading, loading => { if(!loading){unwatch();resolve();} });
     });
     if (Store.state.currentUser && !canVisit(Store.state.currentUser,to.path)) return '/overview';
 });
 watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id], () => {
-    if (Store.state.currentUser && !canVisit(Store.state.currentUser,router.currentRoute.value.path))
+    if (router.currentRoute.value.meta.surface !== 'customer' && Store.state.currentUser && !canVisit(Store.state.currentUser,router.currentRoute.value.path))
         router.replace('/overview');
 });
 export default router;
