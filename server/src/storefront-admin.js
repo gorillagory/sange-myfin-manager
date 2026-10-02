@@ -64,15 +64,18 @@ async function configOutput(c, companyId) {
     `SELECT * FROM myfin.storefront_product_variants WHERE company_id=$1 AND product_id=ANY($2::text[])
       ORDER BY sort_order,variant_id`, [companyId, products.map(product => product.product_id)],
   )).rows : [];
+  const privacy = storefrontPrivacyOutput(settings);
   return {
     storefront: settings ? {
-      published: settings.published, hostname, displayName: settings.display_name,
+      published: settings.published, hostname: host, displayName: settings.display_name,
       description: settings.description, pickupInstructions: settings.pickup_instructions,
       orderExpiryMinutes: settings.order_expiry_minutes, maxOrderItems: settings.max_order_items,
       maxItemQuantity: Number(settings.max_item_quantity), maxOrderValue: Number(settings.max_order_value),
-      ...storefrontPrivacyOutput(settings),
+      privacyControllerName: privacy.controllerName, privacyControllerContact: privacy.controllerContact,
+      privacyNoticeUrl: privacy.noticeUrl, privacyNoticeEn: privacy.noticeEn,
+      privacyNoticeMs: privacy.noticeMs, guestContactRetentionDays: privacy.guestContactRetentionDays,
       updatedAt: settings.updated_at,
-    } : { published: false, hostname, displayName: '', description: '', pickupInstructions: '',
+    } : { published: false, hostname: host, displayName: '', description: '', pickupInstructions: '',
       orderExpiryMinutes: 30, maxOrderItems: 30, maxItemQuantity: 20, maxOrderValue: 1000,
       guestContactRetentionDays: 90, privacyControllerName: '', privacyControllerContact: '',
       privacyNoticeUrl: '', privacyNoticeEn: '', privacyNoticeMs: '' },

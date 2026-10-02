@@ -11,7 +11,8 @@
     "test": "node --test test/*.test.js",
     "test:acceptance:customer": "node --test test/customer-ordering-acceptance.mjs",
     "migrate": "node src/migrate-cli.js",
-    "genesis": "node src/genesis-cli.js"
+    "genesis": "node src/genesis-cli.js",
+    "firebase-import": "node src/original-firebase-import-cli.js"
   },
   "dependencies": {
     "@fastify/multipart": "9.4.0",
