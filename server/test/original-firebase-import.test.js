@@ -203,6 +203,19 @@ test('approval is mandatory before an import can reach a database transaction', 
   assert.equal(transactionCalled,false);
 });
 
+test('apply sends anomaly arrays as JSON and can repeat only after complete ledger verification', async t => {
+  const {directory}=await syntheticExport(t);
+  const bundle=await loadOriginalFirebaseExport(directory);
+  const manifest=generateOriginalFirebaseManifest(bundle);manifest.approved=true;
+  const plan=createOriginalFirebaseImportPlan(bundle,manifest,{requireApproval:true});
+  const client=new FakeQueryClient({plan});
+  const result=await applyOriginalFirebaseImport({transaction:fn=>fn(client)},bundle,manifest);
+  assert.equal(result.alreadyApplied,false);
+  const writes=client.calls.filter(call=>call.sql.includes('INSERT INTO myfin.original_firebase_source_records'));
+  assert.equal(writes.length,plan.counts.sourceRecords);
+  for(const write of writes){assert.equal(typeof write.params[15],'string');assert.ok(Array.isArray(JSON.parse(write.params[15])));}
+});
+
 test('deterministic target inspection reports conflicts and recognizes an identical prior run', async t => {
   const {directory} = await syntheticExport(t);
   const bundle = await loadOriginalFirebaseExport(directory);

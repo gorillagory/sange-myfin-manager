@@ -477,7 +477,7 @@ async function insertSourceRecord(c,plan,record){
     (import_run_id,source_project,source_path,collection_name,document_id,source_company_id,source_created_at,source_updated_at,source_payload_digest,payload_digest,decoded_data,disposition,target_table,target_company_id,target_id,anomalies)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,[
       plan.runId,plan.source.projectId,record.path,record.collection,record.documentId,record.sourceCompanyId,record.createTime,record.updateTime,
-      record.sourcePayloadDigest,sha256(stableStringify(record.data)),record.data,record.disposition,record.targetTable,record.targetCompanyId,record.targetId,record.anomalies]);
+      record.sourcePayloadDigest,sha256(stableStringify(record.data)),record.data,record.disposition,record.targetTable,record.targetCompanyId,record.targetId,JSON.stringify(record.anomalies)]);
   if(record.disposition==='imported')await c.query(`INSERT INTO myfin.original_firebase_id_mappings
     (import_run_id,entity_type,source_company_id,source_id,target_table,target_company_id,target_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,
     [plan.runId,record.collection,record.sourceCompanyId||'',record.documentId,record.targetTable,record.targetCompanyId||'',record.targetId]);
