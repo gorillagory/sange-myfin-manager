@@ -3,6 +3,7 @@ import { reactive } from 'vue';
 export const state = reactive({
     companies: [],
     selectedCompany: null,
+    globalAdministration: false,
     transactions: [],
     expenses: [],
     clients: [],

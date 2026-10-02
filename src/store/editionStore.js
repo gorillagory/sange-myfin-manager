@@ -65,6 +65,7 @@ export const Store = reactive({
     this.clearCompany();
     state.currentUser = null;
     state.selectedCompany = null;
+    state.globalAdministration = false;
     state.companies = [];
     state.users = [];
     state.isLoading = false;
@@ -181,6 +182,7 @@ export const Store = reactive({
     this.clearCompany();
     state.currentUser = null;
     state.selectedCompany = null;
+    state.globalAdministration = false;
     state.companies = [];
     state.users = [];
     try {
@@ -325,7 +327,10 @@ export const Store = reactive({
     if (generation !== session || request !== directoryEpoch || state.currentUser?.role !== user.role) return;
     state.companies = p.costsRead ? companies : stripConfidential(companies);
     state.users = users;
-    const chosen = state.tenantContext?.company?.id || state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
+    const stayInGlobalAdministration = user.role === "super_admin" && state.globalAdministration;
+    const chosen = stayInGlobalAdministration
+      ? null
+      : state.tenantContext?.company?.id || state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
     const co = state.companies.find(c => c.id === chosen) || (user.role !== "super_admin" ? state.companies[0] : null);
     const hydration = this.selectCompany(co || null, { hydrate, verifyActor: false, silent });
     await localPos.putProfile(user.uid, { user, companies: state.companies, verifiedAt:new Date().toISOString() })
@@ -337,6 +342,7 @@ export const Store = reactive({
     const changed = company?.id !== state.selectedCompany?.id;
     if (changed) this.clearCompany();
     state.selectedCompany = company;
+    state.globalAdministration = state.currentUser?.role === "super_admin" && !company;
     let device={};try{device=JSON.parse(localSettings.getItem("myfin-device-preferences-"+company?.id)||"{}");}catch{}
     state.preferences = { theme: "light", ...(company?.preferences || {}), ...device };
     if (company)
