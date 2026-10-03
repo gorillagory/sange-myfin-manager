@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reportRange, reportBuckets, reportBucketLabel } from '../src/domain/financialReport.js';
+import { documentCollectedAmount, documentOutstandingAmount } from '../src/domain/documents.js';
 
 test('report intervals retain cent-exact totals across day, ISO week and month', () => {
   const daily = [
@@ -26,4 +27,13 @@ test('report range rejects reversed, invalid and excessive dates', () => {
   assert.match(reportRange('2026-02-30', '2026-03-01'), /valid/);
   assert.match(reportRange('2026-09-30', '2026-09-01'), /end date/);
   assert.match(reportRange('2025-01-01', '2026-09-01'), /range/);
+});
+
+test('document collections and balances include migrated paid, pending and partial invoices', () => {
+  const paid = { type: 'Invoice', documentState: 'legacy', status: 'Paid', total: 19.95 };
+  const pending = { ...paid, status: 'Pending' };
+  const partial = { ...paid, status: 'Partially paid', paidAmount: 5 };
+  assert.deepEqual([documentCollectedAmount(paid), documentOutstandingAmount(paid)], [19.95, 0]);
+  assert.deepEqual([documentCollectedAmount(pending), documentOutstandingAmount(pending)], [0, 19.95]);
+  assert.deepEqual([documentCollectedAmount(partial), documentOutstandingAmount(partial)], [5, 14.95]);
 });

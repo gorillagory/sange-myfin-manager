@@ -1,4 +1,4 @@
-import { totalsFor,businessDate } from "./pos.js";
+import { totalsFor,businessDate,cents } from "./pos.js";
 export const DOCUMENT_TYPES=Object.freeze(["Invoice","Quote"]);
 export const TEMPLATE_KINDS=Object.freeze(["Invoice","Quote","Receipt"]);
 export function templateDefaults(kind="Invoice"){
@@ -6,6 +6,16 @@ export function templateDefaults(kind="Invoice"){
 }
 export function documentDefaults(type="Invoice"){
   return {type,status:"Draft",documentState:"draft",client_id:"",date:businessDate(),dueDate:"",validUntil:"",items:[{desc:"",qty:1,unit:"pcs",price:0}],discount:0,taxRate:0,notes:"",paymentInstructions:"",bankName:"",accountName:"",accountNumber:"",terms:"",footer:"",signatureLabel:"",templateId:"",assignedTo:""};
+}
+export function documentCollectedAmount(doc={}){
+  const total=Math.max(0,cents(Number(doc.total)||0));
+  if(doc.source==="pos"||["Paid","Cleared"].includes(doc.status))return total/100;
+  return Math.max(0,Math.min(total,cents(Number(doc.paidAmount??doc.amountPaid??0)||0)))/100;
+}
+export function documentOutstandingAmount(doc={}){
+  const total=Math.max(0,cents(Number(doc.total)||0)),explicit=Number(doc.outstandingAmount);
+  if(doc.outstandingAmount!==undefined&&Number.isFinite(explicit))return Math.max(0,Math.min(total,cents(explicit)))/100;
+  return Math.max(0,total-cents(documentCollectedAmount(doc)))/100;
 }
 const clone=value=>JSON.parse(JSON.stringify(value));
 export function buildDocumentViewModel(doc={},company={},client={},template={}){

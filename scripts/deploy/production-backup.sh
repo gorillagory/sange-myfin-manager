@@ -11,8 +11,11 @@ set -a
 set +a
 test "${MYFIN_COMPOSE_PROJECT:-}" = myfin-prod
 test "${MYFIN_DB_NAME:-}" = myfin_prod
+test "${MYFIN_DB_USER:-}" = myfin_prod_runtime
 test "${MYFIN_UPLOAD_VOLUME:-}" = myfin-prod-uploads
-test -f "${MYFIN_DB_PASSWORD_FILE:-/nonexistent}"
+: "${MYFIN_MIGRATOR_PASSWORD_FILE:?protected production migrator password file}"
+case "$MYFIN_MIGRATOR_PASSWORD_FILE" in /*) ;; *) echo 'Use an absolute migrator password file path' >&2; exit 1;; esac
+test -f "$MYFIN_MIGRATOR_PASSWORD_FILE"
 test -f "$repo/deploy/compose.yml"
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -29,10 +32,10 @@ restart=1
 compose stop api
 
 docker run --rm --network nexus-data --memory 256m --cpus 0.5 \
-  --mount "type=bind,src=$MYFIN_DB_PASSWORD_FILE,dst=/run/password,readonly" \
+  --mount "type=bind,src=$MYFIN_MIGRATOR_PASSWORD_FILE,dst=/run/password,readonly" \
   --mount "type=bind,src=$backup,dst=/backup" \
   --entrypoint sh postgres:16-bookworm -c \
-  'export PGPASSWORD="$(cat /run/password)"; exec pg_dump -h nexus-shared-postgres -U myfin_prod_runtime -d myfin_prod --format=custom --no-owner --no-acl --file=/backup/database.dump'
+  'export PGPASSWORD="$(cat /run/password)"; exec pg_dump -h nexus-shared-postgres -U myfin_prod_migrator -d myfin_prod --role=myfin_prod_owner --format=custom --no-owner --no-acl --file=/backup/database.dump'
 docker run --rm --network none --memory 128m --cpus 0.5 \
   --mount type=volume,src=myfin-prod-uploads,dst=/uploads,readonly \
   --mount "type=bind,src=$backup,dst=/backup" \

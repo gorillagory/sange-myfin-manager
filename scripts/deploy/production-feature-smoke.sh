@@ -35,17 +35,103 @@ PY
 )
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/orders/summary" > "$work/orders-summary.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/orders?view=active&limit=10" > "$work/orders.json"
+curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/reports/summary?$range" > "$work/summary.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/reports/details?$range" > "$work/details.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/reports/consolidation?$range" > "$work/consolidation.json"
-python3 - "$work/orders-summary.json" "$work/orders.json" "$work/details.json" "$work/consolidation.json" "$company" <<'PY'
-import json,sys
-summary,orders,details,consolidation=[json.load(open(path)) for path in sys.argv[1:5]]
-company=sys.argv[5]
-assert all(isinstance(summary['counts'][key],int) for key in ('pending','preparing','ready','completed','active'))
+curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/documents" > "$work/documents.json"
+pages=0
+after=
+: > "$work/transactions-pages.jsonl"
+while :; do
+  pages=$((pages+1))
+  test "$pages" -le 100
+  if test -n "$after"; then
+    curl --fail --silent --show-error -b "$work/cookies" --get \
+      --data-urlencode 'limit=500' --data-urlencode "after=$after" \
+      "$base/api/companies/$company/transactions" > "$work/transactions-page.json"
+  else
+    curl --fail --silent --show-error -b "$work/cookies" \
+      "$base/api/companies/$company/transactions?limit=500" > "$work/transactions-page.json"
+  fi
+  after=$(python3 - "$work/transactions-page.json" "$work/transactions-pages.jsonl" <<'PY'
+import json,pathlib,sys
+page=json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert isinstance(page,dict) and isinstance(page.get('rows'),list)
+assert page.get('next') is None or isinstance(page['next'],str)
+with pathlib.Path(sys.argv[2]).open('a') as stream:
+    stream.write(json.dumps(page,separators=(',',':'))+'\n')
+print(page.get('next') or '')
+PY
+)
+  test -n "$after" || break
+done
+python3 - "$work" "$company" <<'PY'
+import json,math,pathlib,re,sys
+root=pathlib.Path(sys.argv[1]); company=sys.argv[2]
+def read(name): return json.loads((root/f'{name}.json').read_text())
+def require_keys(value,keys,label):
+    assert isinstance(value,dict),f'{label} must be an object'
+    missing=[key for key in keys if key not in value]
+    assert not missing,f'{label} missing keys: {missing}'
+def require_number(value,label):
+    assert isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value),f'{label} must be a finite number'
+def require_totals(value,label):
+    require_keys(value,TOTAL_KEYS,label)
+    for key in TOTAL_KEYS: require_number(value[key],f'{label}.{key}')
+    assert round(value['cashIn']-value['cashOut'],2)==round(value['cashFlow'],2),f'{label} cash flow does not reconcile'
+    return {key:value[key] for key in TOTAL_KEYS}
+TOTAL_KEYS=('cashIn','cashOut','cashFlow','sales','tax','expenses','quoted','convertedQuoted')
+DETAIL_COLLECTIONS=('sales','expenses','receipts','quotes')
+DETAIL_ROW_KEYS={
+    'sales':('id','date','kind','number','customer','total','tax','fromQuote'),
+    'expenses':('id','date','description','category','payee','number','kind','status','amount','cashImpact'),
+    'receipts':('id','date','kind','number','amount'),
+    'quotes':('id','date','kind','number','customer','status','total','converted'),
+}
+me=read('me'); order_summary=read('orders-summary'); orders=read('orders'); documents=read('documents')
+summary=read('summary'); details=read('details'); consolidation=read('consolidation')
+transaction_pages=[json.loads(line) for line in (root/'transactions-pages.jsonl').read_text().splitlines()]
+transactions=[row for page in transaction_pages for row in page['rows']]
+assert me.get('authLevel')=='password' and me.get('role') in ('super_admin','workspace_owner','manager')
+assert isinstance(documents,list)
+assert all(isinstance(order_summary['counts'][key],int) for key in ('pending','preparing','ready','completed','active'))
 assert isinstance(orders['rows'],list) and isinstance(orders['counts'],dict)
-assert all(key in details['totals'] for key in ('sales','tax','expenses','cashFlow'))
-assert isinstance(details['sales'],list) and isinstance(details['expenses'],list)
+summary_totals=require_totals(summary,'summary')
+details_totals=require_totals(details.get('totals'),'details.totals')
+assert summary_totals==details_totals,'summary and detail totals differ'
+require_keys(summary,('from','to','basis','daily'),'summary')
+assert isinstance(summary['basis'],str) and summary['basis']
+assert isinstance(summary['daily'],list)
+for index,row in enumerate(summary['daily']):
+    require_keys(row,('date','sales','tax','expenses','cashIn','cashOut','cashFlow'),f'summary.daily[{index}]')
+    for key in ('sales','tax','expenses','cashIn','cashOut','cashFlow'): require_number(row[key],f'summary.daily[{index}].{key}')
+require_keys(details,('from','to','totals','basis','counts','limited',*DETAIL_COLLECTIONS),'details')
+assert (summary['from'],summary['to'],summary['basis'])==(details['from'],details['to'],details['basis'])
+assert isinstance(details['limited'],bool) and isinstance(details['counts'],dict)
+for collection in DETAIL_COLLECTIONS:
+    rows=details[collection]
+    count=details['counts'].get(collection)
+    assert isinstance(rows,list),f'details.{collection} must be an array'
+    assert isinstance(count,int) and not isinstance(count,bool) and count>=len(rows),f'details.counts.{collection} is invalid'
+    if not details['limited']: assert count==len(rows),f'details.counts.{collection} does not match its array'
+    for index,row in enumerate(rows): require_keys(row,DETAIL_ROW_KEYS[collection],f'details.{collection}[{index}]')
+require_keys(consolidation,('from','to','workspaceId','workspaces','companies'),'consolidation')
+assert (consolidation['from'],consolidation['to'])==(summary['from'],summary['to'])
 assert any(row['id']==company for row in consolidation['companies'])
+for index,row in enumerate(consolidation['companies']): require_totals(row,f'consolidation.companies[{index}]')
+if me['role']=='manager':
+    assert not re.search(r'cost|margin|profit|surplus|valuation',json.dumps(details),re.I),'manager report exposes confidential fields'
+    expected={row['id'] for row in details['sales'] if row.get('status') in ('Pending','Partially paid')}
+    if expected:
+        transaction_ids={row['id'] for row in transactions}; document_ids={row['id'] for row in documents}; receipt_ids={row['id'] for row in details['receipts']}
+        assert expected<=transaction_ids,'pending legacy invoices are missing from the manager transaction feed'
+        assert expected<=document_ids,'pending legacy invoices are missing from the manager document list'
+        assert expected.isdisjoint(receipt_ids),'unpaid legacy invoices were reported as historical cash receipts'
+        print(f'manager_visibility_passed: {len(expected)} pending legacy invoice(s)')
+    else:
+        print('manager_visibility_skipped: no legacy Pending/Partially paid invoices in the selected range')
+else:
+    print(f"manager_visibility_skipped: authenticated role is {me['role']}")
 print('production_public_feature_smoke_passed')
 PY
 curl --fail --silent --show-error -b "$work/cookies" -H "Origin: $base" \

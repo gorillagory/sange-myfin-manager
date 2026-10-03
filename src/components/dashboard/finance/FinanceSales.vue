@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { Store } from '../../../store';
 import { businessDate, money } from '../../../domain/pos';
+import { documentCollectedAmount, documentOutstandingAmount } from '../../../domain/documents';
 import Icon from '../../ui/EditionIcon.vue';
 
 const query = ref('');
@@ -17,8 +18,8 @@ const shown = computed(() => {
     .some(value => String(value || '').toLocaleLowerCase().includes(needle)));
 });
 const customer = row => row.customerName || Store.state.clients.find(client => client.id === row.client_id)?.name || 'Walk-in customer';
-const collected = row => row.source === 'pos' ? Number(row.total || 0) : row.documentState === 'legacy' ? (['Paid', 'Cleared'].includes(row.status) ? Number(row.total || 0) : 0) : Number(row.paidAmount || 0);
-const outstanding = row => Math.max(0, Number(row.total || 0) - collected(row));
+const collected = documentCollectedAmount;
+const outstanding = documentOutstandingAmount;
 const origin = row => row.source === 'pos' ? 'Checkout' : row.quoteId ? 'Invoice from quote' : row.documentState === 'legacy' ? 'Historical invoice' : 'Invoice';
 const totals = computed(() => sales.value.reduce((value, row) => ({ sales: value.sales + Number(row.total || 0), collected: value.collected + collected(row), outstanding: value.outstanding + outstanding(row) }), { sales: 0, collected: 0, outstanding: 0 }));
 async function refresh() {
