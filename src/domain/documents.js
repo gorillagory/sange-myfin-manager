@@ -8,6 +8,7 @@ export function documentDefaults(type="Invoice"){
   return {type,status:"Draft",documentState:"draft",client_id:"",date:businessDate(),dueDate:"",validUntil:"",items:[{desc:"",qty:1,unit:"pcs",price:0}],discount:0,taxRate:0,notes:"",paymentInstructions:"",bankName:"",accountName:"",accountNumber:"",terms:"",footer:"",signatureLabel:"",templateId:"",assignedTo:""};
 }
 export function documentCollectedAmount(doc={}){
+  if(doc.source!=="pos"&&doc.type!=="Invoice")return 0;
   const total=Math.max(0,cents(Number(doc.total)||0));
   if(doc.source==="pos"||["Paid","Cleared"].includes(doc.status))return total/100;
   return Math.max(0,Math.min(total,cents(Number(doc.paidAmount??doc.amountPaid??0)||0)))/100;

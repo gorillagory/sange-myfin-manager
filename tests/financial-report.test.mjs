@@ -37,3 +37,13 @@ test('document collections and balances include migrated paid, pending and parti
   assert.deepEqual([documentCollectedAmount(pending), documentOutstandingAmount(pending)], [0, 19.95]);
   assert.deepEqual([documentCollectedAmount(partial), documentOutstandingAmount(partial)], [5, 14.95]);
 });
+
+test('recorded collections exclude paid payment vouchers and quotes', () => {
+  const documents = [
+    { type: 'Invoice', documentState: 'legacy', status: 'Cleared', total: 71248.75 },
+    { type: 'Invoice', documentState: 'legacy', status: 'Paid', total: 6980 },
+    { type: 'Payment Voucher', documentState: 'legacy', status: 'Paid', total: 2152 },
+    { type: 'Quote', documentState: 'legacy', status: 'Cleared', total: 500 },
+  ];
+  assert.equal(documents.reduce((total,document) => total + documentCollectedAmount(document), 0), 78228.75);
+});
