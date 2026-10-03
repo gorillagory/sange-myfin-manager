@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { Store } from '../../../store';
 import { api, companyPath } from '../../../services/api';
 import { documentDefaults } from '../../../domain/documents';
@@ -16,6 +17,7 @@ import Receipt from '../pos/EditionReceipt.vue';
 import Modal from '../../ui/EditionModal.vue';
 import Icon from '../../ui/EditionIcon.vue';
 const permission=computed(()=>capabilities(Store.state.currentUser)), company=computed(()=>Store.state.selectedCompany||{});
+const route=useRoute(),router=useRouter();
 const documents=ref([]),templates=ref([]),loading=ref(false),busy=ref(false),error=ref(''),query=ref(''),kind=ref(''),status=ref(''),mode=ref('list'),editing=ref(null),detail=ref(null),receipt=ref(null),action=ref(null),reason=ref(''),payment=ref({}),actionError=ref(''),uncertain=ref(false);
 let generation=0;
 const rows=computed(()=>[...documents.value,...Store.state.transactions.filter(row=>row.source==='pos')].sort((a,b)=>String(b.date).localeCompare(String(a.date))));
@@ -41,6 +43,7 @@ async function refresh(){
   catch(failure){if(run===generation)error.value=explain(failure);}finally{if(run===generation)loading.value=false;}
 }
 function newDocument(type){editing.value={...documentDefaults(type),id:crypto.randomUUID(),_new:true,date:businessDate(),taxRate:company.value.preferences?.taxRate??company.value.preferences?.tax??0};mode.value='editor';error.value='';}
+function openRequestedDraft(){const requested=String(route.query.new||'').toLowerCase();if(!['quote','invoice'].includes(requested)||!Store.state.online)return;newDocument(requested==='quote'?'Quote':'Invoice');const query={...route.query};delete query.new;router.replace({path:route.path,query});}
 function edit(doc){editing.value=JSON.parse(JSON.stringify(doc));detail.value=null;mode.value='editor';error.value='';}
 async function save(payload){
   if(busy.value)return;busy.value=true;error.value='';
@@ -68,7 +71,7 @@ async function applyAction(){
   }catch(failure){actionError.value=explain(failure);uncertain.value=operation==='payment'&&(failure.network||failure.status>=500);}finally{busy.value=false;}
 }
 function exportList(){const records=[['Number','Type','Date','Customer','Status','Total'],...filtered.value.map(doc=>[doc.number,doc.source==='pos'?'Receipt':doc.type,doc.date,customer(doc),doc.status,doc.total])];downloadFile(records.map(row=>row.map(csvCell).join(',')).join('\r\n'),'document-list.csv','text/csv;charset=utf-8');}
-onMounted(refresh);onBeforeUnmount(()=>generation++);
+onMounted(async()=>{await refresh();openRequestedDraft();});watch(()=>route.query.new,openRequestedDraft);onBeforeUnmount(()=>generation++);
 </script>
 <template>
   <SalesEditor v-if="mode==='editor'" :document="editing" :company="company" :clients="Store.state.clients.filter(client=>client.type!=='Supplier')" :products="Store.state.products" :templates="templates" :users="Store.state.users" :busy="busy" :error="error" @cancel="mode='list';editing=null;error=''" @save="save" @pdf="pdf"/>

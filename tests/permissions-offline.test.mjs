@@ -33,11 +33,11 @@ await test('one shared permission matrix controls routes, data hydration and sta
  for(const action of ['financialReports','expensesWrite','suppliersRead'])assert.equal(permissionsFor(staff)[action],false);
  assert.equal(permissionsFor(staff).expensesRead,true);
  for(const actor of [owner,manager,staff])assert.ok(canVisit(actor,'/receipt-reviews'));
- for(const path of ['/analytics','/expenses','/activity'])assert.equal(canVisit(manager,path),true);
+ for(const path of ['/analytics','/cashbook','/expenses','/activity'])assert.equal(canVisit(manager,path),true);
  assert.equal(canVisit(manager,'/consolidation'),true);
  assert.equal(canVisit({...manager,authLevel:'pos_code'},'/consolidation'),false);
  assert.equal(canVisit(staff,'/expenses'),true);
- for(const path of ['/analytics','/activity'])assert.equal(canVisit(staff,path),false);
+ for(const path of ['/analytics','/cashbook','/activity'])assert.equal(canVisit(staff,path),false);
  assert.equal(canVisit(staff,'/users'),false);assert.equal(canVisit(manager,'/templates'),true);
  assert.deepEqual(hydrationCollections(staff),['products','transactions','clients','expenses','stock_items']);assert.deepEqual(hydrationCollections(manager),['products','transactions','clients','expenses','activities','stock_items','stock_movements','stock_ledger']);assert.equal(hydrationCollections(owner).length,8);
  assert.equal(manageableAccount(manager,staff),true);assert.equal(manageableAccount(manager,{...staff,company_id:'b'}),false);assert.equal(manageableAccount(manager,{...manager,uid:'other-manager'}),false);assert.equal(manageableAccount(staff,staff),false);

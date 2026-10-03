@@ -21,12 +21,12 @@ export function reportBuckets(daily = [], cadence = 'day') {
       utc.setUTCDate(utc.getUTCDate() - ((utc.getUTCDay() + 6) % 7));
       key = utc.toISOString().slice(0, 10);
     }
-    if (!buckets.has(key)) buckets.set(key, { key, from: date, to: date, sales: 0, tax: 0, expenses: 0, cashFlow: 0 });
+    if (!buckets.has(key)) buckets.set(key, { key, from: date, to: date, sales: 0, tax: 0, expenses: 0, cashIn: 0, cashOut: 0, cashFlow: 0 });
     const bucket = buckets.get(key);
     bucket.to = date;
-    for (const name of ['sales', 'tax', 'expenses', 'cashFlow']) bucket[name] += cents(day[name]);
+    for (const name of ['sales', 'tax', 'expenses', 'cashIn', 'cashOut', 'cashFlow']) bucket[name] += cents(day[name] || 0);
   }
-  return [...buckets.values()].map(bucket => ({ ...bucket, sales: bucket.sales / 100, tax: bucket.tax / 100, expenses: bucket.expenses / 100, cashFlow: bucket.cashFlow / 100 }));
+  return [...buckets.values()].map(bucket => ({ ...bucket, sales: bucket.sales / 100, tax: bucket.tax / 100, expenses: bucket.expenses / 100, cashIn: bucket.cashIn / 100, cashOut: bucket.cashOut / 100, cashFlow: bucket.cashFlow / 100 }));
 }
 
 export function reportBucketLabel(bucket, cadence) {

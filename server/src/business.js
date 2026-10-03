@@ -11,7 +11,6 @@ import {
   normalizeProduct,
   cents,
   businessDate,
-  expenseRecords,
 } from "../../src/domain/pos.js";
 import { validateProduct } from "../../src/domain/inventoryCsv.js";
 import { owner,manager,operator,requireCapability,containsConfidential,publicProduct,publicClient,publicTransaction,recordVisible,recordOutput,publicStockMovement } from "./access.js";
@@ -24,7 +23,7 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
-import { companyRows } from "./reporting.js";
+import { companyReport,companyRows } from "./reporting.js";
 import { assertOrderCreated, registerOrders } from "./orders.js";
 import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
@@ -434,23 +433,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
     const to=dates.to||businessDate(),from=dates.from||businessDate(new Date(Date.now()-6*86400000));
     const span=(Date.parse(to)-Date.parse(from))/86400000;
     if(!Number.isInteger(span)||span<0||span>366||new Date(from).toISOString().slice(0,10)!==from||new Date(to).toISOString().slice(0,10)!==to)v.fail(400,"invalid_report_range");
-    const {transactions:tx,expenses:expenseRows,payments}=await companyRows(c,[co],from,to);
-    const exp=expenseRows.map(asRecord);
-    const days=new Map();for(let i=0;i<=span;i++){const day=new Date(Date.parse(from)+i*86400000).toISOString().slice(0,10);days.set(day,{date:day,sales:0,tax:0,cashIn:0,expenses:0});}
-    const add=(date,kind,amount)=>{const row=days.get(date);if(row)row[kind]+=cents(amount);};
-    for(const row of tx){
-      const saleDate=row.data.businessDate||businessDate(row.issued_at||row.data.date);
-      if(row.source==="pos"){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.data.tax||0));add(saleDate,"cashIn",row.total);}
-      else if(row.document_state==="issued"&&row.data.type==="Invoice"){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.issued_snapshot?.tax??row.data.tax??0));}
-      else if(row.document_state==="legacy"&&row.data.type==="Invoice"&&["Paid","Cleared"].includes(row.data.status)){add(saleDate,"sales",row.total);add(saleDate,"tax",Number(row.data.tax||0));add(saleDate,"cashIn",row.total);}
-    }
-    for(const payment of payments)add(businessDate(payment.paid_at),"cashIn",payment.amount);
-    for(const expense of expenseRecords({expenses:exp,transactions:tx.filter(row=>row.document_state==="legacy").map(asRecord)}))add(businessDate(expense.date),"expenses",expense.amount);
-    const calculated=[...days.values()].map(row=>({date:row.date,sales:row.sales/100,tax:row.tax/100,cashIn:row.cashIn/100,expenses:row.expenses/100,cashFlow:(row.cashIn-row.expenses)/100}));
-    const sum=key=>calculated.reduce((total,row)=>total+cents(row[key]),0)/100;
-    const sales=sum("sales"),tax=sum("tax"),cashIn=sum("cashIn"),expenses=sum("expenses"),cashFlow=(cents(cashIn)-cents(expenses))/100;
-    const daily=calculated.map(row=>({date:row.date,sales:row.sales,tax:row.tax,expenses:row.expenses,cashFlow:row.cashFlow}));
-    return {from,to,sales,tax,expenses,cashFlow,daily,basis:"Sales and tax use POS business date or invoice issue date; cash flow uses receipts, invoice payments and expenses."};
+    const rows=await companyRows(c,[co],from,to),report=companyReport(rows,from,to);
+    return {from,to,...report.totals,daily:report.daily,basis:report.basis};
   }));
   app.post("/api/companies/:company/stock-adjustments",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"inventoryTransact");
@@ -506,7 +490,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         if(!permissionsFor(req.identity).suppliersRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
           if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
-          else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Paid','Cleared')))");
+          else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared')))");
         }
         args.push(q.limit+1);
         const select=name==="transactions"?"t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount":"*";

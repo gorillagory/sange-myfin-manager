@@ -15,7 +15,7 @@ const user = computed(() => Store.state.currentUser || {});
 const navSections = computed(() => [
   { label:'Workspace', items:[['/pos','Checkout / POS','bag'],['/orders','Sales Orders','clock']] },
   { label:'Inventory', items:[['/products','Inventory','box'],['/stock','Stock Record','truck']] },
-  { label:'Finance', items:[['/finance-sales','Sales','receipt'],['/expenses','Expenses','wallet'],['/documents','Document','edit'],['/receipt-reviews','Payment reviews','clock']] },
+  { label:'Finance', items:[['/finance-sales','Sales & Receivables','receipt'],['/documents','Quotes & Invoices','edit'],['/cashbook','Cash Book','wallet'],['/expenses','Expenses','wallet'],['/receipt-reviews','Payment reviews','clock']] },
   { label:'Analytics', items:[['/analytics','Financial Analysis','chart'],['/consolidation','Consolidation','grid']] },
   { label:'Administration', items:[['/contacts','Customers / Suppliers','people'],['/companies','Company Profile','building'],['/activity','Activity','clock']] },
   { label:'Settings', items:[['/settings','Device / Printing','settings'],['/templates','Templates','edit']] },

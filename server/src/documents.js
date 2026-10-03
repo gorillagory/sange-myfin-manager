@@ -28,7 +28,7 @@ export function registerDocuments(app,{db,authorize,audit}){
  };
  const output=async(c,co,id,who)=>recordOutput(await get(c,co,id,who),who);
  app.get("/api/companies/:company/documents",req=>scope(req,async(c,co,who)=>{
-  const r=await c.query("SELECT t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount FROM myfin.transactions t WHERE company_id=$1 AND source<>'pos' AND ($2 OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote') AND ($3 OR (document_state='draft' AND (actor_id=$4 OR assigned_to=$4))))) ORDER BY id LIMIT 10001",[co,owner(who),manager(who),who.id]);
+  const r=await c.query("SELECT t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount FROM myfin.transactions t WHERE company_id=$1 AND source<>'pos' AND ($2 OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote') AND ($3 OR (document_state='draft' AND (actor_id=$4 OR assigned_to=$4)))) OR ($3 AND document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared'))) ORDER BY id LIMIT 10001",[co,owner(who),manager(who),who.id]);
   if(r.rowCount>10000)v.fail(409,"document_list_limit");return r.rows.filter(row=>row.source!=="pos"&&recordVisible(row,who)).map(row=>recordOutput(row,who));
  }));
  app.get("/api/companies/:company/documents/:id",req=>scope(req,async(c,co,who)=>output(c,co,req.params.id,who)));

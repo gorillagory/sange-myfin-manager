@@ -24,7 +24,7 @@ export function publicTransaction(data,who){if(owner(who))return data;return {..
 export function recordVisible(row,who){
  if(owner(who))return true;
  if(row.source==="pos")return manager(who)||row.actor_id===who.id;
- if(row.document_state==="legacy")return manager(who)&&row.data?.type==="Invoice"&&["Paid","Cleared"].includes(row.data?.status);
+ if(row.document_state==="legacy")return manager(who)&&row.data?.type==="Invoice"&&["Pending","Partially paid","Paid","Cleared"].includes(row.data?.status);
  if(!["Invoice","Quote"].includes(row.data?.type))return false;
  return manager(who)||(row.document_state==="draft"&&(row.actor_id===who.id||row.assigned_to===who.id));
 }
