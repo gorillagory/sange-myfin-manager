@@ -8,7 +8,7 @@ import {
   GOKOO_MALAYSIA, decimalStringToSen, mapGokooOrderStatus, mapGokooPaymentCode,
   normalizeGokooMalaysiaFinancials, normalizeGokooMalaysiaOrder,
 } from '../src/integrations-gokoo.js';
-import { registerIntegrations } from '../src/integrations.js';
+import { classifyPaymentMethod, registerIntegrations } from '../src/integrations.js';
 
 test('commerce-channel and payment-provider contracts have separate responsibilities', () => {
   assert.equal(GOKOO_MALAYSIA.kind, INTEGRATION_KINDS.COMMERCE_CHANNEL);
@@ -30,6 +30,17 @@ test('decimal money parsing is exact and rejects ambiguous numeric inputs', () =
   assert.equal(decimalStringToSen('-1.25', { allowNegative:true }), -125);
   for (const value of [19.91, '1.001', '-1', 'NaN', '1e3', '', '  '])
     assert.throws(() => decimalStringToSen(value));
+});
+
+test('payment method classification keeps operational methods distinct', () => {
+  assert.equal(classifyPaymentMethod('Cash'), 'cash');
+  assert.equal(classifyPaymentMethod('QR Pay'), 'qr');
+  assert.equal(classifyPaymentMethod('DuitNow QR'), 'qr');
+  assert.equal(classifyPaymentMethod('Credit card'), 'card');
+  assert.equal(classifyPaymentMethod('Bank transfer'), 'bank_transfer');
+  assert.equal(classifyPaymentMethod('Touch n Go'), 'e_wallet');
+  assert.equal(classifyPaymentMethod('WeChat Pay'), 'e_wallet');
+  assert.equal(classifyPaymentMethod(''), 'unknown');
 });
 
 test('Gokoo Malaysia financial fields normalize to integer sen while the misleading commission-ratio field stays ambiguous', () => {
@@ -129,7 +140,9 @@ test('metadata update stores a credential reference only and enforces optimistic
   const req = body => ({ params:{ company:'company-a', provider:'gokoo' }, body, authLevel:'password' });
   const saved = await update(req({ version:0, status:'pending', externalAccountId:'merchant-1', credentialRef:'vault://myfin/gokoo' }));
   assert.equal(saved.version, 1);
-  assert.equal(saved.credentialRef, 'vault://myfin/gokoo');
+  assert.equal(saved.credentialConfigured, true);
+  assert.equal(Object.hasOwn(saved, 'credentialRef'), false);
+  assert.doesNotMatch(JSON.stringify(saved), /vault:\/\//);
   assert.equal(fresh.audits[0].details.includes('vault://'), false);
   await assert.rejects(update(req({ version:0, status:'active' })), error => error.statusCode === 400);
   await assert.rejects(update(req({ version:0, status:'pending', appSecret:'do-not-store' })), error => error.statusCode === 400);
@@ -140,6 +153,94 @@ test('metadata update stores a credential reference only and enforces optimistic
   const invalidCreateVersion = routesFor();
   await assert.rejects(invalidCreateVersion.routes.get('PUT /api/companies/:company/integrations/:provider')(
     req({ version:1, status:'pending' })), error => error.statusCode === 409);
+});
+
+function paymentOperationsRoutes({ who = { id:'manager', role:'manager' } } = {}) {
+  const routes = new Map(), calls = [];
+  const client = { async query(sql, params) {
+    calls.push({ sql, params });
+    if (sql.includes('LEFT JOIN myfin.integration_reconciliations r')) return { rows:[{
+      id:'connection-1', provider_key:'gokoo', integration_kind:'commerce_channel',
+      display_name:'Gokoo / 悟空海外', identity_status:'candidate_awaiting_confirmation', status:'disabled',
+      country_code:'MY', currency_code:'MYR', external_account_id:'merchant-secret-7788',
+      credential_configured:true, reconciliation_total:2, reconciliation_pending:0,
+      reconciliation_matched:1, reconciliation_mismatch:1, reconciliation_unavailable:0,
+      mismatch_difference_sen:'-5', last_checked_at:'2026-10-09T00:00:00.000Z',
+    }] };
+    if (sql.includes('WITH payment_facts AS')) return { rows:[
+      { source:'pos', method:'QR Pay', transaction_count:2, amount_sen:'9007199254740991' },
+      { source:'invoice', method:'DuitNow QR', transaction_count:1, amount_sen:'9' },
+      { source:'pos', method:'Cash', transaction_count:3, amount_sen:'3200' },
+    ] };
+    if (sql.includes('FROM myfin.integration_payment_transactions p')) return { rows:[{
+      id:'provider-payment-1', transaction_type:'capture', payment_method:'e_wallet', provider_method_code:'wxpay',
+      currency_code:'MYR', amount_sen:'1991', provider_status:'PAID', occurred_at:'2026-10-08T12:00:00.000Z',
+      imported_at:'2026-10-08T12:01:00.000Z', provider_key:'gokoo', display_name:'Gokoo / 悟空海外',
+      external_transaction_key:'provider-transaction-private-12345678', external_order_id:'order-private-87654321',
+    }] };
+    if (sql.includes('SELECT r.id,r.scope_type')) return { rows:[{
+      id:'reconciliation-1', scope_type:'external_order', currency_code:'MYR', expected_amount_sen:'1991',
+      observed_amount_sen:'1986', difference_amount_sen:'-5', status:'mismatch',
+      reason:'token=credential-should-not-leak', checked_at:'2026-10-09T00:00:00.000Z',
+      provider_key:'gokoo', display_name:'Gokoo / 悟空海外', external_reference:'provider-order-private-87654321',
+    }] };
+    if (sql.includes('SELECT count(*)::int AS total')) return { rows:[{
+      total:2, pending:0, matched:1, mismatch:1, unavailable:0, mismatch_difference_sen:'-5',
+    }] };
+    throw new Error(`Unexpected SQL: ${sql}`);
+  } };
+  const app = { get(path, handler) { routes.set(`GET ${path}`, handler); }, put() {} };
+  registerIntegrations(app, {
+    db:{ transaction:fn => fn(client) }, managed:() => {}, authorize:async () => {},
+    managementSession:async () => {}, requirePasswordSession:() => {}, audit:async () => {},
+  });
+  const request = query => ({
+    params:{ company:'company-a' }, query, identity:{ ...who }, authLevel:'password',
+  });
+  return { routes, calls, request };
+}
+
+test('payment operations gives managers exact, tenant-scoped and credential-free evidence', async () => {
+  const { routes, calls, request } = paymentOperationsRoutes();
+  const result = await routes.get('GET /api/companies/:company/payment-operations')(
+    request({ from:'2026-10-01', to:'2026-10-09', status:'all', provider:'' }),
+  );
+  assert.equal(result.connections[0].externalAccountHint, '••••7788');
+  assert.equal(result.connections[0].credentialConfigured, true);
+  assert.equal(result.connections[0].activationAllowed, false);
+  assert.deepEqual(result.paymentMethods.find(item => item.key === 'qr'), {
+    key:'qr', label:'QR payment', transactionCount:3, amountSen:'9007199254741000',
+    sources:[
+      { label:'POS sales', transactionCount:2, amountSen:'9007199254740991' },
+      { label:'Invoice receipts', transactionCount:1, amountSen:'9' },
+    ],
+  });
+  assert.equal(result.providerTransactions[0].transactionReferenceHint, '••••12345678');
+  assert.equal(result.providerTransactions[0].accountingEffect, 'none');
+  assert.equal(result.reconciliations[0].reasonCode, 'details_withheld');
+  assert.equal(result.reconciliations[0].referenceHint, '••••87654321');
+  assert.deepEqual(result.policy, {
+    providerEvidenceOnly:true, accountingEffect:'none', credentialsExposed:false, gokooActivationAllowed:false,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /merchant-secret|credential-should-not-leak|private-/);
+  assert.ok(calls.every(call => call.params[0] === 'company-a'));
+  assert.ok(calls.every(call => /company_id=\$1|company_id = \$1|c\.company_id=\$1|p\.company_id=\$1|r\.company_id=\$1/.test(call.sql)));
+});
+
+test('payment operations rejects operators and unbounded or reversed ranges', async () => {
+  const operatorRoutes = paymentOperationsRoutes({ who:{ id:'operator', role:'operator' } });
+  const route = operatorRoutes.routes.get('GET /api/companies/:company/payment-operations');
+  await assert.rejects(route(operatorRoutes.request({
+    from:'2026-10-01', to:'2026-10-09', status:'all', provider:'',
+  })), error => error.statusCode === 403 && error.message === 'access_denied');
+  const managerRoutes = paymentOperationsRoutes();
+  const managerRoute = managerRoutes.routes.get('GET /api/companies/:company/payment-operations');
+  await assert.rejects(managerRoute(managerRoutes.request({
+    from:'2026-10-10', to:'2026-10-09', status:'all', provider:'',
+  })), error => error.statusCode === 400 && error.message === 'invalid_payment_operations_range');
+  await assert.rejects(managerRoute(managerRoutes.request({
+    from:'2025-01-01', to:'2026-10-09', status:'all', provider:'',
+  })), error => error.statusCode === 400 && error.message === 'invalid_payment_operations_range');
 });
 
 test('integration migration enforces tenant idempotency, immutable evidence, exact sen and explicit reconciliation states', async () => {
@@ -161,4 +262,16 @@ test('integration migration enforces tenant idempotency, immutable evidence, exa
     assert.match(grants, new RegExp(`GRANT SELECT ON myfin\\.integration_events,myfin\\.integration_financial_entries,myfin\\.integration_reconciliations TO ${role}`));
     assert.doesNotMatch(grants, new RegExp(`GRANT SELECT,INSERT(?:,UPDATE)? ON myfin\\.integration_events`));
   }
+});
+
+test('payment operations migration keeps normalized provider transactions immutable and non-accounting', async () => {
+  const sql = await readFile(new URL('../../db/migrations/0026_payment_operations.sql', import.meta.url), 'utf8');
+  assert.match(sql, /CREATE TABLE myfin\.integration_payment_transactions/);
+  assert.match(sql, /UNIQUE \(company_id,connection_id,external_transaction_key\)/);
+  assert.match(sql, /amount_sen bigint NOT NULL/);
+  assert.match(sql, /accounting_effect text NOT NULL DEFAULT 'none' CHECK \(accounting_effect='none'\)/);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON myfin\.integration_payment_transactions/);
+  assert.match(sql, /BEFORE TRUNCATE ON myfin\.integration_payment_transactions/);
+  assert.match(sql, /REVOKE ALL ON myfin\.integration_payment_transactions FROM PUBLIC/);
+  assert.doesNotMatch(sql, /payload\s+jsonb|credential_ref\s+text|customer_name\s+text|customer_email\s+text|customer_phone\s+text/i);
 });
