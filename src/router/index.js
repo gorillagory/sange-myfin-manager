@@ -26,6 +26,7 @@ const routes = [
     { path: '/expenses', component: () => import('../components/dashboard/ExpensesTab.vue') },
     { path: '/products', component: () => import('../components/dashboard/ProductsTab.vue') },
     { path: '/stock', component: () => import('../components/dashboard/StockTab.vue') },
+    { path: '/procurement', component: () => import('../components/dashboard/ProcurementTab.vue') },
     { path: '/profile', component: () => import('../components/dashboard/UserProfile.vue') },
     
     // Protected Admin Routes

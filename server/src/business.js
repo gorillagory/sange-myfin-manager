@@ -31,6 +31,7 @@ import { assertOrderCreated, registerOrders } from "./orders.js";
 import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
 import { registerCustomerProfiles } from "./customer-profiles.js";
+import { registerStudentPrograms } from "./student-programs.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
 export async function identity(db, subject, tenant=null) {
@@ -440,6 +441,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
   registerCustomerProfiles(app,{scoped});
+  registerStudentPrograms(app,{scoped,audit,voucherPepper:authOptions.voucherHmacSecret});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),...reportFilterShape,analysis:z.enum(["true"]).optional()}),req.query);

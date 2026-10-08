@@ -49,6 +49,7 @@ services:
       AUTH_SECRET_FILE: /run/secrets/auth_secret
       POS_CODE_SECRET_FILE: /run/secrets/pos_code_secret
       POS_SESSION_SECRET_FILE: /run/secrets/pos_session_secret
+      VOUCHER_HMAC_SECRET_FILE: /run/secrets/voucher_hmac_secret
       PG_TLS: disable
       PGPOOL_MAX: ${MYFIN_DB_POOL_MAX:-5}
       PG_CONNECT_TIMEOUT_MS: '2000'
@@ -56,7 +57,7 @@ services:
       PG_QUERY_TIMEOUT_MS: '4000'
       SHUTDOWN_TIMEOUT_MS: '10000'
       UPLOAD_DIR: /app/uploads
-    secrets: [db_password, auth_secret, pos_code_secret, pos_session_secret]
+    secrets: [db_password, auth_secret, pos_code_secret, pos_session_secret, voucher_hmac_secret]
     volumes:
       - uploads:/app/uploads
     networks: [app, nexus-data]
@@ -125,3 +126,5 @@ secrets:
     file: ${MYFIN_POS_CODE_SECRET_FILE:?set absolute POS code secret file path}
   pos_session_secret:
     file: ${MYFIN_POS_SESSION_SECRET_FILE:?set absolute POS session secret file path}
+  voucher_hmac_secret:
+    file: ${MYFIN_VOUCHER_HMAC_SECRET_FILE:?set absolute voucher HMAC secret file path}

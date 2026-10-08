@@ -36,6 +36,7 @@ export function authConfig(env = process.env) {
     return value;
   };
   const posCodeSecret=readOptionalSecret("POS_CODE_SECRET_FILE"),posSessionSecret=readOptionalSecret("POS_SESSION_SECRET_FILE");
+  const voucherHmacSecret=readOptionalSecret("VOUCHER_HMAC_SECRET_FILE");
   if((posCodeSecret&&!posSessionSecret)||(!posCodeSecret&&posSessionSecret)||(env.NODE_ENV==="production"&&!posCodeSecret))throw new Error("invalid_pos_secrets");
   const rootDomain=(env.PUBLIC_ROOT_DOMAIN||"").trim().toLowerCase();
   if(rootDomain&&(normalizeHostname(rootDomain)!==rootDomain||isIP(rootDomain)||rootDomain==='localhost'||rootDomain.split('.').length<2))
@@ -49,6 +50,7 @@ export function authConfig(env = process.env) {
     enforceTenantHosts:env.TENANT_HOST_ENFORCEMENT!=="false" && env.NODE_ENV!=="test",
     secret, secure: base.protocol === "https:",
     pos:posCodeSecret?{codeSecret:posCodeSecret,sessionSecret:posSessionSecret,sessionHours}:null,
+    voucherHmacSecret,
   };
 }
 export function createAuth(pool, config) {
