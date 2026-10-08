@@ -23,6 +23,7 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
+import { consumeRecipeStock, registerInventoryRecipes } from "./inventory-recipes.js";
 import { companyReport,companyRows,reportFilterShape } from "./reporting.js";
 import { assertOrderCreated, registerOrders } from "./orders.js";
 import { registerStorefrontAdmin } from "./storefront-admin.js";
@@ -322,6 +323,13 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     [companyId, sale.id, who.id, sale.total, fingerprint, saved],
   );
   await assertOrderCreated(c, companyId, sale.id);
+  await consumeRecipeStock(c, {
+    companyId,
+    actorId: who.id,
+    saleId: sale.id,
+    occurredAt: sale.date,
+    items: sale.items,
+  });
   for (const p of updates) {
     p.version++;
     await c.query(
@@ -423,6 +431,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   };
   registerExpenseImport(app,{scoped,audit});
   registerStock(app,{scoped,audit});
+  registerInventoryRecipes(app,{scoped,audit});
   registerOrders(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
