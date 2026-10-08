@@ -23,7 +23,7 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
-import { companyReport,companyRows } from "./reporting.js";
+import { companyReport,companyRows,reportFilterShape } from "./reporting.js";
 import { assertOrderCreated, registerOrders } from "./orders.js";
 import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
@@ -429,12 +429,14 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerCustomerProfiles(app,{scoped});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
-    const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}),req.query);
+    const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),...reportFilterShape,analysis:z.enum(["true"]).optional()}),req.query);
     const to=dates.to||businessDate(),from=dates.from||businessDate(new Date(Date.now()-6*86400000));
     const span=(Date.parse(to)-Date.parse(from))/86400000;
     if(!Number.isInteger(span)||span<0||span>366||new Date(from).toISOString().slice(0,10)!==from||new Date(to).toISOString().slice(0,10)!==to)v.fail(400,"invalid_report_range");
-    const rows=await companyRows(c,[co],from,to),report=companyReport(rows,from,to);
-    return {from,to,...report.totals,daily:report.daily,basis:report.basis};
+    const rows=await companyRows(c,[co],from,to),report=companyReport(rows,from,to,dates);
+    return {from,to,...report.totals,daily:report.daily,basis:report.basis,
+      ...((dates.analysis==="true"||report.filterActive)?{filters:report.filters,filterOptions:report.filterOptions,
+        filterActive:report.filterActive,filterScope:report.filterScope,breakdowns:report.breakdowns}:{})};
   }));
   app.post("/api/companies/:company/stock-adjustments",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"inventoryTransact");

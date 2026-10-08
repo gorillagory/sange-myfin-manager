@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { companyReport, companyRows, reportDateBounds } from '../src/reporting.js';
+import { companyReport, companyRows, reportDateBounds, reportQuerySchema } from '../src/reporting.js';
+import { cents } from '../../src/domain/pos.js';
 
 test('detail totals follow the approved sales, receipt and expense dates', () => {
   const rows = {
@@ -119,8 +120,113 @@ test('report queries bound each ordinary date source before materializing record
   assert.match(calls[2].sql, /paid_at >=.*paid_at </s);
 });
 
+test('report queries fetch only classification metadata for referenced products', async () => {
+  const calls = [];
+  const responses = [
+    { rows: [{ company_id: 'company-a', id: 'sale', data: { items: [{ productId: 'latte' }] } }] },
+    { rows: [] },
+    { rows: [{ company_id: 'company-a', id: 'payment', data: { items: [{ productId: 'service' }] } }] },
+    { rows: [{ company_id: 'company-a', id: 'latte', category: 'Beverages', subcategory: 'Coffee' }] },
+  ];
+  const client = { async query(sql, params) { calls.push({ sql, params }); return responses[calls.length - 1]; } };
+  const result = await companyRows(client, ['company-a'], '2026-10-01', '2026-10-01');
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[3].params, [['company-a'], ['latte', 'service']]);
+  assert.match(calls[3].sql, /category.*subcategory/s);
+  assert.doesNotMatch(calls[3].sql, /cost|price/i);
+  assert.deepEqual(result.products, responses[3].rows);
+});
+
 test('malformed historical date strings cannot enter a valid daily report', () => {
   const rows = { transactions: [{ id: 'invalid', company_id: 'co', source: 'pos', document_state: 'issued', total: 5,
     data: { businessDate: '2026-02-30', date: '2026-02-30', tax: 0 } }] };
   assert.equal(companyReport(rows, '2026-02-01', '2026-03-01').totals.sales, 0);
+});
+
+test('sales dimensions filter accrual sales and attributable receipts without changing default accounting totals', () => {
+  const invoiceSnapshot = { tax: 2, items: [{ productId: 'service', desc: 'Service', qty: 1, price: 30 }] };
+  const rows = {
+    transactions: [
+      { id: 'pos-mixed', company_id: 'co', source: 'pos', document_state: 'issued', total: 15,
+        data: { businessDate: '2026-10-01', number: 'POS-1', paymentMethod: 'Cash', tax: 1,
+          items: [{ productId: 'latte', qty: 1, price: 10 }, { productId: 'tart', qty: 1, price: 5 }] } },
+      { id: 'pos-qr', company_id: 'co', source: 'pos', document_state: 'issued', total: 20,
+        data: { businessDate: '2026-10-01', number: 'POS-2', paymentMethod: 'QR Pay', tax: 1.2,
+          items: [{ productId: 'tea', qty: 2, price: 10 }] } },
+      { id: 'invoice', company_id: 'co', source: 'document', document_state: 'issued', total: 30,
+        issued_at: new Date('2026-10-01T02:00:00Z'), issued_snapshot: invoiceSnapshot,
+        data: { type: 'Invoice', number: 'INV-1' } },
+      { id: 'quote', company_id: 'co', source: 'document', document_state: 'issued', total: 50,
+        issued_at: new Date('2026-10-01T03:00:00Z'), issued_snapshot: { items: invoiceSnapshot.items },
+        data: { type: 'Quote', number: 'QT-1', status: 'Issued' } },
+    ],
+    expenses: [{ id: 'expense', company_id: 'co', data: { amount: 5, date: '2026-10-01', description: 'Rent' } }],
+    payments: [{ id: 'invoice-payment', document_id: 'invoice', company_id: 'co', amount: 12,
+      method: 'Bank transfer', paid_at: new Date('2026-10-01T04:00:00Z'), number: 'INV-1',
+      data: { type: 'Invoice', number: 'INV-1' }, issued_snapshot: invoiceSnapshot }],
+    products: [
+      { company_id: 'co', id: 'latte', category: 'Beverages', subcategory: 'Coffee' },
+      { company_id: 'co', id: 'tart', category: 'Pastry', subcategory: 'Baked' },
+      { company_id: 'co', id: 'tea', category: 'Beverages', subcategory: 'Tea' },
+      { company_id: 'co', id: 'service', category: 'Services', subcategory: 'Consulting', cost: 999 },
+    ],
+  };
+  const unfiltered = companyReport(rows, '2026-10-01', '2026-10-01');
+  assert.deepEqual(unfiltered.totals, { sales: 65, tax: 4.2, expenses: 5, cashIn: 47,
+    cashOut: 5, cashFlow: 42, quoted: 50, convertedQuoted: 0 });
+  assert.equal(unfiltered.filterActive, false);
+  assert.deepEqual(unfiltered.breakdowns.channel.map(row => [row.value, row.sales, row.cashIn]),
+    [['pos', 35, 35], ['invoice', 30, 12]]);
+  assert.equal(unfiltered.breakdowns.paymentMethod.reduce((total, row) => total + Math.round(row.sales * 100), 0), 6500);
+  assert.equal(unfiltered.breakdowns.paymentMethod.reduce((total, row) => total + Math.round(row.cashIn * 100), 0), 4700);
+  assert.deepEqual(unfiltered.breakdowns.category.map(row => [row.value, row.sales, row.tax, row.cashIn]), [
+    ['Beverages', 30, 1.87, 30], ['Services', 30, 2, 12], ['Pastry', 5, .33, 5],
+  ]);
+  assert.deepEqual(unfiltered.filterOptions.categories.map(option => option.value), ['Beverages', 'Pastry', 'Services']);
+  assert.deepEqual(unfiltered.filterOptions.paymentMethods.map(option => option.value),
+    ['Bank transfer', 'Cash', 'On account', 'QR Pay']);
+  assert.doesNotMatch(JSON.stringify(unfiltered), /"cost"|999/);
+
+  const beverages = companyReport(rows, '2026-10-01', '2026-10-01', { category: 'beverages' });
+  assert.deepEqual(beverages.totals, { sales: 30, tax: 1.87, expenses: 5, cashIn: 30,
+    cashOut: 5, cashFlow: 25, quoted: 0, convertedQuoted: 0 });
+  assert.equal(beverages.sales.find(row => row.id === 'pos-mixed').total, 10);
+  assert.equal(beverages.sales.find(row => row.id === 'pos-mixed').documentTotal, 15);
+  assert.deepEqual(beverages.sales.flatMap(row => row.categories), ['Beverages', 'Beverages']);
+  assert.match(beverages.filterScope, /Expenses and cash out remain company-wide/);
+
+  const invoice = companyReport(rows, '2026-10-01', '2026-10-01', { channel: 'invoice' });
+  assert.deepEqual(invoice.totals, { sales: 30, tax: 2, expenses: 5, cashIn: 12,
+    cashOut: 5, cashFlow: 7, quoted: 50, convertedQuoted: 0 });
+  const transfer = companyReport(rows, '2026-10-01', '2026-10-01', { paymentMethod: 'bank TRANSFER' });
+  assert.deepEqual(transfer.totals, { sales: 0, tax: 0, expenses: 5, cashIn: 12,
+    cashOut: 5, cashFlow: 7, quoted: 0, convertedQuoted: 0 });
+  const coffee = companyReport(rows, '2026-10-01', '2026-10-01', { subcategory: 'Coffee' });
+  assert.equal(coffee.totals.sales, 10);
+  assert.equal(coffee.totals.tax, .67);
+});
+
+test('report filter query accepts bounded dimensions and rejects unknown or oversized input', () => {
+  const valid = reportQuerySchema.safeParse({ from: '2026-10-01', to: '2026-10-02', channel: 'pos',
+    paymentMethod: 'Cash', category: 'Beverages', subcategory: 'Coffee' });
+  assert.equal(valid.success, true);
+  assert.equal(reportQuerySchema.safeParse({ from: '2026-10-01', to: '2026-10-02', channel: 'delivery' }).success, false);
+  assert.equal(reportQuerySchema.safeParse({ from: '2026-10-01', to: '2026-10-02', category: 'x'.repeat(121) }).success, false);
+  assert.equal(reportQuerySchema.safeParse({ from: '2026-10-01', to: '2026-10-02', surprise: 'value' }).success, false);
+});
+
+test('product allocation preserves reversing-entry cents', () => {
+  const rows = {
+    transactions: [{ id: 'refund', company_id: 'co', source: 'pos', document_state: 'issued', total: -10.01,
+      data: { businessDate: '2026-10-01', number: 'REFUND-1', paymentMethod: 'Cash', tax: -.71,
+        items: [{ productId: 'latte', qty: -1, price: 6 }, { productId: 'tart', qty: -1, price: 4 }] } }],
+    products: [
+      { company_id: 'co', id: 'latte', category: 'Beverages', subcategory: 'Coffee' },
+      { company_id: 'co', id: 'tart', category: 'Pastry', subcategory: 'Baked' },
+    ],
+  };
+  const report = companyReport(rows, '2026-10-01', '2026-10-01');
+  assert.equal(report.breakdowns.category.reduce((total, row) => total + cents(row.sales), 0), -1001);
+  assert.equal(report.breakdowns.category.reduce((total, row) => total + cents(row.tax), 0), -71);
+  assert.equal(companyReport(rows, '2026-10-01', '2026-10-01', { category: 'Beverages' }).totals.sales, -6.01);
 });

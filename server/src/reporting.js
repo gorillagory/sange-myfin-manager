@@ -3,13 +3,21 @@ import * as v from './validation.js';
 import { requireCapability } from './access.js';
 import { businessDate, cents, expenseRecords } from '../../src/domain/pos.js';
 
-const querySchema = z.strictObject({
+const dateShape = {
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+};
+const filterText = z.string().trim().min(1).max(120).optional();
+export const reportFilterShape = Object.freeze({
+  channel: z.enum(['pos', 'invoice']).optional(),
+  paymentMethod: filterText,
+  category: filterText,
+  subcategory: filterText,
 });
-const consolidationQuerySchema = querySchema.extend({ workspaceId: v.id.optional() });
+export const reportQuerySchema = z.strictObject({ ...dateShape, ...reportFilterShape });
+const consolidationQuerySchema = z.strictObject({ ...dateShape, workspaceId: v.id.optional() });
 
-function range(query, schema = querySchema) {
+function range(query, schema = reportQuerySchema) {
   const value = v.parse(schema, query);
   const fromMs = Date.parse(value.from), toMs = Date.parse(value.to);
   const span = (toMs - fromMs) / 86400000;
@@ -25,9 +33,15 @@ const inRange = (date, from, to) => /^\d{4}-\d{2}-\d{2}$/.test(date)
   && date >= from && date <= to;
 const sum = (rows, key) => rows.reduce((amount, row) => amount + cents(row[key]), 0) / 100;
 const safeText = value => String(value || '').slice(0, 160);
+const safeDimension = (value, fallback) => String(value ?? '').trim().slice(0, 120) || fallback;
 const LEGACY_INVOICE_STATUSES = new Set(['Pending', 'Paid', 'Cleared', 'Partially paid']);
 const CASH_STATUSES = new Set(['Paid', 'Cleared']);
 const LEGACY_QUOTE_SOURCE = /^(?:Generated|Converted) from Quote (QT-[A-Z0-9]+(?:-[A-Z0-9]+)*)\.?$/i;
+const CATEGORY_FALLBACK = 'Uncategorized';
+const SUBCATEGORY_FALLBACK = 'No subcategory';
+const PAYMENT_FALLBACK = 'Unspecified';
+const INVOICE_PAYMENT = 'On account';
+const CHANNEL_LABELS = Object.freeze({ pos: 'POS', invoice: 'Invoice' });
 
 const finiteNumber = value => {
   if (value === null || value === undefined || String(value).trim() === '') return null;
@@ -87,29 +101,228 @@ function legacyQuoteNumber(data) {
   return '';
 }
 
+const dimensionKey = value => String(value || '').trim().toLocaleLowerCase('en-US');
+const sameDimension = (left, right) => dimensionKey(left) === dimensionKey(right);
+const productKey = (companyId, productId) => `${companyId}\u0000${productId}`;
+
+export function normalizeReportFilters(value = {}) {
+  return {
+    channel: ['pos', 'invoice'].includes(value.channel) ? value.channel : '',
+    paymentMethod: String(value.paymentMethod || '').trim().slice(0, 120),
+    category: String(value.category || '').trim().slice(0, 120),
+    subcategory: String(value.subcategory || '').trim().slice(0, 120),
+  };
+}
+
+const hasFilters = filters => Object.values(filters).some(Boolean);
+
+function reportProductMap(products = []) {
+  return new Map(products.map(row => [productKey(row.company_id, row.id), {
+    category: safeDimension(row.category ?? row.data?.category, CATEGORY_FALLBACK),
+    subcategory: safeDimension(row.subcategory ?? row.data?.subcategory, SUBCATEGORY_FALLBACK),
+  }]));
+}
+
+function rowItems(row, data = row.data || {}) {
+  if (Array.isArray(row.issued_snapshot?.items)) return row.issued_snapshot.items;
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+function classificationGroups(companyId, items, products) {
+  const groups = new Map();
+  for (const item of items) {
+    const product = products.get(productKey(companyId, item?.productId ?? item?.product_id)) || {};
+    const category = safeDimension(item?.category || product.category, CATEGORY_FALLBACK);
+    const subcategory = safeDimension(item?.subcategory || product.subcategory, SUBCATEGORY_FALLBACK);
+    const explicit = finiteNumber(item?.lineTotal ?? item?.line_total);
+    const price = finiteNumber(item?.price ?? item?.unitPrice ?? item?.unit_price);
+    const quantity = finiteNumber(item?.qty ?? item?.quantity);
+    const weight = Math.abs(explicit === null
+      ? price === null || quantity === null ? 0 : Math.round(cents(price) * quantity)
+      : cents(explicit));
+    const key = `${dimensionKey(category)}\u0000${dimensionKey(subcategory)}`;
+    const current = groups.get(key);
+    if (current) current.weight += weight;
+    else groups.set(key, { category, subcategory, weight });
+  }
+  if (!groups.size) return [{ category: CATEGORY_FALLBACK, subcategory: SUBCATEGORY_FALLBACK, weight: 1 }];
+  const values = [...groups.values()];
+  if (!values.some(group => group.weight > 0)) for (const group of values) group.weight = 1;
+  return values;
+}
+
+function allocateCents(total, groups) {
+  const signedAmount = Math.round(Number(total) || 0), sign = Math.sign(signedAmount) || 1;
+  const amount = Math.abs(signedAmount);
+  const weight = groups.reduce((value, group) => value + BigInt(Math.max(0, Math.round(group.weight))), 0n);
+  if (!amount || !weight) return groups.map(() => 0);
+  const totalValue = BigInt(amount);
+  const allocated = groups.map((group, index) => {
+    const numerator = totalValue * BigInt(Math.max(0, Math.round(group.weight)));
+    return { index, value: numerator / weight, remainder: numerator % weight };
+  });
+  let remaining = totalValue - allocated.reduce((value, item) => value + item.value, 0n);
+  for (const item of [...allocated].sort((left, right) => left.remainder === right.remainder
+    ? left.index - right.index : left.remainder > right.remainder ? -1 : 1)) {
+    if (!remaining) break;
+    item.value += 1n;
+    remaining -= 1n;
+  }
+  return allocated.sort((left, right) => left.index - right.index).map(item => Number(item.value) * sign);
+}
+
+function classifiedSegments(groups, amounts) {
+  const allocation = Object.fromEntries(Object.entries(amounts)
+    .map(([key, value]) => [key, allocateCents(cents(value), groups)]));
+  return groups.map((group, index) => ({
+    category: group.category,
+    subcategory: group.subcategory,
+    ...Object.fromEntries(Object.entries(allocation).map(([key, values]) => [key, values[index] / 100])),
+  }));
+}
+
+function filteredRecord(row, filters, amountFields) {
+  if (filters.channel && row.channel !== filters.channel) return null;
+  if (filters.paymentMethod && !sameDimension(row.paymentMethod, filters.paymentMethod)) return null;
+  const dimensionFilter = filters.category || filters.subcategory;
+  const segments = row._segments.filter(segment =>
+    (!filters.category || sameDimension(segment.category, filters.category))
+    && (!filters.subcategory || sameDimension(segment.subcategory, filters.subcategory)));
+  if (dimensionFilter && !segments.length) return null;
+  if (!dimensionFilter) return { ...row, _segments: segments };
+  const selected = { ...row, _segments: segments };
+  for (const field of amountFields) selected[field] = sum(segments, field);
+  if (amountFields.includes('total')) selected.documentTotal = row.total;
+  if (amountFields.includes('tax')) selected.documentTax = row.tax;
+  if (amountFields.includes('amount')) selected.documentAmount = row.amount;
+  return selected;
+}
+
+function publicReportRow(row) {
+  const { _segments, ...output } = row;
+  return {
+    ...output,
+    categories: [...new Set(_segments.map(segment => segment.category))],
+    subcategories: [...new Set(_segments.map(segment => segment.subcategory))],
+  };
+}
+
+function filterOptions(sales, receipts, quotes) {
+  const channels = new Map(), payments = new Map(), categories = new Map(), subcategories = new Map();
+  for (const row of [...sales, ...receipts, ...quotes]) {
+    if (row.channel) channels.set(row.channel, CHANNEL_LABELS[row.channel] || row.channel);
+    if (row.paymentMethod) payments.set(dimensionKey(row.paymentMethod), row.paymentMethod);
+    for (const segment of row._segments) {
+      categories.set(dimensionKey(segment.category), segment.category);
+      subcategories.set(`${dimensionKey(segment.category)}\u0000${dimensionKey(segment.subcategory)}`, {
+        value: segment.subcategory, label: segment.subcategory, category: segment.category,
+      });
+    }
+  }
+  const options = values => [...values].sort((left, right) => left.label.localeCompare(right.label, 'en'));
+  return {
+    channels: ['pos', 'invoice'].filter(value => channels.has(value))
+      .map(value => ({ value, label: channels.get(value) })),
+    paymentMethods: options([...payments.values()].map(value => ({ value, label: value }))),
+    categories: options([...categories.values()].map(value => ({ value, label: value }))),
+    subcategories: options(subcategories.values()),
+  };
+}
+
+function simpleBreakdown(sales, receipts, field, labels = {}) {
+  const values = new Map();
+  const entry = raw => {
+    const value = String(raw || '');
+    const key = dimensionKey(value);
+    if (!values.has(key)) values.set(key, { value, label: labels[value] || value, sales: 0, tax: 0,
+      cashIn: 0, salesCount: 0, receiptCount: 0 });
+    return values.get(key);
+  };
+  for (const sale of sales) {
+    const row = entry(sale[field]);
+    row.sales += cents(sale.total); row.tax += cents(sale.tax); row.salesCount += 1;
+  }
+  for (const receipt of receipts) {
+    const row = entry(receipt[field]);
+    row.cashIn += cents(receipt.amount); row.receiptCount += 1;
+  }
+  return [...values.values()].map(row => ({ ...row, sales: row.sales / 100, tax: row.tax / 100,
+    cashIn: row.cashIn / 100 })).sort((left, right) => cents(right.sales) - cents(left.sales)
+      || cents(right.cashIn) - cents(left.cashIn) || left.label.localeCompare(right.label, 'en'));
+}
+
+function classificationBreakdown(sales, receipts, field) {
+  const values = new Map();
+  const ensure = segment => {
+    const category = segment.category, value = segment[field];
+    const key = field === 'category' ? dimensionKey(value)
+      : `${dimensionKey(category)}\u0000${dimensionKey(value)}`;
+    if (!values.has(key)) values.set(key, { value, label: value, ...(field === 'subcategory' ? { category } : {}),
+      sales: 0, tax: 0, cashIn: 0, saleIds: new Set(), receiptIds: new Set() });
+    return values.get(key);
+  };
+  for (const sale of sales) for (const segment of sale._segments) {
+    const row = ensure(segment);
+    row.sales += cents(segment.total); row.tax += cents(segment.tax); row.saleIds.add(sale.id);
+  }
+  for (const receipt of receipts) for (const segment of receipt._segments) {
+    const row = ensure(segment);
+    row.cashIn += cents(segment.amount); row.receiptIds.add(receipt.id);
+  }
+  return [...values.values()].map(({ saleIds, receiptIds, ...row }) => ({ ...row,
+    sales: row.sales / 100, tax: row.tax / 100, cashIn: row.cashIn / 100,
+    salesCount: saleIds.size, receiptCount: receiptIds.size,
+  })).sort((left, right) => cents(right.sales) - cents(left.sales)
+    || cents(right.cashIn) - cents(left.cashIn) || left.label.localeCompare(right.label, 'en'));
+}
+
 const reportBasis = 'Sales and tax use POS business dates or issued invoice dates. Open quotes remain pipeline; converted quote value is reported separately and only its issued invoice becomes sales. Cash in uses POS receipts and invoice payments; cash out uses paid expenses and payment vouchers.';
 
 // Keep this classification aligned with /reports/summary in business.js. The
 // detail endpoint uses the same dates and amount rules as the approved report.
-export function companyReport({ transactions = [], expenses = [], payments = [] }, from, to) {
+export function companyReport({ transactions = [], expenses = [], payments = [], products = [] }, from, to, requestedFilters = {}) {
+  const filters = normalizeReportFilters(requestedFilters), productsById = reportProductMap(products);
   const sales = [], expenseLines = [], receipts = [], quotes = [];
   for (const row of transactions) {
     const data = row.data || {};
     const date = data.businessDate || businessDate(row.issued_at || data.date);
     if (!inRange(date, from, to)) continue;
+    const groups = classificationGroups(row.company_id, rowItems(row, data), productsById);
     if (row.source === 'pos') {
-      sales.push({ id: row.id, date, kind: 'POS receipt', number: safeText(data.number), customer: safeText(data.customerName || 'Walk-in customer'), total: Number(row.total), tax: Number(data.tax || 0), fromQuote: false });
-      receipts.push({ id: row.id, date, kind: 'POS receipt', number: safeText(data.number), amount: Number(row.total) });
+      const paymentMethod = safeDimension(data.paymentMethod, PAYMENT_FALLBACK);
+      sales.push({ id: row.id, date, kind: 'POS receipt', channel: 'pos', paymentMethod,
+        number: safeText(data.number), customer: safeText(data.customerName || 'Walk-in customer'),
+        total: Number(row.total), tax: Number(data.tax || 0), fromQuote: false,
+        _segments: classifiedSegments(groups, { total: Number(row.total), tax: Number(data.tax || 0) }) });
+      receipts.push({ id: row.id, date, kind: 'POS receipt', channel: 'pos', paymentMethod,
+        number: safeText(data.number), amount: Number(row.total),
+        _segments: classifiedSegments(groups, { amount: Number(row.total) }) });
     } else if (row.document_state === 'issued' && data.type === 'Invoice') {
       const fromQuote = Boolean(row.quote_id || data.quoteId);
-      sales.push({ id: row.id, date, kind: fromQuote ? 'Invoice from quote' : 'Invoice', number: safeText(data.number), customer: safeText(row.issued_snapshot?.clientSnapshot?.name || data.customerName), total: Number(row.total), tax: Number(row.issued_snapshot?.tax ?? data.tax ?? 0), fromQuote });
+      const tax = Number(row.issued_snapshot?.tax ?? data.tax ?? 0);
+      sales.push({ id: row.id, date, kind: fromQuote ? 'Invoice from quote' : 'Invoice', channel: 'invoice',
+        paymentMethod: INVOICE_PAYMENT, number: safeText(data.number),
+        customer: safeText(row.issued_snapshot?.clientSnapshot?.name || data.customerName),
+        total: Number(row.total), tax, fromQuote, _segments: classifiedSegments(groups, { total: Number(row.total), tax }) });
     } else if (row.document_state === 'legacy' && data.type === 'Invoice' && LEGACY_INVOICE_STATUSES.has(data.status)) {
       const sourceQuoteNumber = legacyQuoteNumber(data), fromQuote = Boolean(sourceQuoteNumber);
-      sales.push({ id: row.id, date, kind: fromQuote ? 'Historical invoice from quote' : 'Historical invoice', number: safeText(data.number), customer: safeText(data.customerName), total: Number(row.total), tax: legacyInvoiceTax(data, row.total), fromQuote, ...(fromQuote ? { sourceQuoteNumber } : {}), status: safeText(data.status) });
-      if (CASH_STATUSES.has(data.status)) receipts.push({ id: row.id, date, kind: 'Historical paid invoice', number: safeText(data.number), amount: Number(row.total) });
+      const tax = legacyInvoiceTax(data, row.total);
+      sales.push({ id: row.id, date, kind: fromQuote ? 'Historical invoice from quote' : 'Historical invoice',
+        channel: 'invoice', paymentMethod: INVOICE_PAYMENT, number: safeText(data.number),
+        customer: safeText(data.customerName), total: Number(row.total), tax, fromQuote,
+        ...(fromQuote ? { sourceQuoteNumber } : {}), status: safeText(data.status),
+        _segments: classifiedSegments(groups, { total: Number(row.total), tax }) });
+      if (CASH_STATUSES.has(data.status)) receipts.push({ id: row.id, date, kind: 'Historical paid invoice',
+        channel: 'invoice', paymentMethod: safeDimension(data.paymentMethod || data.method, PAYMENT_FALLBACK),
+        number: safeText(data.number), amount: Number(row.total),
+        _segments: classifiedSegments(groups, { amount: Number(row.total) }) });
     } else if ((row.document_state === 'issued' || row.document_state === 'legacy') && data.type === 'Quote' && !['Voided', 'Cancelled', 'Canceled'].includes(data.status)) {
       const converted = Boolean(row.converted_to || data.convertedTo || String(data.status || '').toLowerCase() === 'converted');
-      quotes.push({ id: row.id, date, kind: row.document_state === 'legacy' ? 'Historical quote' : 'Quote', number: safeText(data.number), customer: safeText(row.issued_snapshot?.clientSnapshot?.name || data.customerName), status: safeText(converted ? 'Converted' : data.status || 'Issued'), total: Number(row.total), converted });
+      quotes.push({ id: row.id, date, kind: row.document_state === 'legacy' ? 'Historical quote' : 'Quote',
+        channel: 'invoice', paymentMethod: '', number: safeText(data.number),
+        customer: safeText(row.issued_snapshot?.clientSnapshot?.name || data.customerName),
+        status: safeText(converted ? 'Converted' : data.status || 'Issued'), total: Number(row.total), converted,
+        _segments: classifiedSegments(groups, { total: Number(row.total) }) });
     }
   }
   const legacyExpenses = transactions.filter(row => row.document_state === 'legacy').map(asRecord);
@@ -123,24 +336,45 @@ export function companyReport({ transactions = [], expenses = [], payments = [] 
   }
   for (const payment of payments) {
     const date = businessDate(payment.paid_at);
-    if (inRange(date, from, to)) receipts.push({ id: payment.id, date, kind: 'Invoice payment', number: safeText(payment.number), amount: Number(payment.amount) });
+    if (inRange(date, from, to)) {
+      const data = payment.data || {};
+      const groups = classificationGroups(payment.company_id, rowItems(payment, data), productsById);
+      receipts.push({ id: payment.id, date, kind: 'Invoice payment', channel: 'invoice',
+        paymentMethod: safeDimension(payment.method, PAYMENT_FALLBACK), number: safeText(payment.number),
+        amount: Number(payment.amount), _segments: classifiedSegments(groups, { amount: Number(payment.amount) }) });
+    }
   }
+  const options = filterOptions(sales, receipts, quotes);
+  const selectedSales = sales.map(row => filteredRecord(row, filters, ['total', 'tax'])).filter(Boolean);
+  const selectedReceipts = receipts.map(row => filteredRecord(row, filters, ['amount'])).filter(Boolean);
+  const selectedQuotes = quotes.map(row => filteredRecord(row, filters, ['total'])).filter(Boolean);
   const byDate = (a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id);
-  sales.sort(byDate); expenseLines.sort(byDate); receipts.sort(byDate); quotes.sort(byDate);
+  selectedSales.sort(byDate); expenseLines.sort(byDate); selectedReceipts.sort(byDate); selectedQuotes.sort(byDate);
   const cashExpenses = expenseLines.filter(row => row.cashImpact);
-  const totals = { sales: sum(sales, 'total'), tax: sum(sales, 'tax'), expenses: sum(expenseLines, 'amount'), cashIn: sum(receipts, 'amount'), cashOut: sum(cashExpenses, 'amount'), cashFlow: (receipts.reduce((amount, row) => amount + cents(row.amount), 0) - cashExpenses.reduce((amount, row) => amount + cents(row.amount), 0)) / 100, quoted: sum(quotes.filter(row => !row.converted), 'total'), convertedQuoted: sum(quotes.filter(row => row.converted), 'total') };
+  const totals = { sales: sum(selectedSales, 'total'), tax: sum(selectedSales, 'tax'), expenses: sum(expenseLines, 'amount'), cashIn: sum(selectedReceipts, 'amount'), cashOut: sum(cashExpenses, 'amount'), cashFlow: (selectedReceipts.reduce((amount, row) => amount + cents(row.amount), 0) - cashExpenses.reduce((amount, row) => amount + cents(row.amount), 0)) / 100, quoted: sum(selectedQuotes.filter(row => !row.converted), 'total'), convertedQuoted: sum(selectedQuotes.filter(row => row.converted), 'total') };
   const days = new Map();
   for (let stamp = Date.parse(from); stamp <= Date.parse(to); stamp += 86400000) {
     const date = new Date(stamp).toISOString().slice(0, 10);
     days.set(date, { date, sales: 0, tax: 0, expenses: 0, cashIn: 0, cashOut: 0, cashFlow: 0 });
   }
   const add = (date, key, amount) => { if (days.has(date)) days.get(date)[key] += cents(amount); };
-  for (const row of sales) { add(row.date, 'sales', row.total); add(row.date, 'tax', row.tax); }
+  for (const row of selectedSales) { add(row.date, 'sales', row.total); add(row.date, 'tax', row.tax); }
   for (const row of expenseLines) add(row.date, 'expenses', row.amount);
-  for (const row of receipts) add(row.date, 'cashIn', row.amount);
+  for (const row of selectedReceipts) add(row.date, 'cashIn', row.amount);
   for (const row of cashExpenses) add(row.date, 'cashOut', row.amount);
   const daily = [...days.values()].map(row => ({ date: row.date, sales: row.sales / 100, tax: row.tax / 100, expenses: row.expenses / 100, cashIn: row.cashIn / 100, cashOut: row.cashOut / 100, cashFlow: (row.cashIn - row.cashOut) / 100 }));
-  return { totals, daily, sales, expenses: expenseLines, receipts, quotes, basis: reportBasis };
+  return { totals, daily, sales: selectedSales.map(publicReportRow), expenses: expenseLines,
+    receipts: selectedReceipts.map(publicReportRow), quotes: selectedQuotes.map(publicReportRow), basis: reportBasis,
+    filters, filterOptions: options, filterActive: hasFilters(filters),
+    filterScope: hasFilters(filters)
+      ? 'Sales dimensions filter issued sales, tax and attributable cash receipts. Channel and product filters also filter quote pipeline. Expenses and cash out remain company-wide because current expense records are not reliably attributable to sales dimensions.'
+      : '',
+    breakdowns: {
+      channel: simpleBreakdown(selectedSales, selectedReceipts, 'channel', CHANNEL_LABELS),
+      paymentMethod: simpleBreakdown(selectedSales, selectedReceipts, 'paymentMethod'),
+      category: classificationBreakdown(selectedSales, selectedReceipts, 'category'),
+      subcategory: classificationBreakdown(selectedSales, selectedReceipts, 'subcategory'),
+    } };
 }
 
 export function reportDateBounds(from, to) {
@@ -183,12 +417,27 @@ export async function companyRows(c, companyIds, from, to) {
   ].join(' UNION ALL ');
   const transactions = await c.query(transactionQuery, args);
   const expenses = await c.query(expenseQuery, [companyIds, fromPad, toPad]);
-  const payments = await c.query(`SELECT p.company_id,p.id,p.amount,p.paid_at,t.data->>'number' AS number
+  const payments = await c.query(`SELECT p.company_id,p.id,p.document_id,p.amount,p.method,p.paid_at,
+      t.data->>'number' AS number,t.data,t.source,t.document_state,t.issued_snapshot
       FROM myfin.document_payments p LEFT JOIN myfin.transactions t ON t.company_id=p.company_id AND t.id=p.document_id
       WHERE p.company_id=ANY($1::text[])
       AND p.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur')
         AND p.paid_at < ($3::date::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur')`, [companyIds, from, toExclusive]);
-  return { transactions: transactions.rows, expenses: expenses.rows, payments: payments.rows };
+  const productIds = new Set();
+  const collectProducts = row => {
+    for (const item of rowItems(row, row.data || {})) {
+      const id = String(item?.productId ?? item?.product_id ?? '').trim();
+      if (id) productIds.add(id);
+    }
+  };
+  for (const row of transactions.rows) collectProducts(row);
+  for (const row of payments.rows) collectProducts(row);
+  const products = productIds.size ? await c.query(
+    `SELECT company_id,id,data->>'category' AS category,data->>'subcategory' AS subcategory
+       FROM myfin.products WHERE company_id=ANY($1::text[]) AND id=ANY($2::text[])`,
+    [companyIds, [...productIds]],
+  ) : { rows: [] };
+  return { transactions: transactions.rows, expenses: expenses.rows, payments: payments.rows, products: products.rows };
 }
 
 export function registerReporting(app, { db, managed, authorize, managementSession }) {
@@ -197,11 +446,13 @@ export function registerReporting(app, { db, managed, authorize, managementSessi
     const companyId = v.parse(v.id, req.params.company);
     await authorize(c, req.identity, companyId);
     requireCapability(req.identity, 'financialReports');
-    const { from, to } = range(req.query);
+    const query = range(req.query), { from, to } = query;
     const rows = await companyRows(c, [companyId], from, to);
-    const result = companyReport(rows, from, to);
+    const result = companyReport(rows, from, to, query);
     const limit = 250;
-    return { from, to, totals: result.totals, basis: result.basis,
+    return { from, to, totals: result.totals, daily: result.daily, basis: result.basis,
+      filters: result.filters, filterOptions: result.filterOptions, filterActive: result.filterActive,
+      filterScope: result.filterScope, breakdowns: result.breakdowns,
       counts: { sales: result.sales.length, expenses: result.expenses.length, receipts: result.receipts.length, quotes: result.quotes.length },
       sales: result.sales.slice(0, limit), expenses: result.expenses.slice(0, limit), receipts: result.receipts.slice(0, limit), quotes: result.quotes.slice(0, limit),
       limited: [result.sales.length, result.expenses.length, result.receipts.length, result.quotes.length].some(count => count > limit) };
