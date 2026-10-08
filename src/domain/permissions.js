@@ -12,7 +12,8 @@ export function permissionsFor(user) {
     companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,integrationsRead:owner,
     deviceSettingsWrite:active,workspaceWrite:owner,companyEnroll:owner,usersManage:owner||manager,
     managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager,
-    receiptReviewsResolve:owner||manager};
+    receiptReviewsResolve:owner||manager,studentProgramsRead:owner||manager,
+    studentEligibilityReview:owner||manager,promotionsManage:owner};
 }
 export const capabilities = permissionsFor;
 export const can = (user,action) => permissionsFor(user)[action] === true;
