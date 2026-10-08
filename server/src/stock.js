@@ -46,7 +46,9 @@ async function ensureCodes(c,companyId,itemId,codes){
   if(new Set(normalized).size!==normalized.length)v.fail(409,'duplicate_stock_barcode');
   if(!normalized.length)return;
   const conflicts=await c.query(`SELECT barcode FROM myfin.stock_items WHERE company_id=$1 AND id<>$2 AND upper(barcode)=ANY($3::text[])
-    UNION ALL SELECT barcode FROM myfin.stock_packagings WHERE company_id=$1 AND item_id<>$2 AND upper(barcode)=ANY($3::text[])`,[companyId,itemId,normalized]);
+    UNION ALL SELECT barcode FROM myfin.stock_packagings WHERE company_id=$1 AND item_id<>$2 AND upper(barcode)=ANY($3::text[])
+    UNION ALL SELECT normalized_value FROM myfin.stock_identifiers
+      WHERE company_id=$1 AND active AND normalized_value=ANY($3::text[])`,[companyId,itemId,normalized]);
   if(conflicts.rowCount)v.fail(409,'duplicate_stock_barcode');
 }
 async function reconcilePackagings(c,companyId,itemId,requested){

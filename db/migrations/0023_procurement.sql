@@ -37,6 +37,84 @@ CREATE UNIQUE INDEX stock_identifiers_active_value_key
 CREATE INDEX stock_identifiers_item_idx
   ON myfin.stock_identifiers(company_id,stock_item_id,active);
 
+-- The older stock-item and packaging barcode columns remain writable for
+-- compatibility. Serialize every code writer on the same advisory key and
+-- reject collisions across all three stores so a scan has one tenant-local
+-- meaning even when two requests race.
+DO $$
+BEGIN
+  IF EXISTS(
+    SELECT 1 FROM (
+      SELECT company_id,upper(btrim(barcode)) AS scan_code FROM myfin.stock_items
+        WHERE btrim(barcode)<>''
+      UNION ALL
+      SELECT company_id,upper(btrim(barcode)) FROM myfin.stock_packagings
+        WHERE btrim(barcode)<>''
+      UNION ALL
+      SELECT company_id,normalized_value FROM myfin.stock_identifiers WHERE active
+    ) existing_codes
+    GROUP BY company_id,scan_code HAVING count(*)>1
+  ) THEN
+    RAISE EXCEPTION 'duplicate_scan_code_requires_cleanup' USING ERRCODE='23505';
+  END IF;
+END $$;
+
+CREATE FUNCTION myfin.enforce_scan_code_uniqueness() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog,myfin AS $$
+DECLARE scan_code text; conflict boolean;
+BEGIN
+  IF TG_TABLE_NAME='stock_identifiers' THEN
+    IF NOT NEW.active THEN RETURN NEW; END IF;
+    scan_code=NEW.normalized_value;
+  ELSE
+    scan_code=upper(btrim(NEW.barcode));
+    IF scan_code='' THEN RETURN NEW; END IF;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.company_id||':scan-code:'||scan_code,35));
+  IF TG_TABLE_NAME='stock_identifiers' THEN
+    SELECT EXISTS(SELECT 1 FROM myfin.stock_items s
+        WHERE s.company_id=NEW.company_id AND upper(btrim(s.barcode))=scan_code)
+      OR EXISTS(SELECT 1 FROM myfin.stock_packagings p
+        WHERE p.company_id=NEW.company_id AND upper(btrim(p.barcode))=scan_code)
+      INTO conflict;
+  ELSIF TG_TABLE_NAME='stock_items' THEN
+    SELECT EXISTS(SELECT 1 FROM myfin.stock_identifiers i
+        WHERE i.company_id=NEW.company_id AND i.active AND i.normalized_value=scan_code)
+      OR EXISTS(SELECT 1 FROM myfin.stock_packagings p
+        WHERE p.company_id=NEW.company_id AND upper(btrim(p.barcode))=scan_code)
+      OR EXISTS(SELECT 1 FROM myfin.stock_items s
+        WHERE s.company_id=NEW.company_id AND s.id<>NEW.id AND upper(btrim(s.barcode))=scan_code)
+      INTO conflict;
+  ELSE
+    SELECT EXISTS(SELECT 1 FROM myfin.stock_identifiers i
+        WHERE i.company_id=NEW.company_id AND i.active AND i.normalized_value=scan_code)
+      OR EXISTS(SELECT 1 FROM myfin.stock_items s
+        WHERE s.company_id=NEW.company_id AND upper(btrim(s.barcode))=scan_code)
+      OR EXISTS(SELECT 1 FROM myfin.stock_packagings p
+        WHERE p.company_id=NEW.company_id
+          AND (p.item_id,p.id)<>(NEW.item_id,NEW.id) AND upper(btrim(p.barcode))=scan_code)
+      INTO conflict;
+  END IF;
+  IF conflict THEN
+    RAISE EXCEPTION 'duplicate_scan_code' USING ERRCODE='23505';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER scan_code_identifier_insert_guard BEFORE INSERT ON myfin.stock_identifiers
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+CREATE TRIGGER scan_code_identifier_update_guard
+  BEFORE UPDATE OF company_id,normalized_value,active ON myfin.stock_identifiers
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+CREATE TRIGGER scan_code_stock_item_insert_guard BEFORE INSERT ON myfin.stock_items
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+CREATE TRIGGER scan_code_stock_item_update_guard BEFORE UPDATE OF company_id,barcode ON myfin.stock_items
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+CREATE TRIGGER scan_code_packaging_insert_guard BEFORE INSERT ON myfin.stock_packagings
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+CREATE TRIGGER scan_code_packaging_update_guard
+  BEFORE UPDATE OF company_id,item_id,id,barcode ON myfin.stock_packagings
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_scan_code_uniqueness();
+
 CREATE TABLE myfin.purchase_orders (
   company_id text NOT NULL REFERENCES myfin.companies(id) ON DELETE RESTRICT,
   id text NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
@@ -94,7 +172,8 @@ CREATE TABLE myfin.purchase_order_lines (
   FOREIGN KEY(company_id,purchase_order_id)
     REFERENCES myfin.purchase_orders(company_id,id) ON DELETE RESTRICT,
   FOREIGN KEY(company_id,stock_item_id)
-    REFERENCES myfin.stock_items(company_id,id) ON DELETE RESTRICT
+    REFERENCES myfin.stock_items(company_id,id) ON DELETE RESTRICT,
+  CHECK(line_total_sen=round(ordered_purchase_quantity*unit_price_sen)::bigint)
 );
 CREATE INDEX purchase_order_lines_stock_idx
   ON myfin.purchase_order_lines(company_id,stock_item_id,purchase_order_id);
@@ -372,6 +451,48 @@ CREATE TRIGGER purchase_order_line_guard BEFORE INSERT OR UPDATE OR DELETE ON my
 CREATE TRIGGER truncate_purchase_order_lines BEFORE TRUNCATE ON myfin.purchase_order_lines
   FOR EACH STATEMENT EXECUTE FUNCTION myfin.protect_procurement_evidence();
 
+-- Recalculate receipt quantities and money from the immutable submitted line.
+-- This closes the same boundary even if a future caller bypasses the API.
+CREATE FUNCTION myfin.enforce_goods_receipt_line() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog,myfin AS $$
+DECLARE order_id text; order_status text; expected_item text;
+  ordered numeric; factor numeric; price_sen bigint; already_received numeric;
+BEGIN
+  SELECT gr.purchase_order_id,po.status,line.stock_item_id,line.ordered_purchase_quantity,
+    line.quantity_in_base,line.unit_price_sen
+    INTO order_id,order_status,expected_item,ordered,factor,price_sen
+    FROM myfin.goods_receipts gr
+    JOIN myfin.purchase_orders po ON po.company_id=gr.company_id AND po.id=gr.purchase_order_id
+    JOIN myfin.purchase_order_lines line ON line.company_id=gr.company_id
+      AND line.purchase_order_id=gr.purchase_order_id AND line.id=NEW.purchase_order_line_id
+    WHERE gr.company_id=NEW.company_id AND gr.id=NEW.goods_receipt_id
+    FOR UPDATE OF po;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'purchase_order_line_not_found' USING ERRCODE='23503';
+  END IF;
+  IF order_status NOT IN ('submitted','partially_received') OR
+     NEW.purchase_order_id<>order_id OR NEW.stock_item_id<>expected_item THEN
+    RAISE EXCEPTION 'invalid_goods_receipt_line' USING ERRCODE='23514';
+  END IF;
+  IF NEW.base_quantity<>round(NEW.received_purchase_quantity*factor,6) OR
+     NEW.cost_sen<>round(NEW.received_purchase_quantity*price_sen)::bigint THEN
+    RAISE EXCEPTION 'goods_receipt_line_calculation_mismatch' USING ERRCODE='23514';
+  END IF;
+  SELECT coalesce(sum(gl.received_purchase_quantity),0) INTO already_received
+    FROM myfin.goods_receipt_lines gl
+    JOIN myfin.goods_receipts gr ON gr.company_id=gl.company_id AND gr.id=gl.goods_receipt_id
+    LEFT JOIN myfin.goods_receipt_reversals rv
+      ON rv.company_id=gr.company_id AND rv.goods_receipt_id=gr.id
+    WHERE gl.company_id=NEW.company_id AND gl.purchase_order_id=order_id
+      AND gl.purchase_order_line_id=NEW.purchase_order_line_id AND rv.id IS NULL;
+  IF already_received+NEW.received_purchase_quantity>ordered THEN
+    RAISE EXCEPTION 'goods_receipt_exceeds_ordered_quantity' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER goods_receipt_line_guard BEFORE INSERT ON myfin.goods_receipt_lines
+  FOR EACH ROW EXECUTE FUNCTION myfin.enforce_goods_receipt_line();
+
 CREATE FUNCTION myfin.enforce_purchase_order_lifecycle() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog,myfin AS $$
 DECLARE line_count integer; line_total bigint; received_none boolean;
@@ -478,3 +599,13 @@ INSERT INTO myfin.low_stock_alert_events(company_id,id,alert_id,event_type,detai
 SELECT company_id,'low-event-'||md5(jsonb_build_array(id,'migration-0023')::text),id,'opened',
   jsonb_build_object('observedQuantity',observed_quantity,'reorderThreshold',reorder_threshold,'source','migration')
 FROM seeded;
+
+-- Trigger functions are invoked by PostgreSQL and do not need to remain
+-- callable by PUBLIC or by application clients.
+REVOKE ALL ON FUNCTION myfin.enforce_scan_code_uniqueness() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.protect_procurement_evidence() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.protect_stock_identifier() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.protect_purchase_order_line() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.enforce_goods_receipt_line() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.enforce_purchase_order_lifecycle() FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.sync_low_stock_alert() FROM PUBLIC;

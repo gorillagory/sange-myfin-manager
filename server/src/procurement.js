@@ -55,6 +55,8 @@ const hash = value => createHash('sha256').update(JSON.stringify(canonical(value
 const moneyText = value => BigInt(value).toString();
 const movementKey = (companyId, receiptId, lineId, effect) =>
   `proc:${createHash('sha256').update(`${companyId}\u0000${receiptId}\u0000${lineId}\u0000${effect}`).digest('hex')}`;
+export const orderStatusAfterReceiptReversal = (currentStatus, derivedStatus) =>
+  currentStatus === 'cancelled' ? 'cancelled' : derivedStatus;
 
 async function assertSupplier(c, companyId, supplierId) {
   const row = (await c.query('SELECT id,data FROM myfin.clients WHERE company_id=$1 AND id=$2 FOR KEY SHARE',
@@ -305,7 +307,7 @@ export async function reverseGoodsReceipt(c, who, companyId, receiptId, input, a
     if(duplicate.goods_receipt_id!==receiptId||duplicate.request_digest!==requestDigest)v.fail(409,'receipt_reversal_payload_changed');
     return {duplicate:true,receipt:await goodsReceiptOutput(c,companyId,receiptId,true)};
   }
-  const receipt=(await c.query(`SELECT gr.*,po.number AS order_number,po.supplier_id
+  const receipt=(await c.query(`SELECT gr.*,po.number AS order_number,po.supplier_id,po.status AS order_status
     FROM myfin.goods_receipts gr JOIN myfin.purchase_orders po
       ON po.company_id=gr.company_id AND po.id=gr.purchase_order_id
     WHERE gr.company_id=$1 AND gr.id=$2 FOR UPDATE OF gr,po`,[companyId,receiptId])).rows[0];
@@ -346,12 +348,13 @@ export async function reverseGoodsReceipt(c, who, companyId, receiptId, input, a
   await updateWeightedCosts(c,companyId,who.id,'goods_receipt_reversal',reversalId,groups);
   const orderLines=(await c.query(`SELECT * FROM myfin.purchase_order_lines WHERE company_id=$1
     AND purchase_order_id=$2 ORDER BY id FOR UPDATE`,[companyId,receipt.purchase_order_id])).rows;
-  const received=await receivedByLine(c,companyId,receipt.purchase_order_id),state=purchaseOrderStatus(orderLines,received);
+  const received=await receivedByLine(c,companyId,receipt.purchase_order_id),derivedState=purchaseOrderStatus(orderLines,received),
+    state=orderStatusAfterReceiptReversal(receipt.order_status,derivedState);
   await c.query(`UPDATE myfin.purchase_orders SET status=$3,version=version+1,updated_at=now()
     WHERE company_id=$1 AND id=$2`,[companyId,receipt.purchase_order_id,state]);
   await c.query(`INSERT INTO myfin.purchase_order_events(company_id,id,purchase_order_id,actor_id,event_type,details)
     VALUES($1,$2,$3,$4,'receipt_reversed',$5)`,[companyId,randomUUID(),receipt.purchase_order_id,who.id,
-    {goodsReceiptId:receiptId,reversalId,status:state,reason:data.reason}]);
+    {goodsReceiptId:receiptId,reversalId,status:state,derivedReceiptStatus:derivedState,reason:data.reason}]);
   await audit(c,who,companyId,'Reverse goods receipt',`${receipt.order_number} · ${data.reason}`);
   return {duplicate:false,receipt:await goodsReceiptOutput(c,companyId,receiptId,true)};
 }

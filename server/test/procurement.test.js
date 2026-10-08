@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { createPurchaseOrder, registerProcurement } from '../src/procurement.js';
+import { createPurchaseOrder, orderStatusAfterReceiptReversal, registerProcurement } from '../src/procurement.js';
 
 const input={number:'PO-100',supplierId:'supplier',currencyCode:'MYR',expectedDate:'2026-10-20',notes:'Weekly order',
   idempotencyKey:'po-request-100',lines:[
@@ -74,6 +74,12 @@ test('purchase costs are owner-only while the receiving queue omits them for inv
   }),error=>error.statusCode===403&&error.message==='access_denied');
 });
 
+test('receipt reversal preserves a deliberately cancelled purchase order',()=>{
+  assert.equal(orderStatusAfterReceiptReversal('cancelled','submitted'),'cancelled');
+  assert.equal(orderStatusAfterReceiptReversal('cancelled','partially_received'),'cancelled');
+  assert.equal(orderStatusAfterReceiptReversal('received','partially_received'),'partially_received');
+});
+
 test('procurement migration enforces immutable evidence, stable tenant uniqueness and no automatic supplier order',async()=>{
   const sql=await readFile(new URL('../../db/migrations/0023_procurement.sql',import.meta.url),'utf8');
   for(const table of ['stock_identifiers','purchase_orders','purchase_order_lines','purchase_order_events','goods_receipts',
@@ -85,6 +91,10 @@ test('procurement migration enforces immutable evidence, stable tenant uniquenes
   assert.match(sql,/submitted_purchase_order_snapshot_immutable/);
   assert.match(sql,/gl\.purchase_order_line_id=line\.id/);
   assert.match(sql,/received_within/);
+  assert.match(sql,/CREATE FUNCTION myfin\.enforce_scan_code_uniqueness/);
+  assert.match(sql,/pg_advisory_xact_lock\(hashtextextended\(NEW\.company_id\|\|':scan-code:'/);
+  assert.equal((sql.match(/EXECUTE FUNCTION myfin\.enforce_scan_code_uniqueness/g)||[]).length,6);
+  assert.match(sql,/REVOKE ALL ON FUNCTION myfin\.enforce_goods_receipt_line\(\) FROM PUBLIC/);
   assert.match(sql,/stock_ledger_procurement_effect_key/);
   assert.match(sql,/low_stock_alerts_active_item_key[\s\S]*status IN \('open','acknowledged'\)/);
   assert.equal((sql.match(/EXECUTE FUNCTION myfin\.protect_procurement_evidence/g)||[]).length,17);
