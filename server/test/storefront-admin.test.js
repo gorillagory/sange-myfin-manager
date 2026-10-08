@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerStorefrontAdmin } from '../src/storefront-admin.js';
 
-function client({ settings, host = '', locations = [], products = [], variants = [] } = {}) {
+function client({ settings, host = '', locations = [], deliveryZones = [], products = [], variants = [] } = {}) {
   return {
     async query(sql) {
       if (sql.includes('FROM myfin.storefront_settings')) return { rows: settings ? [settings] : [] };
       if (sql.includes('FROM myfin.storefront_hosts')) return { rows: host ? [{ hostname: host }] : [] };
       if (sql.includes('FROM myfin.shop_locations')) return { rows: locations };
+      if (sql.includes('FROM myfin.storefront_delivery_zones')) return { rows: deliveryZones };
       if (sql.includes('FROM myfin.storefront_products')) return { rows: products };
       if (sql.includes('FROM myfin.storefront_product_variants')) return { rows: variants };
       throw new Error(`Unexpected query: ${sql}`);
@@ -40,6 +41,7 @@ test('storefront admin returns safe defaults before a company has configured a p
   assert.deepEqual(result, {
     storefront: {
       published: false,
+      deliveryEnabled: false,
       hostname: '',
       displayName: '',
       description: '',
@@ -56,6 +58,7 @@ test('storefront admin returns safe defaults before a company has configured a p
       privacyNoticeMs: '',
     },
     locations: [],
+    deliveryZones: [],
     products: [],
   });
 });
@@ -83,6 +86,7 @@ test('storefront admin maps database privacy columns to the editable form contra
   });
   assert.deepEqual(result.storefront, {
     published: false,
+    deliveryEnabled: false,
     hostname: 'order-shop.example.test',
     displayName: 'Shop',
     description: 'Menu',
@@ -99,4 +103,14 @@ test('storefront admin maps database privacy columns to the editable form contra
     guestContactRetentionDays: 120,
     updatedAt: '2026-10-02T00:00:00.000Z',
   });
+});
+
+test('storefront admin maps exact-sen delivery zones without exposing actor identifiers', async () => {
+  const result = await getStorefront({ deliveryZones: [{ id:'zone-a', name:'Campus', fee_sen:250,
+    minimum_order_sen:1500, lead_time_minutes:35, service_instructions:'Meet at the lobby', enabled:true,
+    created_at:'2026-10-09T00:00:00Z', updated_at:'2026-10-09T00:00:00Z', updated_by:'secret-actor' }] });
+  assert.deepEqual(result.deliveryZones, [{ id:'zone-a', name:'Campus', feeSen:250, minimumOrderSen:1500,
+    leadTimeMinutes:35, serviceInstructions:'Meet at the lobby', enabled:true,
+    createdAt:'2026-10-09T00:00:00Z', updatedAt:'2026-10-09T00:00:00Z' }]);
+  assert.doesNotMatch(JSON.stringify(result), /secret-actor/);
 });

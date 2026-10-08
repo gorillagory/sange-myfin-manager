@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { assertProductReservationFloor, assertUnreservedSaleStock } from '../src/customer-order-reservations.js';
 import { assertTenderMatches, canonicalTenderSale } from '../src/customer-orders.js';
-import { orderOutput, quoteToken, storefrontRateKey, verifyQuoteToken } from '../src/storefront-public.js';
+import { orderOutput, orderRequestDigest, quoteToken, storefrontRateKey, totalsWithDelivery,
+  verifyQuoteToken } from '../src/storefront-public.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
   storefrontPrivacyComplete, storefrontPrivacyOutput } from '../src/storefront-privacy.js';
 import { requestContext } from '../src/tenancy.js';
@@ -47,7 +48,39 @@ test('expired order contact cleanup is bounded, concurrent-safe and idempotent',
   assert.match(calls[0].sql, /status IN \('cancelled','expired','paid'\)/);
   assert.match(calls[0].sql, /LIMIT \$2\s+FOR UPDATE OF o SKIP LOCKED/);
   assert.match(calls[0].sql, /guest_email='',guest_phone='',notes='',pii_redacted_at=now\(\)/);
+  assert.match(calls[0].sql, /delivery_address_snapshot=.*'\{\}'::jsonb/s);
+  assert.match(calls[0].sql, /delivery_contact_purpose=.*''/s);
   assert.deepEqual(calls[0].params, ['company-a', 500]);
+});
+
+test('delivery quote tokens bind zone and every address field without exposing them in the token signature', () => {
+  const secret = 's'.repeat(64), context = { company_id:'company-a', hostname:'order-shop.finn3.com' };
+  const input = { locationId:'counter', serviceMode:'delivery', items:[{ productId:'latte', variantId:'', quantity:1 }],
+    delivery:{ zoneId:'campus', address:{ addressLine1:'12 Jalan A', addressLine2:'', postcode:'50000',
+      city:'Kuala Lumpur', state:'Kuala Lumpur', countryCode:'MY', instructions:'Lobby' } } };
+  const quote = { locationId:'counter', serviceMode:'delivery', subtotal:19.92, deliveryFee:2.53,
+    totalBeforeRounding:22.45, rounding:0, total:22.45 };
+  const token = quoteToken(secret, context, input, quote);
+  assert.doesNotMatch(token, /Jalan|Lobby/);
+  assert.doesNotThrow(() => verifyQuoteToken(secret, token, context, input, quote));
+  assert.throws(() => verifyQuoteToken(secret, token, context,
+    { ...input, delivery:{ ...input.delivery, address:{ ...input.delivery.address, postcode:'50001' } } }, quote),
+  error => error.statusCode === 409 && error.message === 'quote_changed');
+  assert.throws(() => verifyQuoteToken(secret, token, context,
+    { ...input, delivery:{ ...input.delivery, zoneId:'other' } }, quote),
+  error => error.statusCode === 409 && error.message === 'quote_changed');
+  const first = orderRequestDigest(context, { ...input, quoteToken:token });
+  assert.equal(first, orderRequestDigest(context, { ...input, quoteToken:token }));
+  assert.notEqual(first, orderRequestDigest(context, { ...input, quoteToken:token,
+    delivery:{ ...input.delivery, address:{ ...input.delivery.address, instructions:'Side door' } } }));
+  assert.notEqual(first, orderRequestDigest({ ...context, company_id:'company-b' }, { ...input, quoteToken:token }));
+});
+
+test('delivery fee is added in integer sen before the existing five-sen rounding rule', () => {
+  const result = totalsWithDelivery({ subtotal:19.91, discountAmount:0, tax:0, taxRate:0,
+    totalBeforeRounding:19.91, rounding:-0.01, total:19.9 }, 253);
+  assert.deepEqual(result, { subtotal:19.91, discountAmount:0, tax:0, taxRate:0,
+    totalBeforeRounding:22.44, rounding:0.01, total:22.45, deliveryFee:2.53 });
 });
 
 test('reviewed quotes are host, cart, totals and expiry bound by an authenticated token', () => {
@@ -81,6 +114,26 @@ test('public order projection maps submitted status and excludes contacts and in
   assert.equal(output.items[0].sku, undefined);
   assert.equal(output.guestEmail, undefined);
   assert.equal(output.guestPhone, undefined);
+});
+
+test('public delivery projection exposes only an area summary while retaining service pricing', () => {
+  const output = orderOutput({ id:'order-d', public_code:'DELIV123', company_id:'company-a', location_id:'counter',
+    guest_name:'Private', status:'accepted', payment_state:'unpaid', version:2, currency:'RM', subtotal:20,
+    discount_amount:0, tax:0, tax_rate:0, total_before_rounding:22.5, rounding:0, total:22.5,
+    service_mode:'delivery', delivery_zone_id:'zone-a', delivery_fee_sen:250,
+    delivery_zone_snapshot:{ name:'Campus', leadTimeMinutes:30, serviceInstructions:'Lobby only' },
+    delivery_address_snapshot:{ addressLine1:'12 Secret Street', postcode:'50000', city:'Kuala Lumpur',
+      state:'Kuala Lumpur', countryCode:'MY', instructions:'Blue door' }, expires_at:new Date(), created_at:new Date(), updated_at:new Date() }, []);
+  assert.deepEqual(output.delivery.address, { postcode:'50000', city:'Kuala Lumpur', state:'Kuala Lumpur', countryCode:'MY' });
+  assert.equal(output.deliveryFee, 2.5);
+  assert.doesNotMatch(JSON.stringify(output), /Secret Street|Blue door/);
+  const redacted = orderOutput({ ...output, public_code:'DELIV123', company_id:'company-a', location_id:'counter',
+    payment_state:'unpaid', subtotal:20, discount_amount:0, tax_rate:0, total_before_rounding:22.5,
+    service_mode:'delivery', delivery_zone_id:'zone-a', delivery_fee_sen:250,
+    delivery_zone_snapshot:{ name:'Campus' }, delivery_address_snapshot:{}, delivery_address_redacted_at:new Date(),
+    created_at:new Date(), updated_at:new Date(), expires_at:new Date() }, []);
+  assert.equal(redacted.delivery.address, undefined);
+  assert.equal(redacted.delivery.addressRedacted, true);
 });
 
 test('walk-in availability subtracts active reservations and can exclude the tendered order', async () => {

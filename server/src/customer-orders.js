@@ -59,6 +59,7 @@ async function findOrder(c, companyId, id, lock = false) {
 
 function staffOutput(row, lines) {
   const base = orderOutput(row, lines);
+  const address = row.delivery_address_snapshot || {};
   return {
     ...base, customerId: row.customer_id || '',
     items: lines.map(line => ({ productId: line.product_id, variantId: line.variant_id || '',
@@ -67,6 +68,10 @@ function staffOutput(row, lines) {
     guestEmail: row.guest_email || '', guestPhone: row.guest_phone || '',
     location: { id: row.location_id, name: row.location_name, fulfillmentMode: row.fulfillment_mode,
       tableLabel: row.table_label || '', pickupInstructions: row.pickup_instructions || '' },
+    ...(base.serviceMode === 'delivery' ? { delivery: { ...base.delivery,
+      contactPurpose: row.delivery_contact_purpose || '',
+      ...(!row.delivery_address_redacted_at ? { address } : {}),
+    } } : {}),
     saleId: row.sale_id || '',
     checkoutCart: {
       items: lines.map(line => ({ productId: line.product_id, variantId: line.variant_id || '',
@@ -75,7 +80,8 @@ function staffOutput(row, lines) {
       customer: { id: '', name: row.guest_name || '', email: row.guest_email || '', phone: row.guest_phone || '' },
       totals: { subtotal: Number(row.subtotal), discountAmount: Number(row.discount_amount), tax: Number(row.tax),
         taxRate: Number(row.tax_rate), discount: 0, totalBeforeRounding: Number(row.total_before_rounding),
-        rounding: Number(row.rounding), total: Number(row.total) },
+        rounding: Number(row.rounding), total: Number(row.total),
+        ...(base.serviceMode === 'delivery' ? { deliveryFee: Number(row.delivery_fee_sen || 0) / 100 } : {}) },
     },
   };
 }

@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { z } from 'zod';
-import { canonical, cents, checkoutTotalsFor } from '../../src/domain/pos.js';
+import { canonical, cents, checkoutTotalsFor, roundToFiveSen } from '../../src/domain/pos.js';
 import { activeReservationQuantities, releaseOrderReservations } from './customer-order-reservations.js';
 import { customerOrderDefaults, customerPhoneSchema, customerSession } from './customer-auth.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
@@ -15,10 +15,21 @@ const itemSchema = z.strictObject({
   quantity: z.number().finite().positive().max(1000)
     .refine(value => Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6),
 });
+const deliveryAddressSchema = z.strictObject({
+  addressLine1: z.string().trim().min(1).max(160),
+  addressLine2: z.string().trim().max(160).default(''),
+  postcode: z.string().trim().min(2).max(20),
+  city: z.string().trim().min(1).max(120),
+  state: z.string().trim().min(1).max(120),
+  countryCode: z.literal('MY').default('MY'),
+  instructions: z.string().trim().max(500).default(''),
+});
+const deliverySchema = z.strictObject({ zoneId: v.id, address: deliveryAddressSchema });
 const cartSchema = z.strictObject({
   locationToken: z.string().min(32).max(256).optional(),
   locationId: v.id.optional(),
-  serviceMode: z.enum(['pickup', 'table']).default('pickup'),
+  serviceMode: z.enum(['pickup', 'table', 'delivery']).default('pickup'),
+  delivery: deliverySchema.optional(),
   items: z.array(itemSchema).min(1).max(100),
 });
 const submitSchema = cartSchema.extend({
@@ -89,15 +100,26 @@ async function locationFor(c, companyId, input) {
     );
     if (result.rowCount === 1) row = result.rows[0];
   }
-  if (!row || (row.fulfillment_mode !== 'both' && row.fulfillment_mode !== input.serviceMode))
+  const allowed = input.serviceMode === 'delivery'
+    ? ['pickup','both'].includes(row?.fulfillment_mode)
+    : row && (row.fulfillment_mode === 'both' || row.fulfillment_mode === input.serviceMode);
+  if (!row || !allowed)
     v.fail(400, 'invalid_shop_location');
   return row;
 }
 
+function cartTokenInput(input) {
+  return { locationToken: input.locationToken || '', locationId: input.locationId || '',
+    serviceMode: input.serviceMode, delivery: input.delivery || null, items: input.items };
+}
+
+function orderRequestDigest(context, input) {
+  return digest(JSON.stringify(canonical({ companyId: context.company_id, hostname: context.hostname, input })));
+}
+
 function quoteToken(secret, context, input, quote) {
   const payload = Buffer.from(JSON.stringify({ companyId: context.company_id, hostname: context.hostname,
-    cartDigest: digest(JSON.stringify(canonical({ locationToken: input.locationToken || '', locationId: input.locationId || '',
-      serviceMode: input.serviceMode, items: input.items }))),
+    cartDigest: digest(JSON.stringify(canonical(cartTokenInput(input)))),
     quoteDigest: digest(JSON.stringify(canonical(quote))),
     expiresAt: Date.now() + 5 * 60000 })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
@@ -113,8 +135,7 @@ function verifyQuoteToken(secret, token, context, input, quote) {
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) v.fail(409, 'quote_changed');
   let value;
   try { value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { v.fail(409, 'quote_changed'); }
-  const cartDigest = digest(JSON.stringify(canonical({ locationToken: input.locationToken || '', locationId: input.locationId || '',
-    serviceMode: input.serviceMode, items: input.items })));
+  const cartDigest = digest(JSON.stringify(canonical(cartTokenInput(input))));
   const currentQuoteDigest = digest(JSON.stringify(canonical(quote)));
   if (value.companyId !== context.company_id || value.hostname !== context.hostname ||
       !Number.isFinite(value.expiresAt) || value.expiresAt < Date.now() ||
@@ -173,7 +194,56 @@ async function pricedCart(c, companyId, input) {
   return { config, lines, totals, currency: preferences.currency || 'RM' };
 }
 
+function totalsWithDelivery(totals, feeSen) {
+  const amount = Number(feeSen);
+  if (!Number.isSafeInteger(amount) || amount < 0) v.fail(409, 'delivery_unavailable');
+  const beforeSen = cents(totals.subtotal) - cents(totals.discountAmount) + cents(totals.tax) + amount;
+  const rounded = roundToFiveSen(beforeSen / 100);
+  return { ...totals, deliveryFee: amount / 100, ...rounded };
+}
+
+async function deliveryFor(c, companyId, input, priced) {
+  if (input.serviceMode !== 'delivery') {
+    if (input.delivery) v.fail(400, 'delivery_details_not_allowed');
+    return null;
+  }
+  if (!input.delivery) v.fail(400, 'delivery_details_required');
+  const zone = (await c.query(
+    `SELECT z.* FROM myfin.storefront_delivery_zones z
+       JOIN myfin.storefront_settings s ON s.company_id=z.company_id
+      WHERE z.company_id=$1 AND z.id=$2 AND z.enabled AND s.delivery_enabled FOR SHARE OF z`,
+    [companyId, input.delivery.zoneId],
+  )).rows[0];
+  if (!zone) v.fail(409, 'delivery_unavailable');
+  const merchandiseSen = cents(priced.totals.subtotal) - cents(priced.totals.discountAmount);
+  if (merchandiseSen < Number(zone.minimum_order_sen)) v.fail(400, 'delivery_minimum_not_met');
+  const totals = totalsWithDelivery(priced.totals, Number(zone.fee_sen));
+  if (totals.total > Number(priced.config.max_order_value)) v.fail(400, 'order_value_limit');
+  return { zone, totals, address: input.delivery.address };
+}
+
+function deliveryQuote(delivery) {
+  if (!delivery) return undefined;
+  return { zoneId: delivery.zone.id, zoneName: delivery.zone.name,
+    fee: Number(delivery.zone.fee_sen) / 100,
+    minimumOrder: Number(delivery.zone.minimum_order_sen) / 100,
+    leadTimeMinutes: Number(delivery.zone.lead_time_minutes),
+    serviceInstructions: delivery.zone.service_instructions };
+}
+
+function quoteFor(input, location, priced, delivery) {
+  const totals = delivery?.totals || priced.totals;
+  return { locationId: location.id, serviceMode: input.serviceMode,
+    items: priced.lines.map(item => ({ productId: item.productId, variantId: item.variantId,
+      description: item.description, variant: item.variant, unit: item.unit, quantity: item.qty,
+      unitPrice: item.price, lineTotal: Math.round(cents(item.price) * item.qty) / 100 })),
+    ...totals, currency: priced.currency, ...(delivery ? { delivery: deliveryQuote(delivery) } : {}) };
+}
+
 function orderOutput(row, lines = []) {
+  const mode = row.service_mode || (row.fulfillment_mode === 'table' ? 'table' : 'pickup');
+  const zone = row.delivery_zone_snapshot || {};
+  const address = row.delivery_address_snapshot || {};
   return {
     id: row.id, code: row.public_code, companyId: row.company_id, locationId: row.location_id,
     guestName: row.guest_name || '',
@@ -183,12 +253,20 @@ function orderOutput(row, lines = []) {
     subtotal: Number(row.subtotal), discountAmount: Number(row.discount_amount), tax: Number(row.tax),
     taxRate: Number(row.tax_rate), totalBeforeRounding: Number(row.total_before_rounding),
     rounding: Number(row.rounding), total: Number(row.total),
+    serviceMode: mode,
     notes: row.notes || '', contactRedactedAt: row.pii_redacted_at || null,
     pickupAt: row.pickup_at, expiresAt: row.expires_at,
     createdAt: row.created_at, updatedAt: row.updated_at,
     location: row.location_name ? { id: row.location_id, name: row.location_name,
       fulfillmentMode: row.fulfillment_mode, tableLabel: row.table_label || '',
       pickupInstructions: row.pickup_instructions || '' } : undefined,
+    ...(mode === 'delivery' ? { deliveryFee: Number(row.delivery_fee_sen || 0) / 100, delivery: {
+      zoneId: row.delivery_zone_id, zoneName: zone.name || '', fee: Number(row.delivery_fee_sen || 0) / 100,
+      leadTimeMinutes: Number(zone.leadTimeMinutes || 0), serviceInstructions: zone.serviceInstructions || '',
+      addressRedacted: Boolean(row.delivery_address_redacted_at),
+      ...(!row.delivery_address_redacted_at ? { address: { postcode: address.postcode || '', city: address.city || '',
+        state: address.state || '', countryCode: address.countryCode || 'MY' } } : {}),
+    } } : {}),
     items: lines.map(line => ({
       productId: line.product_id, variantId: line.variant_id || '', description: line.description,
       variant: line.variant_name || '', unit: line.unit,
@@ -269,6 +347,11 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         `SELECT id,name,fulfillment_mode,table_label,pickup_instructions FROM myfin.shop_locations
           WHERE company_id=$1 AND active AND fulfillment_mode IN ('pickup','both') ORDER BY created_at,id`, [context.company_id],
       )).rows;
+      const deliveryZones = config.delivery_enabled ? (await c.query(
+        `SELECT id,name,fee_sen,minimum_order_sen,lead_time_minutes,service_instructions
+           FROM myfin.storefront_delivery_zones WHERE company_id=$1 AND enabled ORDER BY created_at,id`,
+        [context.company_id],
+      )).rows : [];
       const products = (await c.query(
         `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sort_order,sp.sold_out
            FROM myfin.products p JOIN myfin.storefront_products sp
@@ -309,6 +392,9 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
           privacy: storefrontPrivacyOutput(config) },
         locations: locations.map(row => ({ id: row.id, name: row.name, fulfillmentMode: row.fulfillment_mode,
           pickupInstructions: row.pickup_instructions })),
+        deliveryZones: deliveryZones.map(row => ({ id: row.id, name: row.name,
+          fee: Number(row.fee_sen) / 100, minimumOrder: Number(row.minimum_order_sen) / 100,
+          leadTimeMinutes: Number(row.lead_time_minutes), serviceInstructions: row.service_instructions })),
         location: selectedLocation ? { id: selectedLocation.id, name: selectedLocation.name,
           fulfillmentMode: selectedLocation.fulfillment_mode, tableLabel: selectedLocation.table_label } : null,
         products: projection,
@@ -322,12 +408,9 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
     return db.transaction(async c => {
       const location = await locationFor(c, context.company_id, input);
       const priced = await pricedCart(c, context.company_id, input);
+      const delivery = await deliveryFor(c, context.company_id, input, priced);
       await guestSession(c, req, reply, context.hostname, true);
-      const quote = { locationId: location.id, serviceMode: input.serviceMode,
-        items: priced.lines.map(item => ({ productId: item.productId, variantId: item.variantId,
-          description: item.description, variant: item.variant, unit: item.unit, quantity: item.qty,
-          unitPrice: item.price, lineTotal: Math.round(cents(item.price) * item.qty) / 100 })),
-        ...priced.totals, currency: priced.currency };
+      const quote = quoteFor(input, location, priced, delivery);
       return { quote, quoteToken: quoteToken(authOptions.secret, context, input, quote) };
     });
   });
@@ -336,7 +419,7 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
     const context = publicContext(req);
     const input = v.parse(submitSchema, req.body);
     const requestId = v.parse(z.uuid(), req.headers['idempotency-key']);
-    const requestDigest = digest(JSON.stringify(canonical({ companyId: context.company_id, hostname: context.hostname, input })));
+    const requestDigest = orderRequestDigest(context, input);
     return db.transaction(async c => {
       await requirePublishedStorefrontPrivacy(c, context.company_id);
       const session = await guestSession(c, req, reply, context.hostname, true);
@@ -368,13 +451,10 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
           await orderLines(c, context.company_id, existing.id)) };
       }
       const location = await locationFor(c, context.company_id, input);
-      if (input.serviceMode === 'pickup' && !guest.email && !guest.phone) v.fail(400, 'pickup_contact_required');
+      if (input.serviceMode !== 'table' && !guest.email && !guest.phone) v.fail(400, 'pickup_contact_required');
       const priced = await pricedCart(c, context.company_id, input);
-      const quote = { locationId: location.id, serviceMode: input.serviceMode,
-        items: priced.lines.map(item => ({ productId: item.productId, variantId: item.variantId,
-          description: item.description, variant: item.variant, unit: item.unit, quantity: item.qty,
-          unitPrice: item.price, lineTotal: Math.round(cents(item.price) * item.qty) / 100 })),
-        ...priced.totals, currency: priced.currency };
+      const delivery = await deliveryFor(c, context.company_id, input, priced);
+      const quote = quoteFor(input, location, priced, delivery);
       verifyQuoteToken(authOptions.secret, input.quoteToken, context, input, quote);
       const orderId = randomUUID();
       let code;
@@ -390,13 +470,22 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         `INSERT INTO myfin.customer_order_requests(
           company_id,id,public_code,location_id,customer_id,guest_name,guest_email,guest_phone,notes,currency,
           subtotal,discount_amount,tax,tax_rate,total_before_rounding,rounding,total,
-          guest_session_digest,idempotency_key,request_digest,expires_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
+          guest_session_digest,idempotency_key,request_digest,expires_at,service_mode,delivery_zone_id,
+          delivery_zone_snapshot,delivery_address_snapshot,delivery_contact_purpose,delivery_fee_sen)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+           $22,$23,$24,$25,$26,$27) RETURNING *`,
         [context.company_id, orderId, code, location.id, customer?.customerId || null,
           guest.name, guest.email, guest.phone, input.notes, priced.currency,
-          priced.totals.subtotal, priced.totals.discountAmount, priced.totals.tax,
-          priced.totals.taxRate, priced.totals.totalBeforeRounding, priced.totals.rounding, priced.totals.total,
-          session.digest, requestId, requestDigest, expiresAt],
+          quote.subtotal, quote.discountAmount, quote.tax,
+          quote.taxRate, quote.totalBeforeRounding, quote.rounding, quote.total,
+          session.digest, requestId, requestDigest, expiresAt, input.serviceMode,
+          delivery?.zone.id || null,
+          delivery ? JSON.stringify({ name: delivery.zone.name, feeSen: Number(delivery.zone.fee_sen),
+            minimumOrderSen: Number(delivery.zone.minimum_order_sen),
+            leadTimeMinutes: Number(delivery.zone.lead_time_minutes),
+            serviceInstructions: delivery.zone.service_instructions }) : '{}',
+          delivery ? JSON.stringify(delivery.address) : '{}', delivery ? 'order_delivery' : '',
+          delivery ? Number(delivery.zone.fee_sen) : 0],
       )).rows[0];
       for (const item of priced.lines) await c.query(
         `INSERT INTO myfin.customer_order_lines(company_id,order_id,line_no,product_id,variant_id,description,variant_name,sku,unit,quantity,unit_price,line_total)
@@ -452,4 +541,5 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
   });
 }
 
-export { orderOutput, orderLines, expireIfNeeded, pricedCart, quoteToken, verifyQuoteToken };
+export { orderOutput, orderLines, expireIfNeeded, orderRequestDigest, pricedCart, quoteToken,
+  totalsWithDelivery, verifyQuoteToken };

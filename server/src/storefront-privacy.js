@@ -52,7 +52,13 @@ export async function redactExpiredOrderContacts(c, companyId, requestedLimit = 
      )
      UPDATE myfin.customer_order_requests o
         SET guest_name=CASE WHEN o.customer_id IS NULL THEN 'Guest' ELSE 'Customer' END,
-            guest_email='',guest_phone='',notes='',pii_redacted_at=now()
+            guest_email='',guest_phone='',notes='',pii_redacted_at=now(),
+            delivery_address_snapshot=CASE WHEN o.service_mode='delivery' THEN '{}'::jsonb
+              ELSE o.delivery_address_snapshot END,
+            delivery_contact_purpose=CASE WHEN o.service_mode='delivery' THEN ''
+              ELSE o.delivery_contact_purpose END,
+            delivery_address_redacted_at=CASE WHEN o.service_mode='delivery' THEN now()
+              ELSE o.delivery_address_redacted_at END
        FROM candidates x
       WHERE o.company_id=x.company_id AND o.id=x.id
       RETURNING o.id`,

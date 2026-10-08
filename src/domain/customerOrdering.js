@@ -20,6 +20,13 @@ export function normalizeStorefront(payload = {}) {
     name: text(location.name) || 'Pickup counter',
     fulfillmentMode: ['pickup', 'table', 'both'].includes(location.fulfillmentMode) ? location.fulfillmentMode : 'pickup',
   })).filter(location => location.id);
+  const deliveryZones = (payload.deliveryZones || []).map(zone => ({
+    id: text(zone.id), name: text(zone.name), fee: Number(zone.fee),
+    minimumOrder: Number(zone.minimumOrder), leadTimeMinutes: Math.floor(Number(zone.leadTimeMinutes)),
+    serviceInstructions: text(zone.serviceInstructions),
+  })).filter(zone => zone.id && zone.name && Number.isFinite(zone.fee) && zone.fee >= 0 &&
+    Number.isFinite(zone.minimumOrder) && zone.minimumOrder >= 0 &&
+    Number.isInteger(zone.leadTimeMinutes) && zone.leadTimeMinutes >= 5 && zone.leadTimeMinutes <= 1440);
   const products = (payload.products || []).map(product => ({
     id: text(product.id),
     name: text(product.name),
@@ -57,6 +64,7 @@ export function normalizeStorefront(payload = {}) {
       },
     },
     locations,
+    deliveryZones,
     location: payload.location ? {
       id: text(payload.location.id),
       name: text(payload.location.name) || 'This location',
@@ -64,6 +72,22 @@ export function normalizeStorefront(payload = {}) {
     } : null,
     products,
   };
+}
+
+export function deliveryOrderDetails(zoneId, address = {}, zones = []) {
+  const id = text(zoneId), zone = zones.find(item => item.id === id);
+  if (!zone) throw new Error('Choose an available delivery zone.');
+  const value = {
+    addressLine1: text(address.addressLine1), addressLine2: text(address.addressLine2),
+    postcode: text(address.postcode), city: text(address.city), state: text(address.state),
+    countryCode: 'MY', instructions: text(address.instructions),
+  };
+  if (!value.addressLine1 || !value.postcode || !value.city || !value.state)
+    throw new Error('Add the delivery address, postcode, city, and state.');
+  if (value.addressLine1.length > 160 || value.addressLine2.length > 160 || value.postcode.length > 20 ||
+      value.city.length > 120 || value.state.length > 120 || value.instructions.length > 500)
+    throw new Error('Shorten the delivery address or instructions.');
+  return { zoneId: id, address: value };
 }
 
 export function publicCartLine(product, variantId = '') {

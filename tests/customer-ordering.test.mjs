@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  addPublicCartLine, cartRequestItems, customerOrderSubmission, isCustomerSurfacePath, isStorefrontHostname, normalizeStorefront,
+  addPublicCartLine, cartRequestItems, customerOrderSubmission, deliveryOrderDetails, isCustomerSurfacePath, isStorefrontHostname, normalizeStorefront,
   orderProgress, publicCartLine, setPublicCartQuantity, validateGuestOrder,
 } from '../src/domain/customerOrdering.js';
 import {
@@ -28,6 +28,22 @@ test('customer routes are isolated from staff routes', () => {
 test('a scanned dual-purpose location preserves the table or pickup choice', () => {
   const result = normalizeStorefront({ storefront: {}, location: { id: 'shop', name: 'Main shop', fulfillmentMode: 'both' } });
   assert.equal(result.location.fulfillmentMode, 'both');
+});
+
+test('delivery normalization exposes only valid enabled-zone projections and validates a bounded address', () => {
+  const result = normalizeStorefront({ storefront:{}, deliveryZones:[
+    { id:'campus', name:'Campus', fee:2.5, minimumOrder:15, leadTimeMinutes:35, serviceInstructions:'Lobby' },
+    { id:'bad', name:'Bad', fee:-1, minimumOrder:0, leadTimeMinutes:1 },
+  ] });
+  assert.deepEqual(result.deliveryZones, [{ id:'campus', name:'Campus', fee:2.5, minimumOrder:15,
+    leadTimeMinutes:35, serviceInstructions:'Lobby' }]);
+  assert.deepEqual(deliveryOrderDetails('campus', { addressLine1:' 12 Jalan A ', postcode:'50000',
+    city:'Kuala Lumpur', state:'Kuala Lumpur', instructions:' Lobby ' }, result.deliveryZones), {
+    zoneId:'campus', address:{ addressLine1:'12 Jalan A', addressLine2:'', postcode:'50000',
+      city:'Kuala Lumpur', state:'Kuala Lumpur', countryCode:'MY', instructions:'Lobby' },
+  });
+  assert.throws(() => deliveryOrderDetails('other', {}, result.deliveryZones), /available delivery zone/);
+  assert.throws(() => deliveryOrderDetails('campus', { addressLine1:'12 Jalan A' }, result.deliveryZones), /postcode/);
 });
 
 test('storefront normalization preserves only safe bounded privacy notice fields', () => {

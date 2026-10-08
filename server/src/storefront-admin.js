@@ -12,6 +12,7 @@ const privacyUrl = z.union([
 
 const configSchema = z.strictObject({
   published: z.boolean(),
+  deliveryEnabled: z.boolean().optional(),
   hostname: z.string().trim().toLowerCase().max(253).optional(),
   displayName: z.string().trim().max(120).default(''),
   description: z.string().trim().max(2000).default(''),
@@ -41,6 +42,14 @@ const publicationSchema = z.strictObject({
   description: z.string().trim().max(2000).default(''),
   variantIds: z.array(v.id).max(100).optional(),
 });
+const deliveryZoneSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  feeSen: z.number().int().min(0).max(100000000),
+  minimumOrderSen: z.number().int().min(0).max(100000000).default(0),
+  leadTimeMinutes: z.number().int().min(5).max(1440),
+  serviceInstructions: z.string().trim().max(1000).default(''),
+  enabled: z.boolean().default(false),
+});
 
 const hashToken = token => createHash('sha256').update(token).digest('hex');
 const canConfigure = who => owner(who) || manager(who);
@@ -55,6 +64,10 @@ async function configOutput(c, companyId) {
     `SELECT id,name,fulfillment_mode,table_label,pickup_instructions,token_hint,token_version,active,created_at,updated_at
        FROM myfin.shop_locations WHERE company_id=$1 ORDER BY created_at,id`, [companyId],
   )).rows;
+  const deliveryZones = (await c.query(
+    `SELECT id,name,fee_sen,minimum_order_sen,lead_time_minutes,service_instructions,enabled,created_at,updated_at
+       FROM myfin.storefront_delivery_zones WHERE company_id=$1 ORDER BY created_at,id`, [companyId],
+  )).rows;
   const products = (await c.query(
     `SELECT sp.*,p.data FROM myfin.storefront_products sp JOIN myfin.products p
        ON p.company_id=sp.company_id AND p.id=sp.product_id
@@ -67,7 +80,7 @@ async function configOutput(c, companyId) {
   const privacy = storefrontPrivacyOutput(settings);
   return {
     storefront: settings ? {
-      published: settings.published, hostname: host, displayName: settings.display_name,
+      published: settings.published, deliveryEnabled: Boolean(settings.delivery_enabled), hostname: host, displayName: settings.display_name,
       description: settings.description, pickupInstructions: settings.pickup_instructions,
       orderExpiryMinutes: settings.order_expiry_minutes, maxOrderItems: settings.max_order_items,
       maxItemQuantity: Number(settings.max_item_quantity), maxOrderValue: Number(settings.max_order_value),
@@ -75,13 +88,17 @@ async function configOutput(c, companyId) {
       privacyNoticeUrl: privacy.noticeUrl, privacyNoticeEn: privacy.noticeEn,
       privacyNoticeMs: privacy.noticeMs, guestContactRetentionDays: privacy.guestContactRetentionDays,
       updatedAt: settings.updated_at,
-    } : { published: false, hostname: host, displayName: '', description: '', pickupInstructions: '',
+    } : { published: false, deliveryEnabled: false, hostname: host, displayName: '', description: '', pickupInstructions: '',
       orderExpiryMinutes: 30, maxOrderItems: 30, maxItemQuantity: 20, maxOrderValue: 1000,
       guestContactRetentionDays: 90, privacyControllerName: '', privacyControllerContact: '',
       privacyNoticeUrl: '', privacyNoticeEn: '', privacyNoticeMs: '' },
     locations: locations.map(row => ({ id: row.id, name: row.name, fulfillmentMode: row.fulfillment_mode,
       tableLabel: row.table_label, pickupInstructions: row.pickup_instructions, tokenHint: row.token_hint,
       tokenVersion: row.token_version, active: row.active, createdAt: row.created_at, updatedAt: row.updated_at })),
+    deliveryZones: deliveryZones.map(row => ({ id: row.id, name: row.name, feeSen: Number(row.fee_sen),
+      minimumOrderSen: Number(row.minimum_order_sen), leadTimeMinutes: Number(row.lead_time_minutes),
+      serviceInstructions: row.service_instructions, enabled: row.enabled,
+      createdAt: row.created_at, updatedAt: row.updated_at })),
     products: products.map(row => ({ productId: row.product_id, productName: row.data.name,
       published: row.published, soldOut: row.sold_out, sortOrder: row.sort_order,
       displayName: row.display_name, description: row.description,
@@ -101,6 +118,11 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
   app.put('/api/companies/:company/storefront', req => scoped(req, async (c, companyId) => {
     requireConfigure(req.identity);
     const input = v.parse(configSchema, req.body);
+    const deliveryEnabled = input.deliveryEnabled === undefined
+      ? Boolean((await c.query(
+        'SELECT delivery_enabled FROM myfin.storefront_settings WHERE company_id=$1 FOR UPDATE', [companyId],
+      )).rows[0]?.delivery_enabled)
+      : input.deliveryEnabled;
     if (input.hostname !== undefined) {
       const hostname = normalizeHostname(input.hostname);
       if (!hostname || !hostname.startsWith('order-') || !hostAllowed(hostname, authOptions.allowedHosts))
@@ -129,11 +151,18 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
       );
       if (!activeHost.rowCount || !activeLocation.rowCount) v.fail(409, 'storefront_host_and_location_required');
     }
+    if (deliveryEnabled) {
+      const zone = await c.query(
+        'SELECT 1 FROM myfin.storefront_delivery_zones WHERE company_id=$1 AND enabled LIMIT 1', [companyId],
+      );
+      if (!zone.rowCount) v.fail(409, 'delivery_zone_required');
+    }
     await c.query(
       `INSERT INTO myfin.storefront_settings(company_id,published,display_name,description,pickup_instructions,
          order_expiry_minutes,max_order_items,max_item_quantity,max_order_value,guest_data_retention_days,
-         privacy_controller_name,privacy_controller_contact,privacy_notice_url,privacy_notice_en,privacy_notice_ms,updated_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         privacy_controller_name,privacy_controller_contact,privacy_notice_url,privacy_notice_en,privacy_notice_ms,
+         delivery_enabled,updated_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT(company_id) DO UPDATE SET published=EXCLUDED.published,display_name=EXCLUDED.display_name,
          description=EXCLUDED.description,pickup_instructions=EXCLUDED.pickup_instructions,
          order_expiry_minutes=EXCLUDED.order_expiry_minutes,max_order_items=EXCLUDED.max_order_items,
@@ -142,14 +171,55 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
          privacy_controller_name=EXCLUDED.privacy_controller_name,
          privacy_controller_contact=EXCLUDED.privacy_controller_contact,
          privacy_notice_url=EXCLUDED.privacy_notice_url,privacy_notice_en=EXCLUDED.privacy_notice_en,
-         privacy_notice_ms=EXCLUDED.privacy_notice_ms,
+         privacy_notice_ms=EXCLUDED.privacy_notice_ms,delivery_enabled=EXCLUDED.delivery_enabled,
          updated_by=EXCLUDED.updated_by,updated_at=now()`,
       [companyId, input.published, input.displayName, input.description, input.pickupInstructions,
         input.orderExpiryMinutes, input.maxOrderItems, input.maxItemQuantity, input.maxOrderValue,
         input.guestContactRetentionDays, input.privacyControllerName, input.privacyControllerContact,
-        input.privacyNoticeUrl, input.privacyNoticeEn, input.privacyNoticeMs, req.identity.id],
+        input.privacyNoticeUrl, input.privacyNoticeEn, input.privacyNoticeMs, deliveryEnabled, req.identity.id],
     );
     await audit(c, req.identity, companyId, 'Storefront settings', input.published ? 'Published' : 'Unpublished');
+    return configOutput(c, companyId);
+  }));
+
+  app.post('/api/companies/:company/storefront/delivery-zones', req => scoped(req, async (c, companyId) => {
+    requireConfigure(req.identity);
+    const input = v.parse(deliveryZoneSchema, req.body), id = randomUUID();
+    await c.query(
+      `INSERT INTO myfin.storefront_delivery_zones(company_id,id,name,fee_sen,minimum_order_sen,
+         lead_time_minutes,service_instructions,enabled,created_by,updated_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`,
+      [companyId, id, input.name, input.feeSen, input.minimumOrderSen, input.leadTimeMinutes,
+        input.serviceInstructions, input.enabled, req.identity.id],
+    );
+    await audit(c, req.identity, companyId, 'Delivery zone created', `${input.name} · ${id}`);
+    return configOutput(c, companyId);
+  }));
+
+  app.patch('/api/companies/:company/storefront/delivery-zones/:id', req => scoped(req, async (c, companyId) => {
+    requireConfigure(req.identity);
+    const id = v.parse(v.id, req.params.id), input = v.parse(deliveryZoneSchema, req.body);
+    if (!input.enabled) {
+      const settings = (await c.query(
+        'SELECT delivery_enabled FROM myfin.storefront_settings WHERE company_id=$1 FOR UPDATE', [companyId],
+      )).rows[0];
+      if (settings?.delivery_enabled) {
+        const other = await c.query(
+          'SELECT 1 FROM myfin.storefront_delivery_zones WHERE company_id=$1 AND id<>$2 AND enabled LIMIT 1',
+          [companyId, id],
+        );
+        if (!other.rowCount) v.fail(409, 'delivery_zone_required');
+      }
+    }
+    const result = await c.query(
+      `UPDATE myfin.storefront_delivery_zones SET name=$3,fee_sen=$4,minimum_order_sen=$5,
+         lead_time_minutes=$6,service_instructions=$7,enabled=$8,updated_by=$9,updated_at=now()
+       WHERE company_id=$1 AND id=$2`,
+      [companyId, id, input.name, input.feeSen, input.minimumOrderSen, input.leadTimeMinutes,
+        input.serviceInstructions, input.enabled, req.identity.id],
+    );
+    if (!result.rowCount) v.fail(404, 'delivery_zone_not_found');
+    await audit(c, req.identity, companyId, 'Delivery zone updated', `${input.name} · ${id}`);
     return configOutput(c, companyId);
   }));
 
