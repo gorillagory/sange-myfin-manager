@@ -34,6 +34,7 @@ const routes = [
     { path: '/activity', component: () => import('../components/dashboard/ActivityTab.vue'), meta: { requiresAdmin: true } },
     { path: '/templates', component: () => import('../components/dashboard/TemplateStudio.vue'), meta: { requiresAdmin: true } },
     { path: '/settings', component: () => import('../components/dashboard/SettingsTab.vue'), meta: { requiresAdmin: true } },
+    { path: '/integrations', component: () => import('../components/dashboard/IntegrationsTab.vue'), meta: { requiresAdmin: true } },
     { path: '/:pathMatch(.*)*', redirect: () => isStorefrontHostname(location.hostname) ? '/shop' : '/overview' }
 ];
 

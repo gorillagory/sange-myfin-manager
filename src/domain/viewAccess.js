@@ -4,7 +4,7 @@ export const ROUTE_CAPABILITIES = {
   '/receipt-reviews':'checkout', '/products':'inventoryRead', '/contacts':'clientsRead', '/profile':'active',
   '/analytics':'financialReports', '/consolidation':'financialReports', '/finance-sales':'financialReports', '/cashbook':'financialReports', '/expenses':'expensesRead', '/stock':'inventoryRead',
   '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead',
-  '/templates':'templatesWrite', '/settings':'deviceSettingsWrite',
+  '/templates':'templatesWrite', '/settings':'deviceSettingsWrite', '/integrations':'integrationsRead',
 };
 export function canVisit(user,path) {
   if (path === '/consolidation' && user?.authLevel === 'pos_code') return false;

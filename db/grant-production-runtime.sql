@@ -25,6 +25,8 @@ GRANT SELECT,INSERT ON myfin.expense_import_batches TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.activities,myfin.stock_movements,myfin.company_enrollments,myfin.management_events,
  myfin.document_template_versions,myfin.document_payments,myfin.document_events,myfin.action_approvals TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.document_number_sequences,myfin.document_templates,myfin.document_template_defaults,myfin.receipt_reviews TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.integration_connections TO myfin_prod_runtime;
+GRANT SELECT ON myfin.integration_events,myfin.integration_financial_entries,myfin.integration_reconciliations TO myfin_prod_runtime;
 \else
 \echo 'Refusing runtime grants outside myfin_prod'
 \quit 1

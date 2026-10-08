@@ -30,6 +30,8 @@ GRANT SELECT, INSERT ON myfin.activities, myfin.stock_movements,
  myfin.document_template_versions, myfin.document_payments, myfin.document_events,
  myfin.action_approvals TO myfin_dev_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.document_number_sequences,myfin.document_templates,myfin.document_template_defaults,myfin.receipt_reviews TO myfin_dev_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.integration_connections TO myfin_dev_runtime;
+GRANT SELECT ON myfin.integration_events,myfin.integration_financial_entries,myfin.integration_reconciliations TO myfin_dev_runtime;
 \else
 \echo 'Refusing runtime grants outside myfin_dev'
 \quit 1

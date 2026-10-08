@@ -9,7 +9,7 @@ export function permissionsFor(user) {
     expensesWrite:owner||manager,expensesVoid:owner||manager,financialReports:owner||manager,
     bulkExport:owner,clientsRead:active,clientsCreate:active,clientsWrite:owner||manager,
     suppliersRead:owner||manager,suppliersWrite:owner,templatesWrite:owner||manager,
-    companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,
+    companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,integrationsRead:owner,
     deviceSettingsWrite:active,workspaceWrite:owner,companyEnroll:owner,usersManage:owner||manager,
     managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager,
     receiptReviewsResolve:owner||manager};

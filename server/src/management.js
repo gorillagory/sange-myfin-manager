@@ -6,6 +6,7 @@ import { owner,manager,publicCompany } from "./access.js";
 import { publishedTemplate } from "./documents.js";
 import { canonical } from "../../src/domain/pos.js";
 import { registerReporting } from './reporting.js';
+import { registerIntegrations } from './integrations.js';
 
 // All company and identity lifecycle writes take this lock before row locks.
 // This makes last-administrator checks atomic and revalidates a waiting actor.
@@ -68,6 +69,7 @@ export function registerManagement(app,{db,authOptions,authorize,requireSuper,va
     return fn(c,who);
   });
   registerReporting(app, { db, managed, authorize, managementSession });
+  registerIntegrations(app, { db, managed, authorize, managementSession, requirePasswordSession, audit });
   const superOnly = async(c,who) => {
     if(who.role!=="super_admin")v.fail(403,"access_denied");
     await requireSuper(c,who);
