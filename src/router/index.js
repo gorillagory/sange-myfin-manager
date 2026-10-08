@@ -16,6 +16,7 @@ const routes = [
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/orders', component: () => import('../components/dashboard/OrdersTab.vue') },
     { path: '/finance-sales', component: () => import('../components/dashboard/finance/FinanceSales.vue') },
+    { path: '/payment-operations', component: () => import('../components/dashboard/PaymentOperationsTab.vue') },
     { path: '/cashbook', component: () => import('../components/dashboard/finance/Cashbook.vue') },
     { path: '/analytics', component: () => import('../components/dashboard/AnalyticsTab.vue') },
     { path: '/consolidation', component: () => import('../components/dashboard/ConsolidationTab.vue') },
