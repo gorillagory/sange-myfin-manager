@@ -74,6 +74,35 @@ services:
       timeout: 8s
       retries: 3
       start_period: 10s
+  report-worker:
+    image: ${MYFIN_API_IMAGE:-myfin-api:phase02}
+    restart: unless-stopped
+    init: true
+    command: [node, src/report-worker.js]
+    environment:
+      NODE_ENV: production
+      PGHOST: nexus-shared-postgres
+      PGPORT: '5432'
+      PGDATABASE: ${MYFIN_DB_NAME:-myfin_dev}
+      PGUSER: ${MYFIN_DB_USER:-myfin_dev_runtime}
+      PGPASSWORD_FILE: /run/secrets/db_password
+      PG_TLS: disable
+      PGPOOL_MAX: ${MYFIN_REPORT_DB_POOL_MAX:-2}
+      PG_CONNECT_TIMEOUT_MS: '2000'
+      PG_STATEMENT_TIMEOUT_MS: ${MYFIN_REPORT_STATEMENT_TIMEOUT_MS:-15000}
+      PG_QUERY_TIMEOUT_MS: ${MYFIN_REPORT_QUERY_TIMEOUT_MS:-20000}
+      REPORT_WORKER_ID: ${MYFIN_COMPOSE_PROJECT:-myfin-dev}-report-worker-1
+      REPORT_WORKER_POLL_MS: ${MYFIN_REPORT_POLL_MS:-30000}
+    secrets: [db_password]
+    networks: [nexus-data]
+    mem_limit: ${MYFIN_REPORT_MEMORY:-256m}
+    cpus: ${MYFIN_REPORT_CPUS:-0.5}
+    pids_limit: 64
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 15s
 networks:
   ingress:
     driver: bridge

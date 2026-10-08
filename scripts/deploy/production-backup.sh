@@ -25,11 +25,11 @@ mkdir -m 700 "$backup"
 compose() { docker compose --env-file "$runtime" -p myfin-prod -f "$repo/deploy/compose.yml" "$@"; }
 restart=0
 restore_service() {
-  if [ "$restart" = 1 ]; then compose start api >&2; fi
+  if [ "$restart" = 1 ]; then compose start api report-worker >&2; fi
 }
 trap restore_service EXIT HUP INT TERM
 restart=1
-compose stop api
+compose stop report-worker api
 
 docker run --rm --network nexus-data --memory 256m --cpus 0.5 \
   --mount "type=bind,src=$MYFIN_MIGRATOR_PASSWORD_FILE,dst=/run/password,readonly" \
@@ -43,6 +43,6 @@ docker run --rm --network none --memory 128m --cpus 0.5 \
   'tar -czf /backup/uploads.tar.gz -C /uploads .'
 (cd "$backup" && sha256sum database.dump uploads.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
 chmod 600 "$backup"/*
-compose start api
+compose start api report-worker
 restart=0
 echo "production_backup=$backup"

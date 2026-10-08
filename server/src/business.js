@@ -24,7 +24,9 @@ import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
 import { consumeRecipeStock, registerInventoryRecipes } from "./inventory-recipes.js";
+import { registerProcurement } from "./procurement.js";
 import { companyReport,companyRows,reportFilterShape } from "./reporting.js";
+import { registerReportAutomation } from "./report-automation.js";
 import { assertOrderCreated, registerOrders } from "./orders.js";
 import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
@@ -432,6 +434,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerExpenseImport(app,{scoped,audit});
   registerStock(app,{scoped,audit});
   registerInventoryRecipes(app,{scoped,audit});
+  registerProcurement(app,{scoped,audit});
+  registerReportAutomation(app,{scoped,audit});
   registerOrders(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});

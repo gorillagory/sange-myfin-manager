@@ -110,3 +110,4 @@ CREATE TRIGGER no_truncate_report_runs
   FOR EACH STATEMENT EXECUTE FUNCTION myfin.protect_completed_report_run();
 
 REVOKE ALL ON myfin.report_schedules,myfin.report_runs FROM PUBLIC;
+REVOKE ALL ON FUNCTION myfin.protect_completed_report_run() FROM PUBLIC;

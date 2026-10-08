@@ -11,5 +11,5 @@ web_app_ip=$(docker inspect --format '{{with index .NetworkSettings.Networks "my
 [ -n "$web_app_ip" ] || { echo 'Web app-network address was not found' >&2; exit 1; }
 PUBLIC_PROXY_ADDRESSES=$web_app_ip
 export PUBLIC_PROXY_ADDRESSES
-compose up -d --no-build api
+compose up -d --no-build api report-worker
 compose ps

@@ -6,6 +6,7 @@ import { businessDate, money } from '../../domain/pos';
 import { reportBuckets, reportBucketLabel, reportRange } from '../../domain/financialReport';
 import { analyticsFilterLabels, analyticsReportQuery, analyticsSubcategoryOptions } from '../../domain/analyticsFilters';
 import Modal from '../ui/EditionModal.vue';
+import ReportAutomationTab from './ReportAutomationTab.vue';
 
 const today = businessDate();
 const from = ref(`${today.slice(0, 4)}-01-01`);
@@ -124,6 +125,7 @@ onBeforeUnmount(() => { ++generation; ++detailGeneration; });
       <div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Period</th><th>Sales</th><th>Cash in</th><th>Cash out</th><th>Expenses</th><th>Net cash</th><th>Details</th></tr></thead><tbody><tr v-for="bucket in buckets" :key="bucket.key"><td>{{ label(bucket) }}<small v-if="bucket.from !== bucket.to" class="report-range">{{ bucket.from }}–{{ bucket.to }}</small></td><td>{{ money(bucket.sales,currency) }}</td><td>{{ money(bucket.cashIn,currency) }}</td><td>{{ money(bucket.cashOut,currency) }}</td><td>{{ money(bucket.expenses,currency) }}</td><td>{{ money(bucket.cashFlow,currency) }}</td><td><button class="ed-btn small" @click="openBucket(bucket)">Review</button></td></tr></tbody><tfoot><tr><th>Period total</th><td>{{ money(report.sales,currency) }}</td><td>{{ money(report.cashIn,currency) }}</td><td>{{ money(report.cashOut,currency) }}</td><td>{{ money(report.expenses,currency) }}</td><td>{{ money(report.cashFlow,currency) }}</td><td></td></tr></tfoot></table></div>
       <p class="ed-muted">{{ report.basis }} Acquisition cost, margin, valuation and profit are excluded.</p>
     </template>
+    <ReportAutomationTab />
     <Modal v-if="selected" :title="`${label(selected)} · financial detail`" wide @close="closeBucket">
       <p class="ed-muted">{{ selected.from }} to {{ selected.to }} · Kuala Lumpur dates</p>
       <div v-if="detailFilters.length" class="report-active-filters"><span v-for="item in detailFilters" :key="item" class="ed-pill">{{ item }}</span></div>

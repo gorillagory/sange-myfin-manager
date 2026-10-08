@@ -34,6 +34,13 @@ GRANT SELECT,INSERT,UPDATE ON myfin.integration_connections TO myfin_dev_runtime
 GRANT SELECT ON myfin.integration_events,myfin.integration_financial_entries,myfin.integration_reconciliations TO myfin_dev_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.inventory_recipes TO myfin_dev_runtime;
 GRANT SELECT,INSERT ON myfin.inventory_recipe_versions,myfin.inventory_recipe_components,myfin.inventory_source_effects TO myfin_dev_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.stock_identifiers,myfin.purchase_orders,
+ myfin.inventory_weighted_costs,myfin.low_stock_alerts TO myfin_dev_runtime;
+GRANT SELECT,INSERT ON myfin.purchase_order_lines,myfin.purchase_order_events,
+ myfin.goods_receipts,myfin.goods_receipt_lines,myfin.stock_batches,
+ myfin.goods_receipt_reversals,myfin.inventory_valuation_events,
+ myfin.low_stock_alert_events TO myfin_dev_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.report_schedules,myfin.report_runs TO myfin_dev_runtime;
 \else
 \echo 'Refusing runtime grants outside myfin_dev'
 \quit 1

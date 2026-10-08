@@ -4,7 +4,7 @@
 : "${MYFIN_BACKUP_DIR:?protected matching backup pair}"
 : "${MYFIN_MIGRATOR_PASSWORD_FILE:?protected migrator secret}"
 (cd "$MYFIN_BACKUP_DIR" && sha256sum -c SHA256SUMS)
-compose stop api
+compose stop report-worker api
 # Never drop an existing database or overwrite nonempty uploads.
 MYFIN_TABLES=$(docker run --rm --network nexus-data --memory 128m --cpus 0.5 --mount "type=bind,src=$MYFIN_MIGRATOR_PASSWORD_FILE,dst=/run/password,readonly" --entrypoint sh postgres:16-bookworm -c 'export PGPASSWORD="$(cat /run/password)"; psql -X -h nexus-shared-postgres -U myfin_dev_migrator -d myfin_dev -Atc "SELECT count(*) FROM pg_tables WHERE schemaname= '\''myfin'\''"')
 [ "$MYFIN_TABLES" = 0 ] || { echo 'Refusing restore over existing MyFin tables; API remains stopped' >&2; exit 1; }
