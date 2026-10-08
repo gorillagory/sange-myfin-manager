@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/build-offline.mjs",
     "preview": "vite preview",
-    "test": "node --test tests/pos.test.mjs tests/inventory.test.mjs tests/operations.test.mjs tests/customer-ordering.test.mjs tests/customer-orders.test.mjs tests/procurement.test.mjs tests/procurement-ui.test.mjs tests/report-automation.test.mjs tests/student-programs.test.mjs",
+    "test": "node --test tests/pos.test.mjs tests/inventory.test.mjs tests/operations.test.mjs tests/customer-ordering.test.mjs tests/customer-orders.test.mjs tests/procurement.test.mjs tests/procurement-ui.test.mjs tests/report-automation.test.mjs tests/student-programs.test.mjs tests/advanced-analytics.test.mjs",
     "test:customer": "node --test tests/customer-ordering.test.mjs tests/customer-orders.test.mjs",
     "test:offline": "node --test tests/offline.test.mjs tests/service-worker.test.mjs tests/store-hydration.test.mjs",
     "test:management": "node --test tests/management.test.mjs tests/global-administration.test.mjs"

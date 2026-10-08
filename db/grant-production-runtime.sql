@@ -42,6 +42,7 @@ GRANT SELECT,INSERT ON myfin.student_eligibility_events,myfin.promotion_versions
  myfin.promotion_version_products,myfin.promotion_version_categories,
  myfin.promotion_version_customers,myfin.promotion_voucher_versions TO myfin_prod_runtime;
 GRANT SELECT ON myfin.promotion_usage_counters,myfin.promotion_voucher_usage_counters TO myfin_prod_runtime;
+GRANT SELECT ON myfin.pricing_snapshots,myfin.promotion_redemptions TO myfin_prod_runtime;
 \else
 \echo 'Refusing runtime grants outside myfin_prod'
 \quit 1

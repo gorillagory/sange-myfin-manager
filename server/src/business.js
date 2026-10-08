@@ -32,6 +32,7 @@ import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
 import { registerCustomerProfiles } from "./customer-profiles.js";
 import { registerStudentPrograms } from "./student-programs.js";
+import { registerAdvancedAnalytics } from "./advanced-analytics.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
 export async function identity(db, subject, tenant=null) {
@@ -437,6 +438,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerInventoryRecipes(app,{scoped,audit});
   registerProcurement(app,{scoped,audit});
   registerReportAutomation(app,{scoped,audit});
+  registerAdvancedAnalytics(app,{scoped});
   registerOrders(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
