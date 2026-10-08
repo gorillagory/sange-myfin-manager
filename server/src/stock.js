@@ -4,6 +4,7 @@ import * as v from './validation.js';
 import { requireCapability } from './access.js';
 import { stockMovement } from '../../src/domain/stock.js';
 import { canonical } from '../../src/domain/pos.js';
+import { registerInventoryRecipes } from './inventory-recipes.js';
 
 const quantity=z.number().finite().min(-1e12).max(1e12).refine(value=>Math.abs(value*1e6-Math.round(value*1e6))<1e-5);
 const packaging=z.strictObject({id:v.id.optional(),label:z.string().trim().min(1).max(120),barcode:z.string().trim().max(128).default(''),quantityInBase:quantity.positive()});
@@ -38,7 +39,7 @@ async function packagings(c,companyId,itemIds){
   return map;
 }
 const output=(row,packs=[])=>({id:row.id,company_id:row.company_id,name:row.name,category:row.category,trackingMode:row.tracking_mode,baseUnit:row.base_unit,barcode:row.barcode,onHand:number(row.on_hand),reorderLevel:number(row.reorder_level),preferredSupplierId:row.preferred_supplier_id||'',active:row.active,notes:row.notes,version:Number(row.version),packagings:packs});
-const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',reason:row.reason,createdAt:row.created_at});
+const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
 
 async function ensureCodes(c,companyId,itemId,codes){
   const normalized=codes.filter(Boolean).map(key);
@@ -72,6 +73,7 @@ async function reconcilePackagings(c,companyId,itemId,requested){
 }
 
 export function registerStock(app,{scoped,audit}){
+  registerInventoryRecipes(app,{scoped,audit});
   app.get('/api/companies/:company/stock_items',req=>scoped(req,async(c,companyId)=>{
     requireCapability(req.identity,'inventoryRead');
     const query=v.parse(z.strictObject({after:v.id.optional(),limit:z.coerce.number().int().min(1).max(500).default(500)}),req.query);
