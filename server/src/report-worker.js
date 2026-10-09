@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from './config.js';
 import { createDatabase } from './database.js';
+import { runCustomerOrderMaintenance } from './customer-order-maintenance.js';
 import { companyReport, companyRows } from './reporting.js';
 import {
   nextScheduledAt, reportAutomationInternals, reportRetryDelayMs, reportRunKey, reportWindowForRun,
@@ -296,9 +297,18 @@ export async function failReportRun(database, run, error, now = new Date()) {
 
 export async function runReportWorkerCycle(database, {
   workerId = `report-worker-${randomUUID()}`, now = new Date(), limit = 5, leaseMs = 120000,
-  clock = () => new Date(),
+  clock = () => new Date(), maintenanceLimit = 100,
+  maintainOrders = runCustomerOrderMaintenance, claimRuns = claimDueReportRuns,
 } = {}) {
-  const claimed = await claimDueReportRuns(database, { workerId,now,limit,leaseMs });
+  let maintenance;
+  try {
+    maintenance = { ...await maintainOrders(database, { now,limit:maintenanceLimit }), failed:false,retry:false };
+  } catch {
+    // The next poll retries the same database-derived work. Do not include raw
+    // errors because driver messages can contain connection or schema details.
+    maintenance = { selected:0,expired:0,redacted:0,companies:0,hasMore:true,failed:true,retry:true };
+  }
+  const claimed = await claimRuns(database, { workerId,now,limit,leaseMs });
   let completed = 0, failed = 0;
   for (const run of claimed.runs) {
     try {
@@ -310,24 +320,30 @@ export async function runReportWorkerCycle(database, {
       failed++;
     }
   }
-  return { cancelled:claimed.cancelled, exhausted:claimed.exhausted,
+  return { maintenance,cancelled:claimed.cancelled, exhausted:claimed.exhausted,
     due:claimed.due, enqueued:claimed.enqueued, claimed:claimed.runs.length, completed, failed };
 }
 
 export async function startReportWorker(database, {
   workerId = `report-worker-${randomUUID()}`, pollMs = 30000, limit = 5, leaseMs = 120000,
-  signals = process, onEvent = () => {},
+  maintenanceLimit = 100, signals = process, onEvent = () => {}, runCycle = runReportWorkerCycle,
 } = {}) {
   if (!Number.isInteger(pollMs) || pollMs < 1000 || pollMs > 300000) throw new TypeError('invalid_worker_poll');
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(String(workerId || ''))) throw new TypeError('invalid_worker_id');
   if (!Number.isInteger(limit) || limit < 1 || limit > 25) throw new TypeError('invalid_worker_limit');
   if (!Number.isInteger(leaseMs) || leaseMs < 30000 || leaseMs > 900000) throw new TypeError('invalid_worker_lease');
+  if (!Number.isInteger(maintenanceLimit) || maintenanceLimit < 1 || maintenanceLimit > 500)
+    throw new TypeError('invalid_customer_order_maintenance_limit');
   let stopping = false, wake;
   const stop = () => { stopping = true; wake?.(); };
   signals.on('SIGTERM', stop); signals.on('SIGINT', stop);
   try {
     while (!stopping) {
-      try { onEvent('report_worker_cycle', await runReportWorkerCycle(database, { workerId,limit,leaseMs })); }
+      try {
+        const result = await runCycle(database, { workerId,limit,leaseMs,maintenanceLimit });
+        if (result.maintenance?.failed) onEvent('customer_order_maintenance_failed', { retry:true });
+        onEvent('report_worker_cycle', result);
+      }
       catch { onEvent('report_worker_cycle_failed'); }
       if (!stopping) await new Promise(resolve => {
         const timer = setTimeout(resolve, pollMs);
@@ -347,8 +363,12 @@ async function main() {
     });
     const workerId = process.env.REPORT_WORKER_ID || `report-worker-${randomUUID()}`;
     const pollMs = Number(process.env.REPORT_WORKER_POLL_MS || 30000);
-    await startReportWorker(database, { workerId,pollMs,
-      onEvent:event => { if (event === 'report_worker_cycle_failed') process.stderr.write(`${event}\n`); },
+    const maintenanceLimit = Number(process.env.CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT || 100);
+    await startReportWorker(database, { workerId,pollMs,maintenanceLimit,
+      onEvent:event => {
+        if (['report_worker_cycle_failed','customer_order_maintenance_failed'].includes(event))
+          process.stderr.write(`${event}\n`);
+      },
     });
   } catch {
     process.stderr.write('Report worker startup failed: check configuration and database availability.\n');

@@ -15,6 +15,7 @@ test('report automation is registered, mounted and deployed as one constrained w
   assert.match(compose, /^  report-worker:/m);
   assert.match(compose, /command: \[node, src\/report-worker\.js\]/);
   assert.match(compose, /REPORT_WORKER_ID: \$\{MYFIN_COMPOSE_PROJECT:-myfin-dev\}-report-worker-1/);
+  assert.match(compose, /CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT: \$\{MYFIN_CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT:-100\}/);
   assert.match(compose, /networks: \[nexus-data\]/);
   assert.doesNotMatch(compose.match(/^  report-worker:[\s\S]*?(?=^networks:)/m)?.[0] || '', /ports:/);
   for (const source of [developmentUp,productionUp])
