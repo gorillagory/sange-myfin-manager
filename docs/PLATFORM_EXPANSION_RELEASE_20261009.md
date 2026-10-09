@@ -1,12 +1,17 @@
 # MyFin platform expansion release readiness
 
-**Status:** source candidate verified; not yet deployed or browser-accepted
+**Status:** development deployed and operationally verified at exact application
+source `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`; authenticated browser
+acceptance pending
 
-**Live application:** `6e08462`, migrations through `0019`
+**Development application:** `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`,
+migrations through `0028`
 
-**Candidate branch:** `codex/platform-expansion`, migrations through `0028`
+**Production application:** `6e08462ddbe3a8f2668e9325946ac69b0a53b3bf`,
+migrations through `0019`
 
-**Candidate SHA:** `27190a67bcd4c835c318b13cbd2285d894951c88`
+**Development/promotion source:** `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`
+on `develop`
 
 ## Release contents
 
@@ -36,12 +41,12 @@ enabled by this release. Public ordering remains pay at counter.
 
 | Check | Evidence | Scope limit |
 | --- | --- | --- |
-| Server suite at exact `0028` SHA | 200/200 passed | Source test, not deployment acceptance |
+| Server suite at exact deployed SHA | 201/201 passed | Source test, including full authenticated Fastify route registration |
 | Frontend suite at exact `0028` SHA | 66/66 passed | Source test, not browser acceptance |
 | Offline and management suites | 11/11 and 7/7 passed | Source test, not device/browser acceptance |
 | Recipe-focused server/frontend suites | 21/21 and 22/22 passed | Includes late review and replay evidence cases |
 | Receipt/PDF/POS/customer-order focused tests | 27/27 passed | Source test, not browser acceptance |
-| Production build at exact `0028` SHA | Passed; 57 offline assets | Images must still be built and recorded on `nexus-docker` |
+| Production build at exact `0028` source | Passed; 57 offline assets | The deployment receipt below records images built on `nexus-docker` |
 | Promotion database acceptance | Disposable PostgreSQL 16.14 passed concurrency, lifecycle, rollback, replay and immutability checks through `0027` | No live database was changed |
 | Recipe-order migration | Disposable PostgreSQL 16 applied `0001` through `0028` | No live database was changed |
 | Recipe-order adversarial acceptance | 8/8 passed on PostgreSQL 16.13 | Disposable database/container/volume removed after the run |
@@ -81,19 +86,19 @@ git diff --check
 
 - [x] Commit the complete code candidate and record its SHA.
 - [x] Run and record every exact-SHA command above.
-- [ ] Confirm `develop`, `staging` and `main` heads before any update; promote
+- [x] Confirm `develop`, `staging` and `main` heads before any update; promote
       the reviewed SHA rather than copying an uncommitted workspace.
-- [ ] Create or verify the development voucher HMAC secret outside Git with
+- [x] Create or verify the development voucher HMAC secret outside Git with
       owner-only permissions and configure `MYFIN_VOUCHER_HMAC_SECRET_FILE`.
-- [ ] Take a fresh development database/config/uploads backup, copy its checksum
+- [x] Take a fresh development database/config/uploads backup, copy its checksum
       off the runtime host and complete an isolated restore rehearsal.
-- [ ] Apply migrations `0020` through `0028` and the development runtime grants;
+- [x] Apply migrations `0020` through `0028` and the development runtime grants;
       verify the schema ledger reports `0028` exactly once.
-- [ ] Build API, web and report-worker images sequentially on `nexus-docker` and
+- [x] Build API, web and report-worker images sequentially on `nexus-docker` and
       record exact image IDs to avoid storage/RAM pressure.
-- [ ] Start API, web and report worker; verify health, migration state, worker
+- [x] Start API, web and report worker; verify health, migration state, worker
       lease/retry behaviour and redacted logs.
-- [ ] Run unauthenticated host/menu/quote safety smokes and authenticated role,
+- [x] Run unauthenticated host/menu/quote safety smokes and authenticated role,
       accounting, inventory and analytics smokes.
 - [ ] Complete browser acceptance at `https://dev-pos.bayam.live` with a real
       workspace account. Do not handle or record the user's password.
@@ -178,10 +183,63 @@ and preserve existing live settings.
 
 ## Acceptance record
 
+### Development deployment receipt
+
+- Deployed at `2026-10-09T08:54:10Z` from application source
+  `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`.
+- Immutable source snapshot:
+  `/srv/docker/releases/sange-myfin-manager/4b3095f`; active application link:
+  `/srv/docker/apps/sange-myfin-manager`.
+- Protected active runtime:
+  `/srv/docker/secrets/myfin-dev/runtime.env`; versioned candidate runtime:
+  `/srv/docker/secrets/myfin-dev/runtime-platform-4b3095f.env`.
+- API and report worker: `myfin-api:platform-4b3095f`, immutable image ID
+  `sha256:53475ac03cb84e0cf9d58de75810c5b5bc1899d8ae29b903c9701ca08143d940`.
+- Web: `myfin-web:platform-4b3095f`, immutable image ID
+  `sha256:4fe572466cdd023f67b8b226f8fa7d3f83dc7510a84e90725e9ea70c4d6445f7`.
+- Previous application snapshot: `/srv/docker/releases/sange-myfin-manager/6e08462`;
+  previous protected runtime copy:
+  `/srv/docker/secrets/myfin-dev/runtime-before-platform-4b3095f.env`. The old
+  runtime must be paired with the old release's compose definition because the
+  new compose file requires the voucher secret entry.
+- Pre-migration backup:
+  `/srv/docker/backups/myfin-dev/pre-platform-b51c80d-20261009T074849Z`;
+  checksum-verified off-host copy:
+  `/root/myfin-recovery/dev-20261009/pre-platform-b51c80d-20261009T074849Z`
+  on `nexus-pbund`.
+- Backup checksums: database
+  `eef0e5ec5a85fb93859447c20e28f2d634369a95eb90fe3ac34a977745993182`;
+  uploads
+  `3443380c80fa40735cdbac737866d83eeece63d486ac73723f7ac8935e0539a6`.
+- The protected runtime and voucher-signing secret are also mirrored under the
+  `config` subdirectory on both hosts with directory mode `0700` and file mode
+  `0600`. Their independent checksums are
+  `ae43768ed52114bc50b96243ce5e8f13249c9cb454f46efa66ef67e2c07619c7`
+  and
+  `b2bb187f174b1462ccbb62acac88e34237237bf6ac3169b029f34c5921f50c2f`;
+  no secret value is stored in this receipt.
+- Isolated restore rehearsal reconciled `19` migrations, `2` companies, `47`
+  products, `5` transactions and `0` expenses before the expansion migration.
+  `RESTORE_REHEARSAL_RECEIPT.txt` is present beside both backup copies with
+  checksum
+  `95abdd4772c13bc2ea94a42bcaeeba1366798ae96349791db2c72c6d17cb0636`.
+- The live development ledger reports `28` migrations through
+  `0028_recipe_order_integrity.sql`, with `0028` present exactly once. A repeat
+  migration run applied `0` migrations and re-applied only explicit grants.
+- API and web are healthy, the report worker is running, all three containers
+  have zero restarts, and the worker has no expired leases or claimable failed
+  runs. Startup and worker logs contain no duplicate-route, pool or cycle-failure
+  marker.
+- LAN and public HTTPS unauthenticated smoke passed. Authenticated public
+  operations and feature smoke passed as SuperAdmin; financial summary, detail
+  and consolidation totals reconcile. The login and six-digit POS access pages
+  also render correctly in Chrome. Authenticated browser workflow acceptance is
+  still pending.
+
 | Stage | SHA / image IDs | Database | Evidence | Result / owner |
 | --- | --- | --- | --- | --- |
-| Source candidate | `27190a67bcd4c835c318b13cbd2285d894951c88` | Disposable PG16 `0001`-`0028` | Server 200/200; frontend 66/66; offline 11/11; management 7/7; recipe adversarial 8/8; production build | Source-tested; development deployment pending |
-| Development | _pending_ | _pending_ | Backup/restore, migration, smoke, browser acceptance | Not started |
+| Source candidate | `4b3095f38f27f71c5dd1e950474efbf660bcfcc3` | Disposable PG16 `0001`-`0028` | Server 201/201; frontend 66/66; offline 11/11; management 7/7; recipe adversarial 8/8; production build | Source-tested |
+| Development | `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`; API/worker `myfin-api:platform-4b3095f` / `sha256:53475ac0...`; web `myfin-web:platform-4b3095f` / `sha256:4fe57246...` | `myfin_dev`; 28 migrations through `0028`; repeat applied zero | Checksum-verified local/off-host backup; isolated restore; LAN/public/authenticated smokes; browser login and POS-code surfaces | Deployed and automated checks passed `2026-10-09T09:28:37Z`; authenticated browser acceptance pending |
 | Staging | _pending_ | _pending_ | Exact-image smoke and reconciliation | Not started |
 | Production | Live `6e08462` | Live through `0019` | Existing health baseline only | Expansion not deployed |
 

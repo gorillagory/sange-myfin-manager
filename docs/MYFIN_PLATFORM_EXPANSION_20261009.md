@@ -1,19 +1,25 @@
 # MyFin platform expansion
 
-**Status:** source release candidate implemented and source-tested; development
-deployment and browser acceptance are pending
+**Status:** development deployed and operationally verified; authenticated
+browser acceptance and production promotion are pending
 
 **Recorded:** 9 October 2026
 
-**Live baseline:** commit `6e08462`, database migrations through `0019`
+**Development baseline:** commit
+`4b3095f38f27f71c5dd1e950474efbf660bcfcc3`, database migrations through
+`0028`
 
-**Candidate:** `27190a67bcd4c835c318b13cbd2285d894951c88` on branch
-`codex/platform-expansion`, database migrations through `0028`
+**Production baseline:** commit
+`6e08462ddbe3a8f2668e9325946ac69b0a53b3bf`, database migrations through
+`0019`
 
-This document describes what exists in source. It does not claim that the
-candidate is running in development or production. The live development and
-production containers remain on `6e08462` until the deployment procedure in
-`PLATFORM_EXPANSION_RELEASE_20261009.md` is completed.
+**Development/promotion source:**
+`4b3095f38f27f71c5dd1e950474efbf660bcfcc3` on `develop`
+
+The expansion is running in development from immutable images built from the
+recorded source. Production remains on `6e08462`. The detailed backup, image,
+migration, smoke and rollback receipt is in
+`PLATFORM_EXPANSION_RELEASE_20261009.md`.
 
 ## Product and accounting decisions
 
@@ -194,7 +200,7 @@ and [registration guidance](https://www.bnm.gov.my/application-for-approval-and-
   validation, late manager-review recovery and the database stock floor.
 - Migration `0028` also has structural/API tests for immutable evidence,
   transition guards, runtime grants and every terminal release path.
-- Exact candidate `27190a6` passed 200/200 server tests, 66/66 frontend tests,
+- Exact deployed source `4b3095f` passed 201/201 server tests, 66/66 frontend tests,
   11/11 offline tests, 7/7 management tests, 21/21 focused server checks,
   22/22 focused frontend checks, the production build with 57 offline assets
   and `git diff --check`.
@@ -211,7 +217,8 @@ It was not a load test.
 | --- | --- |
 | `nexus-pbund` | Source/controller and sole Cloudflare tunnel process; 8 GiB RAM with about 7.8 GiB available; 40 GiB root with about 23 GiB available |
 | `nexus-docker` | App runtimes and shared PostgreSQL; about 11.6 GiB RAM with 10 GiB available; `/srv/docker` had about 278 GiB available |
-| MyFin live | Separate healthy dev/prod API and web containers on `6e08462`; expansion migrations are not applied |
+| MyFin development | Healthy API/web and running report worker on exact source `4b3095f`; database migrations through `0028`; automated public/authenticated smoke passed |
+| MyFin production | Healthy API/web on `6e08462`; database migrations through `0019`; expansion is not deployed |
 | PostgreSQL | `max_connections=100`; `archive_mode=off`; no continuous WAL archive/PITR observed |
 | Backups | Manual checkpoints existed, but no MyFin backup timer was observed |
 | Ingress | One `cloudflared` origin path; no second replica observed |
@@ -237,14 +244,14 @@ and [Cloudflare Tunnel high availability](https://developers.cloudflare.com/tunn
 
 | Area | Source status | Remaining work or gate |
 | --- | --- | --- |
-| Ordering | Pickup/table, opt-in delivery, customer history and pay-at-counter implemented | Development browser acceptance, public-shop configuration, later online payment and courier operations |
+| Ordering | Pickup/table, opt-in delivery, customer history and pay-at-counter deployed in development | Authenticated development browser acceptance, public-shop configuration, later online payment and courier operations |
 | Pricing | Promotions, vouchers, student rules and reservation lifecycle implemented for the storefront | Validate live policy/data; manual POS/documents do not automatically apply storefront rules |
 | Inventory | Recipes, ingredient reservations, procurement, identifiers, cost and low-stock workflow implemented | Reconcile opening counts/recipes and approve each opt-in recipe before enabling it |
-| Analytics | Dynamic operational, customer, student, inventory and finance views implemented | Reconcile live imported totals and cost coverage; performance-test large periods |
-| Reporting | In-app schedules, worker and advisory forecasts implemented | Configure worker in dev/prod; email delivery remains future work |
+| Analytics | Dynamic operational, customer, student, inventory and finance views deployed; API totals reconcile in development | Complete authenticated chart/drill-down browser acceptance and performance-test large periods |
+| Reporting | In-app schedules, worker and advisory forecasts deployed in development | Exercise scheduled-report UI; configure production worker later; email delivery remains future work |
 | Payments | Evidence/reconciliation and operations view implemented | Select contracted acquirer; add hosted intents, signed callbacks, refunds and settlement reconciliation |
 | Gokoo | Disabled metadata/mapper foundation implemented | Confirm vendor identity and contract, then sandbox read-only shadow reconciliation before any write path |
-| Recovery | Deployment scripts and backup commands exist | Fresh backup, off-host checksum, isolated restore drill, PITR and second tunnel replica |
+| Recovery | Development backup, off-host checksum and isolated restore drill completed | Repeat for production promotion; add PITR and a second tunnel replica |
 
 Every promotion follows `develop -> staging -> main`, uses additive migrations,
 backs up before migration, deploys exact image IDs and retains the prior images.
