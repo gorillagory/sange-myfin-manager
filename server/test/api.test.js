@@ -54,6 +54,16 @@ test('ready response, unknown business routes, and handler errors are minimal', 
   await app.close();
   assert.equal(closes, 1);
 });
+test('the complete authenticated route graph registers without duplicate endpoints', async t => {
+  const database={ready:async()=>true,close:async()=>{},transaction:async fn=>fn({query:async()=>({rows:[],rowCount:0})})};
+  const auth={handler:async()=>new Response(null,{status:401})};
+  const authOptions={origin:'https://dev-pos.example.test',protocol:'https:',allowedHosts:['dev-pos.example.test'],
+    controlHosts:[],rootDomain:'',publicProxyAddresses:[],enforceTenantHosts:false,secure:true,pos:null,voucherHmacSecret:null};
+  const app=buildApp({database,auth,authOptions});
+  t.after(()=>app.close());
+  await app.ready();
+  assert.equal(app.hasRoute({method:'GET',url:'/api/companies/:company/inventory-recipes'}),true);
+});
 test('pool options are passed through, idle errors are sanitized, close is idempotent', async () => {
   let pool, closes = 0;
   const events = [];

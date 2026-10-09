@@ -23,8 +23,7 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
-import { consumeRecipeStock, offlineRecipeBoundary, recipeAvailabilityForProducts,
-  registerInventoryRecipes } from "./inventory-recipes.js";
+import { consumeRecipeStock, offlineRecipeBoundary, recipeAvailabilityForProducts } from "./inventory-recipes.js";
 import { registerProcurement } from "./procurement.js";
 import { companyReport,companyRows,reportFilterShape } from "./reporting.js";
 import { registerReportAutomation } from "./report-automation.js";
@@ -529,7 +528,6 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   };
   registerExpenseImport(app,{scoped,audit});
   registerStock(app,{scoped,audit});
-  registerInventoryRecipes(app,{scoped,audit});
   registerProcurement(app,{scoped,audit});
   registerReportAutomation(app,{scoped,audit});
   registerAdvancedAnalytics(app,{scoped});
