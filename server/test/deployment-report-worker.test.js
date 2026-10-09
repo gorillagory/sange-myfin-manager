@@ -6,15 +6,17 @@ const root = new URL('../../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
 
 test('report automation is registered, mounted and deployed as one constrained worker', async () => {
-  const [business,analytics,compose,developmentUp,productionUp] = await Promise.all([
+  const [business,analytics,compose,developmentUp,productionUp,worker] = await Promise.all([
     read('server/src/business.js'),read('src/components/dashboard/AnalyticsTab.vue'),
     read('deploy/compose.yml'),read('scripts/deploy/up.sh'),read('scripts/deploy/production-up.sh'),
+    read('server/src/report-worker.js'),
   ]);
   assert.match(business, /registerReportAutomation\(app,\{scoped,audit\}\)/);
   assert.match(analytics, /<ReportAutomationTab\s*\/>/);
   assert.match(compose, /^  report-worker:/m);
   assert.match(compose, /command: \[node, src\/report-worker\.js\]/);
   assert.match(compose, /REPORT_WORKER_ID: \$\{MYFIN_COMPOSE_PROJECT:-myfin-dev\}-report-worker-1/);
+  assert.match(worker, /processWorkerIdentity\(process\.env\.REPORT_WORKER_ID \|\| 'report-worker'\)/);
   assert.match(compose, /CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT: \$\{MYFIN_CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT:-100\}/);
   assert.match(compose, /networks: \[nexus-data\]/);
   assert.doesNotMatch(compose.match(/^  report-worker:[\s\S]*?(?=^networks:)/m)?.[0] || '', /ports:/);

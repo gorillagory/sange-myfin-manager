@@ -24,6 +24,21 @@ function round(value, precision = 2) {
   return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
 }
 
+export function processWorkerIdentity(base = 'report-worker', nonce = randomUUID()) {
+  const prefix = String(base || '');
+  if (!/^[A-Za-z0-9._:-]{1,91}$/.test(prefix) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(nonce || '')))
+    throw new TypeError('invalid_worker_id');
+  return `${prefix}:${nonce}`;
+}
+
+function leaseGeneration(run) {
+  const generation = Number(run?.attempt_count);
+  if (!Number.isInteger(generation) || generation < 1 || generation > 10)
+    throw new TypeError('invalid_report_run_lease_generation');
+  return generation;
+}
+
 function insufficientForecast({ asOf, horizon, sampleSize, reason, dataFrom = null, dataThrough = null }) {
   return {
     status:'insufficient_history', advisory:true, method:'weekday_seasonal_mean',
@@ -185,6 +200,8 @@ export async function claimQueuedReportRuns(c, {
   const instant = new Date(now), leaseExpiresAt = new Date(instant.getTime() + leaseMs);
   if (!Number.isFinite(instant.getTime()) || !Number.isInteger(leaseMs) || leaseMs < 30000 || leaseMs > 900000)
     throw new TypeError('invalid_worker_lease');
+  // attempt_count doubles as the lease generation. The value returned by this
+  // atomic claim must match before a worker may complete or fail the run.
   const result = await c.query(`WITH candidates AS (
       SELECT r.company_id,r.id FROM myfin.report_runs r
       JOIN myfin.report_schedules s ON s.company_id=r.company_id AND s.id=r.schedule_id
@@ -269,12 +286,13 @@ export async function buildScheduledReportSnapshot(c, run, {
 }
 
 export async function completeReportRun(database, run, result, now = new Date()) {
+  const generation = leaseGeneration(run);
   return database.transaction(async c => {
     const saved = await c.query(`UPDATE myfin.report_runs SET status='completed',result_snapshot=$5,
       lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,completed_at=$4,updated_at=$4
       WHERE company_id=$1 AND id=$2 AND status='running' AND lease_owner=$3
-        AND lease_expires_at > $4 RETURNING id`,
-    [run.company_id,run.id,run.lease_owner,new Date(now),result]);
+        AND attempt_count=$6 AND lease_expires_at > $4 RETURNING id`,
+    [run.company_id,run.id,run.lease_owner,new Date(now),result,generation]);
     if (!saved.rowCount) throw Object.assign(new Error('report_run_lease_lost'), { code:'report_run_lease_lost' });
     return true;
   });
@@ -285,12 +303,14 @@ function safeWorkerError(error) {
 }
 
 export async function failReportRun(database, run, error, now = new Date()) {
-  const instant = new Date(now), retryAt = new Date(instant.getTime() + reportRetryDelayMs(run.attempt_count));
+  const generation = leaseGeneration(run);
+  const instant = new Date(now), retryAt = new Date(instant.getTime() + reportRetryDelayMs(generation));
   return database.transaction(async c => {
     const failed = await c.query(`UPDATE myfin.report_runs SET status='failed',next_attempt_at=$5,
       lease_owner=NULL,lease_expires_at=NULL,error_code=$4,updated_at=$3
-      WHERE company_id=$1 AND id=$2 AND status='running' AND lease_owner=$6 RETURNING id`,
-    [run.company_id,run.id,instant,safeWorkerError(error),retryAt,run.lease_owner]);
+      WHERE company_id=$1 AND id=$2 AND status='running' AND lease_owner=$6
+        AND attempt_count=$7 AND lease_expires_at>$3 RETURNING id`,
+    [run.company_id,run.id,instant,safeWorkerError(error),retryAt,run.lease_owner,generation]);
     return failed.rowCount === 1;
   });
 }
@@ -361,7 +381,9 @@ async function main() {
     const config = loadConfig(), database = createDatabase({ ...config.database, application_name:'myfin-report-worker' }, {
       onError:event => process.stderr.write(`${event}\n`),
     });
-    const workerId = process.env.REPORT_WORKER_ID || `report-worker-${randomUUID()}`;
+    // REPORT_WORKER_ID is a human-readable replica label. A fresh nonce makes
+    // the actual lease owner unique across scale-out, restart and stale overlap.
+    const workerId = processWorkerIdentity(process.env.REPORT_WORKER_ID || 'report-worker');
     const pollMs = Number(process.env.REPORT_WORKER_POLL_MS || 30000);
     const maintenanceLimit = Number(process.env.CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT || 100);
     await startReportWorker(database, { workerId,pollMs,maintenanceLimit,
@@ -378,4 +400,4 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
 
-export const reportWorkerInternals = Object.freeze({ dateAdd, safeWorkerError, transactionCounts });
+export const reportWorkerInternals = Object.freeze({ dateAdd, safeWorkerError, transactionCounts, leaseGeneration });
