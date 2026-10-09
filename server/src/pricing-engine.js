@@ -181,8 +181,14 @@ async function loadVoucher(c, { workspaceId, companyId, currencyCode, customerId
   const result = await c.query(
     `SELECT v.promotion_id,v.id,v.version,vv.enabled,vv.valid_from,vv.valid_until,
             vv.max_redemptions,vv.per_customer_limit,
-            coalesce(vu.redemption_count,0) AS total_usage,
-            coalesce(vcu.redemption_count,0) AS customer_usage
+            coalesce(vu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations vr
+              WHERE vr.workspace_id=v.workspace_id AND vr.company_id=v.company_id
+                AND vr.promotion_id=v.promotion_id AND vr.voucher_id=v.id
+                AND vr.state='active' AND vr.expires_at>$6) AS total_usage,
+            coalesce(vcu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations vr
+              WHERE vr.workspace_id=v.workspace_id AND vr.company_id=v.company_id
+                AND vr.promotion_id=v.promotion_id AND vr.voucher_id=v.id AND vr.customer_id=$5
+                AND vr.state='active' AND vr.expires_at>$6) AS customer_usage
        FROM myfin.promotion_vouchers v
        JOIN myfin.promotion_voucher_versions vv
          ON vv.workspace_id=v.workspace_id AND vv.company_id=v.company_id
@@ -225,8 +231,13 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
             pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
             pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,
             pv.requires_customer,pv.requires_student,pv.priority,pv.stackable,
-            coalesce(pu.redemption_count,0) AS total_usage,
-            coalesce(pcu.redemption_count,0) AS customer_usage
+            coalesce(pu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations pr
+              WHERE pr.workspace_id=p.workspace_id AND pr.company_id=p.company_id
+                AND pr.promotion_id=p.id AND pr.state='active' AND pr.expires_at>$5) AS total_usage,
+            coalesce(pcu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations pr
+              WHERE pr.workspace_id=p.workspace_id AND pr.company_id=p.company_id
+                AND pr.promotion_id=p.id AND pr.customer_id=$4
+                AND pr.state='active' AND pr.expires_at>$5) AS customer_usage
        FROM myfin.promotions p
        JOIN myfin.promotion_versions pv
          ON pv.workspace_id=p.workspace_id AND pv.company_id=p.company_id
@@ -289,11 +300,12 @@ async function persistSnapshot(c, { workspaceId, companyId, id, expiresAt, reque
     `INSERT INTO myfin.pricing_snapshots(
        workspace_id,company_id,id,customer_id,student_eligibility_version,currency_code,
        subtotal_sen,discount_sen,taxable_sen,tax_sen,rounding_sen,total_sen,
-       rules_digest,request_digest,priced_at,expires_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+       rules_digest,request_digest,priced_at,expires_at,tax_basis_points)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
     [workspaceId, companyId, id, priced.customerId || null, priced.studentEligibilityVersion,
       priced.currencyCode, priced.subtotalSen, priced.discountSen, priced.taxableSen, priced.taxSen,
-      priced.roundingSen, priced.totalSen, priced.rulesDigest, requestDigest, priced.pricedAt, expiresAt],
+      priced.roundingSen, priced.totalSen, priced.rulesDigest, requestDigest, priced.pricedAt, expiresAt,
+      priced.taxBasisPoints],
   );
   for (const line of priced.lines) await c.query(
     `INSERT INTO myfin.pricing_snapshot_lines(
@@ -338,6 +350,7 @@ function safeSnapshotOutput(id, expiresAt, requestDigest, priced) {
     discountSen: priced.discountSen,
     taxableSen: priced.taxableSen,
     taxSen: priced.taxSen,
+    taxBasisPoints: priced.taxBasisPoints,
     roundingSen: priced.roundingSen,
     totalSen: priced.totalSen,
     lines: priced.lines.map(line => ({ ...line })),
@@ -410,7 +423,10 @@ export async function createPricingSnapshot(c, input, options = {}) {
     lines, promotions, customerId, studentEligibility: student,
     at: pricedAt, currencyCode, taxBasisPoints, cashRounding,
   });
+  priced.taxBasisPoints = taxBasisPoints;
   if (priced.totalSen <= 0) fail(400, 'order_total_required');
+  if (lookupDigest && !priced.applications.some(application => application.voucherId))
+    fail(400, 'voucher_invalid_or_unavailable');
   const requestDigest = digest({
     workspaceId, companyId, customerId, lines: requested,
     voucherLookupDigest: lookupDigest, currencyCode, taxBasisPoints, cashRounding,
@@ -435,6 +451,91 @@ async function snapshotForCommit(c, workspaceId, companyId, snapshotId) {
     [workspaceId, companyId, snapshotId],
   )).rows;
   return { snapshot, discounts };
+}
+
+export async function loadPricingSnapshot(c, input, options = {}) {
+  strictKeys(input, new Set(['workspaceId', 'companyId', 'snapshotId', 'customerId', 'requestDigest']));
+  const workspaceId = text(input.workspaceId);
+  const companyId = text(input.companyId);
+  const snapshotId = text(input.snapshotId);
+  const customerId = text(input.customerId, { optional: true });
+  const { snapshot, discounts } = await snapshotForCommit(c, workspaceId, companyId, snapshotId);
+  if ((snapshot.customer_id || '') !== customerId) fail(409, 'pricing_customer_changed');
+  if (input.requestDigest && snapshot.request_digest !== input.requestDigest) fail(409, 'pricing_snapshot_changed');
+  const now = instant(typeof options.now === 'function' ? options.now() : (options.now || new Date()));
+  if (!options.allowExpired && snapshot.expires_at && now >= new Date(snapshot.expires_at))
+    fail(409, 'pricing_snapshot_expired');
+  const lines = (await c.query(
+    `SELECT * FROM myfin.pricing_snapshot_lines
+      WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3 ORDER BY line_no`,
+    [workspaceId, companyId, snapshotId],
+  )).rows;
+  const discountLines = discounts.length ? (await c.query(
+    `SELECT * FROM myfin.pricing_snapshot_discount_lines
+      WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3
+      ORDER BY discount_sequence,line_no`, [workspaceId, companyId, snapshotId],
+  )).rows : [];
+  return {
+    id: snapshot.id,
+    requestDigest: snapshot.request_digest,
+    rulesDigest: snapshot.rules_digest,
+    pricedAt: new Date(snapshot.priced_at).toISOString(),
+    expiresAt: snapshot.expires_at ? new Date(snapshot.expires_at).toISOString() : null,
+    currencyCode: snapshot.currency_code,
+    customerId: snapshot.customer_id || '',
+    studentEligibilityVersion: snapshot.student_eligibility_version === null
+      ? null : Number(snapshot.student_eligibility_version),
+    subtotalSen: Number(snapshot.subtotal_sen),
+    discountSen: Number(snapshot.discount_sen),
+    taxableSen: Number(snapshot.taxable_sen),
+    taxSen: Number(snapshot.tax_sen),
+    taxBasisPoints: Number(snapshot.tax_basis_points || 0),
+    roundingSen: Number(snapshot.rounding_sen),
+    totalSen: Number(snapshot.total_sen),
+    lines: lines.map(line => ({ lineNo: Number(line.line_no), productId: line.product_id,
+      variantId: line.variant_id || '', category: line.category, subcategory: line.subcategory,
+      description: line.description, quantityMilli: Number(line.quantity_milli),
+      unitPriceSen: Number(line.unit_price_sen), grossSen: Number(line.gross_sen),
+      discountSen: Number(line.discount_sen), netSen: Number(line.net_sen) })),
+    discounts: discounts.map(discount => ({ promotionId: discount.promotion_id,
+      promotionVersion: Number(discount.promotion_version), name: discount.display_name,
+      voucherApplied: Boolean(discount.voucher_id), discountSen: Number(discount.discount_sen),
+      lineDiscounts: discountLines.filter(line => Number(line.discount_sequence) === Number(discount.sequence))
+        .map(line => ({ lineNo: Number(line.line_no), discountSen: Number(line.discount_sen) })) })),
+  };
+}
+
+export async function reserveOrderPromotions(c, { companyId, orderId, snapshotId, expiresAt }) {
+  const result = await c.query(
+    'SELECT myfin.reserve_order_promotions($1,$2,$3,$4) AS count',
+    [text(companyId), text(orderId), text(snapshotId), instant(expiresAt).toISOString()],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function extendOrderPromotionReservations(c, { companyId, orderId, expiresAt }) {
+  const result = await c.query(
+    'SELECT myfin.extend_order_promotion_reservations($1,$2,$3) AS count',
+    [text(companyId), text(orderId), instant(expiresAt).toISOString()],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function releaseOrderPromotionReservations(c, { companyId, orderId, reason }) {
+  if (!['cancelled', 'expired'].includes(reason)) fail(400, 'invalid_reservation_release_reason');
+  const result = await c.query(
+    'SELECT myfin.release_order_promotion_reservations($1,$2,$3) AS count',
+    [text(companyId), text(orderId), reason],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function consumeOrderPromotionReservations(c, { companyId, orderId, saleId, occurredAt }) {
+  const result = await c.query(
+    'SELECT myfin.consume_order_promotion_reservations($1,$2,$3,$4) AS count',
+    [text(companyId), text(orderId), text(saleId), instant(occurredAt).toISOString()],
+  );
+  return Number(result.rows[0]?.count || 0);
 }
 
 async function boundSource(c, { companyId, sourceType, sourceId, snapshotId }) {

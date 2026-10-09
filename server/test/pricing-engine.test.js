@@ -4,6 +4,11 @@ import {
   commitPricingRedemptions,
   createPricingSnapshot,
   decimalToScaledInteger,
+  extendOrderPromotionReservations,
+  loadPricingSnapshot,
+  releaseOrderPromotionReservations,
+  reserveOrderPromotions,
+  consumeOrderPromotionReservations,
 } from '../src/pricing-engine.js';
 import { voucherLookupDigest } from '../src/student-promotions.js';
 
@@ -30,7 +35,7 @@ function pricingFixture(overrides = {}) {
     if (sql.includes('FROM myfin.student_eligibilities')) return { rowCount: 1, rows: [{
       status: 'verified', version: '4', valid_from: '2026-01-01T00:00:00Z', valid_until: '2027-01-01T00:00:00Z',
     }] };
-    if (sql.includes('FROM myfin.promotions p')) return { rowCount: 2, rows: [
+    if (sql.includes('FROM myfin.promotions p')) return { rowCount: (overrides.promotionRows || []).length || 2, rows: overrides.promotionRows || [
       { id: 'student-promo', version: '3', name: 'Student 10%', enabled: true, redemption_mode: 'automatic',
         valid_from: '2026-01-01T00:00:00Z', valid_until: null, discount_type: 'percentage',
         discount_basis_points: 1000, discount_sen: null, max_discount_sen: null, min_subtotal_sen: '0',
@@ -95,6 +100,9 @@ test('authoritative quote loads catalog, current rules, student state and HMAC v
   assert.equal(snapshot.params[3], 'customer-a');
   assert.equal(snapshot.params[4], 4);
   assert.equal(snapshot.params[7], 425);
+  assert.equal(snapshot.params[16], 600);
+  assert.match(voucherLookup.sql, /FROM myfin\.promotion_reservations/);
+  assert.match(rules.sql, /FROM myfin\.promotion_reservations/);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_lines')).length, 1);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discounts')).length, 2);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discount_lines')).length, 2);
@@ -144,6 +152,76 @@ test('voucher lookup fails closed without leaking or silently ignoring a submitt
   }, { voucherPepper: PEPPER, now: AT }),
   error => error.statusCode === 400 && error.message === 'voucher_invalid_or_unavailable');
   assert.doesNotMatch(JSON.stringify(calls), /VALID-LOOKING/);
+
+  const ineligible = pricingFixture({ promotionRows: [{
+    id: 'voucher-promo', version: '5', name: 'Voucher RM1.25', enabled: true,
+    redemption_mode: 'voucher', valid_from: '2026-01-01T00:00:00Z', valid_until: null,
+    discount_type: 'fixed', discount_basis_points: null, discount_sen: '125',
+    max_discount_sen: null, min_subtotal_sen: '999999', max_total_redemptions: null,
+    per_customer_limit: null, requires_customer: false, requires_student: false,
+    priority: 10, stackable: true, total_usage: '0', customer_usage: '0',
+  }] });
+  await assert.rejects(createPricingSnapshot(ineligible.c, {
+    companyId: 'company-a', customerId: 'customer-a',
+    lines: [{ productId: 'latte', variantId: '', quantityMilli: 1000 }],
+    voucherCode: 'VALID-NOT-ELIGIBLE',
+  }, { voucherPepper: PEPPER, now: AT }),
+  error => error.statusCode === 400 && error.message === 'voucher_invalid_or_unavailable');
+  assert.equal(ineligible.calls.some(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshots')), false);
+  assert.doesNotMatch(JSON.stringify(ineligible.calls), /VALID-NOT-ELIGIBLE/);
+});
+
+test('stored snapshots reload safely and lifecycle helpers expose only bounded identifiers', async () => {
+  const calls = [];
+  const snapshot = { id:'snapshot-a', customer_id:'customer-a', request_digest:'a'.repeat(64),
+    rules_digest:'b'.repeat(64), priced_at:AT, expires_at:'2026-10-09T04:05:00Z', currency_code:'MYR',
+    student_eligibility_version:'4', subtotal_sen:'2000', discount_sen:'125', taxable_sen:'1875',
+    tax_sen:'113', tax_basis_points:'600', rounding_sen:'0', total_sen:'1988' };
+  const c = { query: async (sql, params = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('FROM myfin.pricing_snapshots')) return { rowCount:1, rows:[snapshot] };
+    if (sql.includes('FROM myfin.pricing_snapshot_discounts')) return { rowCount:1, rows:[{
+      sequence:1, promotion_id:'promotion-a', promotion_version:'2', voucher_id:'voucher-internal',
+      voucher_version:'3', display_name:'Welcome RM1.25', discount_sen:'125' }] };
+    if (sql.includes('FROM myfin.pricing_snapshot_lines')) return { rowCount:1, rows:[{
+      line_no:1, product_id:'latte', variant_id:null, category:'Beverage', subcategory:'Coffee',
+      description:'Latte', quantity_milli:'1000', unit_price_sen:'2000', gross_sen:'2000',
+      discount_sen:'125', net_sen:'1875' }] };
+    if (sql.includes('FROM myfin.pricing_snapshot_discount_lines')) return { rowCount:1, rows:[{
+      discount_sequence:1, line_no:1, discount_sen:'125' }] };
+    if (sql.includes('myfin.reserve_order_promotions')) return { rows:[{ count:'1' }] };
+    if (sql.includes('myfin.extend_order_promotion_reservations')) return { rows:[{ count:'1' }] };
+    if (sql.includes('myfin.release_order_promotion_reservations')) return { rows:[{ count:'1' }] };
+    if (sql.includes('myfin.consume_order_promotion_reservations')) return { rows:[{ count:'1' }] };
+    throw new Error(`Unexpected query: ${sql}`);
+  } };
+  const loaded = await loadPricingSnapshot(c, { workspaceId:'workspace-a', companyId:'company-a',
+    snapshotId:'snapshot-a', customerId:'customer-a', requestDigest:'a'.repeat(64) },
+  { now:'2026-10-09T04:04:59Z' });
+  assert.equal(loaded.taxBasisPoints, 600);
+  assert.deepEqual(loaded.discounts, [{ promotionId:'promotion-a', promotionVersion:2,
+    name:'Welcome RM1.25', voucherApplied:true, discountSen:125,
+    lineDiscounts:[{ lineNo:1, discountSen:125 }] }]);
+  assert.doesNotMatch(JSON.stringify(loaded), /voucher-internal/);
+  await assert.rejects(loadPricingSnapshot(c, { workspaceId:'workspace-a', companyId:'company-a',
+    snapshotId:'snapshot-a', customerId:'different' }, { now:AT }),
+  error => error.statusCode === 409 && error.message === 'pricing_customer_changed');
+  assert.equal(await reserveOrderPromotions(c, { companyId:'company-a', orderId:'order-a',
+    snapshotId:'snapshot-a', expiresAt:'2026-10-09T05:00:00Z' }), 1);
+  assert.equal(await extendOrderPromotionReservations(c, { companyId:'company-a', orderId:'order-a',
+    expiresAt:'2026-10-09T06:00:00Z' }), 1);
+  assert.equal(await releaseOrderPromotionReservations(c, { companyId:'company-a', orderId:'order-a',
+    reason:'cancelled' }), 1);
+  await assert.rejects(releaseOrderPromotionReservations(c, { companyId:'company-a', orderId:'order-a',
+    reason:'rollback' }), error => error.statusCode === 400 && error.message === 'invalid_reservation_release_reason');
+  assert.equal(await consumeOrderPromotionReservations(c, { companyId:'company-a', orderId:'order-a',
+    saleId:'sale-a', occurredAt:'2026-10-09T04:30:00Z' }), 1);
+  assert.deepEqual(calls.filter(call => call.sql.includes('myfin.') && call.sql.includes('_order_promotion')).map(call => call.params), [
+    ['company-a','order-a','snapshot-a','2026-10-09T05:00:00.000Z'],
+    ['company-a','order-a','2026-10-09T06:00:00.000Z'],
+    ['company-a','order-a','cancelled'],
+    ['company-a','order-a','sale-a','2026-10-09T04:30:00.000Z'],
+  ]);
 });
 
 function commitFixture({ existing = [], bound = true, sourceType = 'customer_order' } = {}) {

@@ -1,9 +1,11 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { z } from 'zod';
-import { canonical, cents, checkoutTotalsFor, roundToFiveSen } from '../../src/domain/pos.js';
+import { canonical } from '../../src/domain/pos.js';
 import { activeReservationQuantities, releaseOrderReservations } from './customer-order-reservations.js';
 import { customerOrderDefaults, customerPhoneSchema, customerSession } from './customer-auth.js';
+import { createPricingSnapshot, loadPricingSnapshot, releaseOrderPromotionReservations,
+  reserveOrderPromotions } from './pricing-engine.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
   storefrontPrivacyComplete, storefrontPrivacyOutput } from './storefront-privacy.js';
 import * as v from './validation.js';
@@ -31,6 +33,9 @@ const cartSchema = z.strictObject({
   serviceMode: z.enum(['pickup', 'table', 'delivery']).default('pickup'),
   delivery: deliverySchema.optional(),
   items: z.array(itemSchema).min(1).max(100),
+});
+const quoteSchema = cartSchema.extend({
+  voucherCode: z.string().trim().min(6).max(32).regex(/^[A-Za-z0-9-]+$/).optional(),
 });
 const submitSchema = cartSchema.extend({
   guest: z.strictObject({
@@ -117,16 +122,17 @@ function orderRequestDigest(context, input) {
   return digest(JSON.stringify(canonical({ companyId: context.company_id, hostname: context.hostname, input })));
 }
 
-function quoteToken(secret, context, input, quote) {
+function quoteToken(secret, context, input, quote, binding = {}) {
   const payload = Buffer.from(JSON.stringify({ companyId: context.company_id, hostname: context.hostname,
     cartDigest: digest(JSON.stringify(canonical(cartTokenInput(input)))),
-    quoteDigest: digest(JSON.stringify(canonical(quote))),
-    expiresAt: Date.now() + 5 * 60000 })).toString('base64url');
+    quoteDigest: digest(JSON.stringify(canonical(quote))), snapshotId: binding.snapshotId || '',
+    snapshotRequestDigest: binding.snapshotRequestDigest || '', principalDigest: binding.principalDigest || '',
+    expiresAt: Number(binding.expiresAt || Date.now() + 5 * 60000) })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${signature}`;
 }
 
-function verifyQuoteToken(secret, token, context, input, quote) {
+function verifyQuoteToken(secret, token, context, input, quote = null, binding = {}) {
   const [payload, supplied, ...extra] = token.split('.');
   if (!payload || !supplied || extra.length) v.fail(409, 'quote_changed');
   const expected = createHmac('sha256', secret).update(payload).digest();
@@ -136,13 +142,20 @@ function verifyQuoteToken(secret, token, context, input, quote) {
   let value;
   try { value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { v.fail(409, 'quote_changed'); }
   const cartDigest = digest(JSON.stringify(canonical(cartTokenInput(input))));
-  const currentQuoteDigest = digest(JSON.stringify(canonical(quote)));
   if (value.companyId !== context.company_id || value.hostname !== context.hostname ||
       !Number.isFinite(value.expiresAt) || value.expiresAt < Date.now() ||
-      value.cartDigest !== cartDigest || value.quoteDigest !== currentQuoteDigest) v.fail(409, 'quote_changed');
+      value.cartDigest !== cartDigest || (binding.principalDigest || '') !== (value.principalDigest || '') ||
+      !value.snapshotId || !/^[A-Za-z0-9_-]{1,128}$/.test(value.snapshotId) ||
+      !/^[0-9a-f]{64}$/.test(value.snapshotRequestDigest || '')) v.fail(409, 'quote_changed');
+  if (quote && value.quoteDigest !== digest(JSON.stringify(canonical(quote)))) v.fail(409, 'quote_changed');
+  return value;
 }
 
-async function pricedCart(c, companyId, input) {
+function principalDigest(customer, session) {
+  return digest(customer?.customerId ? `customer:${customer.customerId}` : `guest:${session?.digest || ''}`);
+}
+
+async function publishedCart(c, companyId, input, snapshot = null) {
   const config = await settings(c, companyId);
   if (input.items.length > config.max_order_items) v.fail(400, 'order_item_limit');
   const seen = new Set();
@@ -180,26 +193,44 @@ async function pricedCart(c, companyId, input) {
       const available = Number((variant || product).stock || 0) - (reserved.get(lineKey(item)) || 0);
       if (available < item.quantity) v.fail(409, 'menu_item_unavailable');
     }
-    const price = Number(variant?.price ?? row.price);
     return {
       lineNo: index + 1, productId: item.productId, variantId: item.variantId || '',
       description: row.display_name || product.name, variant: variant?.name || '',
       sku: variant?.sku || product.sku || '', unit: product.unit || 'pcs',
-      qty: item.quantity, price,
+      qty: item.quantity,
     };
   });
-  const preferences = config.company_data?.preferences || {};
-  const totals = checkoutTotalsFor(lines, Number(preferences.taxRate ?? preferences.tax ?? 0), 0);
-  if (totals.total <= 0 || totals.total > Number(config.max_order_value)) v.fail(400, 'order_value_limit');
-  return { config, lines, totals, currency: preferences.currency || 'RM' };
+  if (snapshot) {
+    if (snapshot.lines.length !== lines.length) v.fail(409, 'quote_changed');
+    for (const line of lines) {
+      const quoted = snapshot.lines.find(item => item.productId === line.productId && item.variantId === line.variantId);
+      if (!quoted || quoted.quantityMilli !== Math.round(line.qty * 1000)) v.fail(409, 'quote_changed');
+    }
+  }
+  return { config, lines, currency: config.company_data?.preferences?.currency || 'RM' };
 }
 
-function totalsWithDelivery(totals, feeSen) {
+function totalsFromSnapshot(snapshot, feeSen = 0, includeDeliveryFee = false) {
   const amount = Number(feeSen);
   if (!Number.isSafeInteger(amount) || amount < 0) v.fail(409, 'delivery_unavailable');
-  const beforeSen = cents(totals.subtotal) - cents(totals.discountAmount) + cents(totals.tax) + amount;
-  const rounded = roundToFiveSen(beforeSen / 100);
-  return { ...totals, deliveryFee: amount / 100, ...rounded };
+  const beforeSen = snapshot.taxableSen + snapshot.taxSen + amount;
+  const remainder = beforeSen % 5;
+  const roundingSen = remainder ? (remainder <= 2 ? -remainder : 5 - remainder) : 0;
+  return { subtotal: snapshot.subtotalSen / 100, discountAmount: snapshot.discountSen / 100,
+    discount: 0, tax: snapshot.taxSen / 100, taxRate: snapshot.taxBasisPoints / 100,
+    ...(includeDeliveryFee ? { deliveryFee: amount / 100 } : {}),
+    totalBeforeRounding: beforeSen / 100, rounding: roundingSen / 100,
+    total: (beforeSen + roundingSen) / 100 };
+}
+
+// Compatibility helper for existing delivery tests and non-promotion callers.
+function totalsWithDelivery(totals, feeSen) {
+  const subtotalSen = Math.round(Number(totals.subtotal) * 100);
+  const discountSen = Math.round(Number(totals.discountAmount) * 100);
+  const taxSen = Math.round(Number(totals.tax) * 100);
+  return totalsFromSnapshot({ subtotalSen, discountSen, taxableSen: subtotalSen - discountSen,
+    taxSen, taxBasisPoints: Math.round(Number(totals.taxRate || 0) * 100),
+    totalSen: subtotalSen - discountSen + taxSen }, feeSen, true);
 }
 
 async function deliveryFor(c, companyId, input, priced) {
@@ -215,9 +246,9 @@ async function deliveryFor(c, companyId, input, priced) {
     [companyId, input.delivery.zoneId],
   )).rows[0];
   if (!zone) v.fail(409, 'delivery_unavailable');
-  const merchandiseSen = cents(priced.totals.subtotal) - cents(priced.totals.discountAmount);
+  const merchandiseSen = priced.snapshot.taxableSen;
   if (merchandiseSen < Number(zone.minimum_order_sen)) v.fail(400, 'delivery_minimum_not_met');
-  const totals = totalsWithDelivery(priced.totals, Number(zone.fee_sen));
+  const totals = totalsFromSnapshot(priced.snapshot, Number(zone.fee_sen), true);
   if (totals.total > Number(priced.config.max_order_value)) v.fail(400, 'order_value_limit');
   return { zone, totals, address: input.delivery.address };
 }
@@ -232,12 +263,42 @@ function deliveryQuote(delivery) {
 }
 
 function quoteFor(input, location, priced, delivery) {
-  const totals = delivery?.totals || priced.totals;
+  const totals = delivery?.totals || totalsFromSnapshot(priced.snapshot);
+  if (totals.total <= 0 || totals.total > Number(priced.config.max_order_value))
+    v.fail(400, 'order_value_limit');
   return { locationId: location.id, serviceMode: input.serviceMode,
     items: priced.lines.map(item => ({ productId: item.productId, variantId: item.variantId,
       description: item.description, variant: item.variant, unit: item.unit, quantity: item.qty,
-      unitPrice: item.price, lineTotal: Math.round(cents(item.price) * item.qty) / 100 })),
-    ...totals, currency: priced.currency, ...(delivery ? { delivery: deliveryQuote(delivery) } : {}) };
+      unitPrice: item.unitPriceSen / 100, lineTotal: item.grossSen / 100 })),
+    ...totals, discounts: priced.snapshot.discounts.map(item => ({ name: item.name, amount: item.discountSen / 100 })),
+    currency: priced.currency, ...(delivery ? { delivery: deliveryQuote(delivery) } : {}) };
+}
+
+async function pricedCart(c, context, input, customerId, voucherPepper) {
+  const publication = await publishedCart(c, context.company_id, input);
+  const snapshot = await createPricingSnapshot(c, {
+    workspaceId: context.workspace_id, companyId: context.company_id, customerId,
+    lines: input.items.map(item => ({ productId: item.productId, variantId: item.variantId || '',
+      quantityMilli: Math.round(item.quantity * 1000) })),
+    ...(input.voucherCode ? { voucherCode: input.voucherCode } : {}),
+  }, { voucherPepper, cashRounding: false });
+  const lines = publication.lines.map(line => {
+    const priced = snapshot.lines.find(item => item.productId === line.productId && item.variantId === line.variantId);
+    if (!priced) v.fail(409, 'quote_changed');
+    return { ...line, unitPriceSen: priced.unitPriceSen, grossSen: priced.grossSen };
+  });
+  return { ...publication, lines, snapshot };
+}
+
+async function snapshotCart(c, context, input, customerId, token) {
+  const snapshot = await loadPricingSnapshot(c, { workspaceId: context.workspace_id,
+    companyId: context.company_id, snapshotId: token.snapshotId, customerId,
+    requestDigest: token.snapshotRequestDigest });
+  const publication = await publishedCart(c, context.company_id, input, snapshot);
+  return { ...publication, snapshot, lines: publication.lines.map(line => {
+    const priced = snapshot.lines.find(item => item.productId === line.productId && item.variantId === line.variantId);
+    return { ...line, unitPriceSen: priced.unitPriceSen, grossSen: priced.grossSen };
+  }) };
 }
 
 function orderOutput(row, lines = []) {
@@ -322,6 +383,7 @@ async function expireIfNeeded(c, order) {
     'SELECT * FROM myfin.customer_order_requests WHERE company_id=$1 AND id=$2', [order.company_id, order.id],
   )).rows[0];
   await releaseOrderReservations(c, order.company_id, order.id, 'expired');
+  await releaseOrderPromotionReservations(c, { companyId: order.company_id, orderId: order.id, reason: 'expired' });
   await c.query(
     `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,request_id,request_digest,action,from_status,to_status,note)
      VALUES($1,$2,$3,$4,'system',$5,$6,'expired',$7,'expired','Order expired before payment.')`,
@@ -404,14 +466,20 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
 
   app.post('/api/public/order-requests/quote', { config: { rateLimit: rate(30) } }, async (req, reply) => {
     const context = publicContext(req);
-    const input = v.parse(cartSchema, req.body);
+    const input = v.parse(quoteSchema, req.body);
     return db.transaction(async c => {
+      await requirePublishedStorefrontPrivacy(c, context.company_id);
+      const session = await guestSession(c, req, reply, context.hostname, true);
+      const customer = await customerSession(c, req);
       const location = await locationFor(c, context.company_id, input);
-      const priced = await pricedCart(c, context.company_id, input);
+      const priced = await pricedCart(c, context, input, customer?.customerId || '', authOptions.voucherHmacSecret);
       const delivery = await deliveryFor(c, context.company_id, input, priced);
-      await guestSession(c, req, reply, context.hostname, true);
       const quote = quoteFor(input, location, priced, delivery);
-      return { quote, quoteToken: quoteToken(authOptions.secret, context, input, quote) };
+      return { quote, quoteToken: quoteToken(authOptions.secret, context, input, quote, {
+        snapshotId: priced.snapshot.id, snapshotRequestDigest: priced.snapshot.requestDigest,
+        principalDigest: principalDigest(customer, session),
+        expiresAt: new Date(priced.snapshot.expiresAt).getTime(),
+      }) };
     });
   });
 
@@ -450,12 +518,14 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         return { order: orderOutput({ ...await expireIfNeeded(c, existing), ...location },
           await orderLines(c, context.company_id, existing.id)) };
       }
+      const binding = { principalDigest: principalDigest(customer, session) };
+      const token = verifyQuoteToken(authOptions.secret, input.quoteToken, context, input, null, binding);
       const location = await locationFor(c, context.company_id, input);
       if (input.serviceMode !== 'table' && !guest.email && !guest.phone) v.fail(400, 'pickup_contact_required');
-      const priced = await pricedCart(c, context.company_id, input);
+      const priced = await snapshotCart(c, context, input, customer?.customerId || '', token);
       const delivery = await deliveryFor(c, context.company_id, input, priced);
       const quote = quoteFor(input, location, priced, delivery);
-      verifyQuoteToken(authOptions.secret, input.quoteToken, context, input, quote);
+      verifyQuoteToken(authOptions.secret, input.quoteToken, context, input, quote, binding);
       const orderId = randomUUID();
       let code;
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -471,9 +541,10 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
           company_id,id,public_code,location_id,customer_id,guest_name,guest_email,guest_phone,notes,currency,
           subtotal,discount_amount,tax,tax_rate,total_before_rounding,rounding,total,
           guest_session_digest,idempotency_key,request_digest,expires_at,service_mode,delivery_zone_id,
-          delivery_zone_snapshot,delivery_address_snapshot,delivery_contact_purpose,delivery_fee_sen)
+          delivery_zone_snapshot,delivery_address_snapshot,delivery_contact_purpose,delivery_fee_sen,
+          pricing_snapshot_id)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-           $22,$23,$24,$25,$26,$27) RETURNING *`,
+           $22,$23,$24,$25,$26,$27,$28) RETURNING *`,
         [context.company_id, orderId, code, location.id, customer?.customerId || null,
           guest.name, guest.email, guest.phone, input.notes, priced.currency,
           quote.subtotal, quote.discountAmount, quote.tax,
@@ -485,13 +556,13 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
             leadTimeMinutes: Number(delivery.zone.lead_time_minutes),
             serviceInstructions: delivery.zone.service_instructions }) : '{}',
           delivery ? JSON.stringify(delivery.address) : '{}', delivery ? 'order_delivery' : '',
-          delivery ? Number(delivery.zone.fee_sen) : 0],
+          delivery ? Number(delivery.zone.fee_sen) : 0, priced.snapshot.id],
       )).rows[0];
       for (const item of priced.lines) await c.query(
         `INSERT INTO myfin.customer_order_lines(company_id,order_id,line_no,product_id,variant_id,description,variant_name,sku,unit,quantity,unit_price,line_total)
          VALUES($1,$2,$3,$4,nullif($5,''),$6,$7,$8,$9,$10,$11,$12)`,
         [context.company_id, orderId, item.lineNo, item.productId, item.variantId, item.description,
-          item.variant, item.sku, item.unit, item.qty, item.price, Math.round(cents(item.price) * item.qty) / 100],
+          item.variant, item.sku, item.unit, item.qty, item.unitPriceSen / 100, item.grossSen / 100],
       );
       await c.query(
         `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,customer_actor_id,request_id,request_digest,action,to_status)
@@ -499,6 +570,14 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         [context.company_id, randomUUID(), orderId, customer ? 'customer' : 'guest',
           customer?.customerId || null, requestId, requestDigest],
       );
+      try {
+        await reserveOrderPromotions(c, { companyId: context.company_id, orderId,
+          snapshotId: priced.snapshot.id, expiresAt });
+      } catch (error) {
+        if (/promotion|voucher|pricing_snapshot/i.test(String(error?.message || '')))
+          v.fail(409, 'promotion_unavailable');
+        throw error;
+      }
       reply.code(201);
       return { order: orderOutput({ ...row, location_name: location.name, fulfillment_mode: location.fulfillment_mode,
         table_label: location.table_label, pickup_instructions: location.pickup_instructions },
@@ -542,4 +621,4 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
 }
 
 export { orderOutput, orderLines, expireIfNeeded, orderRequestDigest, pricedCart, quoteToken,
-  totalsWithDelivery, verifyQuoteToken };
+  totalsFromSnapshot, totalsWithDelivery, verifyQuoteToken };

@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import { autoTable } from 'jspdf-autotable';
 import { money } from '../domain/pos.js';
+import { documentDiscountLabel } from '../domain/documentPresentation.js';
 import { safeFilename } from './download.js';
 
 const rgb = value => /^#[0-9a-f]{6}$/i.test(value || '') ? [1,3,5].map(offset=>parseInt(value.slice(offset,offset+2),16)) : [22,78,66];
@@ -83,7 +84,7 @@ export async function createDocumentPdf(doc, options = {}) {
     didDrawPage(data){if(!first)runningHeader();first=false;},
   });
   y=pdf.lastAutoTable.finalY+6;
-  const totals=[['Subtotal',doc.subtotal],...(doc.discountAmount?[[`Discount (${doc.discount}%)`,-doc.discountAmount]]:[]),...(doc.tax||doc.taxRate?[[`Tax (${doc.taxRate}%)`,doc.tax]]:[]),...(doc.deliveryFee!=null?[['Delivery fee',doc.deliveryFee]]:[]),...(doc.totalBeforeRounding!=null?[['Total before rounding',doc.totalBeforeRounding]]:[]),...(doc.rounding!=null?[['Rounding',signedAmount(doc.rounding)]]:[]),[doc.settings.labels.total,doc.total],...(doc.paymentMethod?[['Payment',doc.paymentMethod]]:[]),...(doc.received!=null?[['Received',doc.received]]:[]),...(doc.change!=null?[['Change',doc.change]]:[]),...(!receipt&&doc.amountPaid?[['Payments recorded',doc.amountPaid]]:[]),...(!receipt&&doc.kind==='Invoice'&&!doc.isDraft&&doc.balance!=null?[['Balance due',doc.balance]]:[])];
+  const totals=[['Subtotal',doc.subtotal],...(doc.discountAmount?[[documentDiscountLabel(doc),-doc.discountAmount]]:[]),...(doc.tax||doc.taxRate?[[`Tax (${doc.taxRate}%)`,doc.tax]]:[]),...(doc.deliveryFee!=null?[['Delivery fee',doc.deliveryFee]]:[]),...(doc.totalBeforeRounding!=null?[['Total before rounding',doc.totalBeforeRounding]]:[]),...(doc.rounding!=null?[['Rounding',signedAmount(doc.rounding)]]:[]),[doc.settings.labels.total,doc.total],...(doc.paymentMethod?[['Payment',doc.paymentMethod]]:[]),...(doc.received!=null?[['Received',doc.received]]:[]),...(doc.change!=null?[['Change',doc.change]]:[]),...(!receipt&&doc.amountPaid?[['Payments recorded',doc.amountPaid]]:[]),...(!receipt&&doc.kind==='Invoice'&&!doc.isDraft&&doc.balance!=null?[['Balance due',doc.balance]]:[])];
   for(const [label,value] of totals)line(label+': '+(typeof value==='number'?amount(value):value),{bold:label===doc.settings.labels.total,point:label===doc.settings.labels.total?(receipt?10:12):size});
   section('Payment instructions',doc.paymentInstructions);
   if(qr){ensure(34);pdf.addImage(qr.data,'PNG',margin,y+3,28,28);y+=34;}

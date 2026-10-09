@@ -43,11 +43,12 @@ test('runtime student grants preserve immutable histories and trigger-owned coun
   for (const source of grants) {
     assert.match(source,/GRANT SELECT,INSERT,UPDATE ON myfin\.student_eligibilities,myfin\.promotions/);
     assert.match(source,/GRANT SELECT,INSERT ON myfin\.student_eligibility_events,myfin\.promotion_versions/);
-    assert.match(source,/GRANT SELECT ON myfin\.promotion_usage_counters,myfin\.promotion_voucher_usage_counters/);
+    assert.match(source,/GRANT SELECT ON myfin\.promotion_usage_counters,myfin\.promotion_customer_usage_counters,[\s\S]*myfin\.promotion_voucher_usage_counters,myfin\.promotion_voucher_customer_usage_counters/);
     for (const table of ['student_eligibility_events','promotion_versions','promotion_version_products',
       'promotion_version_categories','promotion_version_customers','promotion_voucher_versions'])
       assert.doesNotMatch(source,new RegExp(`GRANT[^;]*(?:UPDATE|DELETE)[^;]*myfin\\.${table}`));
-    for (const table of ['promotion_usage_counters','promotion_voucher_usage_counters'])
+    for (const table of ['promotion_usage_counters','promotion_customer_usage_counters',
+      'promotion_voucher_usage_counters','promotion_voucher_customer_usage_counters'])
       assert.doesNotMatch(source,new RegExp(`GRANT[^;]*(?:INSERT|UPDATE|DELETE)[^;]*myfin\\.${table}`));
   }
 });

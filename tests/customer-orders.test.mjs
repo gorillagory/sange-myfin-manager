@@ -30,6 +30,8 @@ test('counter tender must match every accepted quote total', () => {
   assert.equal(customerOrderTenderMatches({...delivery},delivery),true);
   assert.equal(customerOrderTenderMatches({...delivery,deliveryFee:2.50,total:20.50},delivery),false);
   assert.equal(customerOrderTenderMatches({...totals}, {...totals,deliveryFee:0}),true);
+  assert.equal(customerOrderTenderMatches({...totals,pricingSnapshotId:'snapshot-a'},totals,'snapshot-a'),true);
+  assert.equal(customerOrderTenderMatches({...totals},totals,'snapshot-a'),false);
 });
 
 test('summary counts preserve explicit active and derive it when absent', () => {

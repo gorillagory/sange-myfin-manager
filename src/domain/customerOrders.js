@@ -65,9 +65,10 @@ export function validCustomerOrderCart(items) {
   );
 }
 
-export function customerOrderTenderMatches(sale, totals = {}) {
+export function customerOrderTenderMatches(sale, totals = {}, pricingSnapshotId = '') {
   const fields = ['subtotal','discountAmount','tax','taxRate','totalBeforeRounding','rounding','total'];
   return fields.every(field => Number(sale?.[field]) === Number(totals?.[field])) &&
     Number(sale?.deliveryFee || 0) === Number(totals?.deliveryFee || 0) &&
-    Number(sale?.discount || 0) === Number(totals?.discount || 0);
+    Number(sale?.discount || 0) === Number(totals?.discount || 0) &&
+    (!pricingSnapshotId || sale?.pricingSnapshotId === pricingSnapshotId);
 }

@@ -94,6 +94,6 @@ test('staff fulfillment sees the delivery address while customer status remains 
   assert.match(ordersUi, /serviceInstructions/);assert.match(ordersUi, /removed under the retention policy/);
   assert.match(statusUi, /address\.postcode/);assert.match(statusUi, /address\.city/);
   assert.doesNotMatch(statusUi, /addressLine1|addressLine2/);
-  assert.match(posUi, /deliveryFee:Number\(locked\.deliveryFee\)/);
+  assert.match(posUi, /lockedTotals:locked,pricingSnapshotId/);
   assert.match(posUi, /Delivery fee/);
 });

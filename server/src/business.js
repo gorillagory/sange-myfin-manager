@@ -215,11 +215,67 @@ async function saveProduct(c, companyId, data, create = false) {
   }
   return { ...p, _adjustments: movements };
 }
+async function acceptedOrderPricing(c, companyId, orderId, sale) {
+  if (!orderId || !sale.pricingSnapshotId) v.fail(409, "customer_order_checkout_changed");
+  const order = (await c.query(
+    `SELECT o.*,s.workspace_id,s.customer_id AS snapshot_customer_id,s.currency_code,
+            s.subtotal_sen,s.discount_sen,s.taxable_sen,s.tax_sen,s.tax_basis_points,
+            s.rounding_sen AS snapshot_rounding_sen,s.total_sen
+       FROM myfin.customer_order_requests o
+       JOIN myfin.pricing_snapshots s ON s.company_id=o.company_id AND s.id=o.pricing_snapshot_id
+      WHERE o.company_id=$1 AND o.id=$2 AND s.id=$3 FOR SHARE OF s`,
+    [companyId, orderId, sale.pricingSnapshotId],
+  )).rows[0];
+  if (!order || order.customer_id !== order.snapshot_customer_id || Number(order.snapshot_rounding_sen) !== 0)
+    v.fail(409, "customer_order_checkout_changed");
+  const expected = {
+    subtotal: Number(order.subtotal), discountAmount: Number(order.discount_amount),
+    tax: Number(order.tax), taxRate: Number(order.tax_rate), discount: 0,
+    ...(order.service_mode === "delivery" ? { deliveryFee: Number(order.delivery_fee_sen) / 100 } : {}),
+    totalBeforeRounding: Number(order.total_before_rounding), rounding: Number(order.rounding),
+    total: Number(order.total),
+  };
+  const feeSen = Number(order.delivery_fee_sen || 0);
+  if (cents(expected.subtotal) !== Number(order.subtotal_sen) ||
+      cents(expected.discountAmount) !== Number(order.discount_sen) ||
+      cents(expected.tax) !== Number(order.tax_sen) ||
+      Math.round(expected.taxRate * 100) !== Number(order.tax_basis_points) ||
+      cents(expected.totalBeforeRounding) !== Number(order.total_sen) + feeSen ||
+      cents(expected.total) !== cents(expected.totalBeforeRounding) + cents(expected.rounding))
+    v.fail(409, "customer_order_checkout_changed");
+  const lines = (await c.query(
+    `SELECT line_no,product_id,variant_id,quantity_milli,unit_price_sen,gross_sen
+       FROM myfin.pricing_snapshot_lines
+      WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3 ORDER BY line_no`,
+    [order.workspace_id, companyId, sale.pricingSnapshotId],
+  )).rows;
+  if (lines.length !== sale.items.length || lines.some((line, index) => {
+    const item = sale.items[index];
+    return item.productId !== line.product_id || (item.variantId || "") !== (line.variant_id || "") ||
+      Math.round(Number(item.qty) * 1000) !== Number(line.quantity_milli) ||
+      cents(item.price) !== Number(line.unit_price_sen) ||
+      Math.round(Number(line.unit_price_sen) * Number(line.quantity_milli) / 1000) !== Number(line.gross_sen);
+  })) v.fail(409, "customer_order_checkout_changed");
+  const discounts = (await c.query(
+    `SELECT display_name,discount_sen FROM myfin.pricing_snapshot_discounts
+      WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3 ORDER BY sequence`,
+    [order.workspace_id, companyId, sale.pricingSnapshotId],
+  )).rows.map(row => ({ name: row.display_name, amount: Number(row.discount_sen) / 100 }));
+  return { totals: expected, discounts };
+}
 export async function checkout(c, who, companyId, input, approval=null, options={}) {
   const sale = v.parse(v.sale, input);
-  let totals;try{totals=saleTotalsFor(sale);}catch{v.fail(400,"invalid_sale_rounding");}
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
+  if (sale.pricingSnapshotId && (!options.acceptedOrderQuote || !options.reservationOrderId))
+    v.fail(403, "pricing_snapshot_source_required");
+  let totals,lockedPricing=null;
+  if (sale.pricingSnapshotId) {
+    lockedPricing = await acceptedOrderPricing(c, companyId, options.reservationOrderId, sale);
+    totals = lockedPricing.totals;
+  } else {
+    try { totals=saleTotalsFor(sale); } catch { v.fail(400,"invalid_sale_rounding"); }
+  }
   if (
     sale.number !== `POS-${sale.id.toUpperCase()}` ||
     sale.businessDate !== businessDate(sale.date) ||
@@ -321,10 +377,11 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     cashierName: who.username,
     stockShortage: shortage,
     storeSnapshot:expectedStore,companySnapshot,templateSnapshot:template.settings,
+    ...(lockedPricing ? { promotionDiscounts: lockedPricing.discounts } : {}),
   };
   await c.query(
-    "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data) VALUES($1,$2,$3,'pos',$4,$5,$6)",
-    [companyId, sale.id, who.id, sale.total, fingerprint, saved],
+    "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data,pricing_snapshot_id) VALUES($1,$2,$3,'pos',$4,$5,$6,$7)",
+    [companyId, sale.id, who.id, sale.total, fingerprint, saved, sale.pricingSnapshotId || null],
   );
   await assertOrderCreated(c, companyId, sale.id);
   await consumeRecipeStock(c, {

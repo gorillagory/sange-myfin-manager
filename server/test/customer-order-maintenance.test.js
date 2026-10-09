@@ -19,6 +19,7 @@ test('scheduled expiry is bounded, concurrent-safe and tenant-keyed for every ac
     if (sql.includes('SELECT o.company_id,o.id,o.status,o.version')) return { rowCount:2,rows:orders };
     if (sql.includes("SET status='expired'")) return { rowCount:1,rows:[{ id:params[1] }] };
     if (sql.includes('UPDATE myfin.customer_order_reservations')) return { rowCount:1,rows:[] };
+    if (sql.includes('release_order_promotion_reservations')) return { rowCount:1,rows:[{ count:1 }] };
     if (sql.includes('INSERT INTO myfin.customer_order_events')) return { rowCount:1,rows:[] };
     throw new Error(`Unexpected SQL: ${sql}`);
   } };
@@ -40,6 +41,11 @@ test('scheduled expiry is bounded, concurrent-safe and tenant-keyed for every ac
   assert.deepEqual(releases.map(call => call.params), [
     ['company-a','ready-a','expired'],['company-b','accepted-b','expired'],
   ]);
+  const promotionReleases = calls.filter(call => call.sql.includes('release_order_promotion_reservations'));
+  assert.deepEqual(promotionReleases.map(call => call.params), [
+    ['company-a','ready-a','expired'],['company-b','accepted-b','expired'],
+  ]);
+  assert.ok(calls.indexOf(promotionReleases[0]) > calls.indexOf(releases[0]));
   const events = calls.filter(call => call.sql.includes('INSERT INTO myfin.customer_order_events'));
   assert.deepEqual(events.map(call => [call.params[0],call.params[2],call.params[6]]), [
     ['company-a','ready-a','ready'],['company-b','accepted-b','accepted'],

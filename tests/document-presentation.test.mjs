@@ -55,6 +55,17 @@ test('delivery receipt channels disclose the snapshotted fee inside the collecte
  const lines=receiptLines(sale);assert(lines.includes('Delivery fee: RM 2.53'));assert(lines.includes('TOTAL: RM 22.45'));
  const pdf=await createDocumentPdf(view,{paperWidth:'58'});assert.match(content(pdf).join('\n'),/Delivery fee/);
 });
+test('promotion names survive receipt text and PDF rendering without a fake percentage',async()=>{
+ const items=[{desc:'Promoted item',qty:1,price:20,unit:'item'}];
+ const sale={id:'promotion-receipt',schemaVersion:3,date:'2026-10-09T02:00:00Z',number:'POS-PROMOTION',type:'Invoice',status:'Paid',items,
+  subtotal:20,discount:0,discountAmount:1.25,tax:0,taxRate:0,totalBeforeRounding:18.75,rounding:0,total:18.75,
+  paymentMethod:'Cash',received:20,change:1.25,promotionDiscounts:[{name:'Campus reward',amount:1.25}],
+  storeSnapshot:{name:'Promotion Shop',currency:'RM',paperWidth:'58',footer:'Thank you'}};
+ const view=presentReceipt(sale), lines=documentTextLines(view).join('\n');
+ assert.match(lines,/Campus reward: -RM 1\.25/);assert.doesNotMatch(lines,/Discount \(0%\)/);
+ const pdf=await createDocumentPdf(view,{paperWidth:'58'}), text=content(pdf).join('\n');
+ assert.match(text,/Campus reward/);assert.doesNotMatch(text,/Discount \(0%\)/);
+});
 test('A4 PDF is selectable text with repeated table headers, wrapped long descriptions and numbered pages',async()=>{
  const doc=presentDocument({...draft(),items:Array.from({length:85},(_,index)=>({desc:`Service ${index+1}: `+'Long detailed description with enough content to wrap across the page width. '.repeat(3),qty:1,unit:'hours',price:10})),notes:'Final notes retained after the last item.'},company,customer,template);
  const pdf=await createDocumentPdf(doc);assert(pdf.getNumberOfPages()>2);assert(Math.abs(pdf.internal.pageSize.getWidth()-210)<0.1);assert(Math.abs(pdf.internal.pageSize.getHeight()-297)<0.1);

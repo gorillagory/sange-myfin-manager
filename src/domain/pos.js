@@ -51,6 +51,22 @@ function deliveryFeeCents(value) {
     throw new Error('The delivery fee must be an exact amount in sen.');
   return amountCents;
 }
+function exactDecimalUnits(value, scale) {
+  const match = String(value ?? '').trim().match(/^(\d+)(?:\.(\d+))?$/);
+  const fraction = match?.[2] || '';
+  if (!match || fraction.length > scale) throw new Error('The accepted quote totals are invalid.');
+  return BigInt(match[1]) * (10n ** BigInt(scale)) + BigInt(fraction.padEnd(scale, '0') || '0');
+}
+function lockedSubtotalCents(items) {
+  const total = items.reduce((sum, item) => {
+    const priceSen = exactDecimalUnits(item.price, 2);
+    const quantityMilli = exactDecimalUnits(item.qty, 3);
+    if (quantityMilli <= 0n) throw new Error('The accepted quote totals are invalid.');
+    return sum + ((priceSen * quantityMilli + 500n) / 1000n);
+  }, 0n);
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('The accepted quote totals are invalid.');
+  return Number(total);
+}
 export function checkoutTotalsFor(items, taxRate = 0, discount = 0, deliveryFee) {
   const totals = totalsFor(items, taxRate, discount), feeCents = deliveryFeeCents(deliveryFee);
   return { ...totals, ...(deliveryFee !== undefined ? { deliveryFee: feeCents / 100 } : {}),
@@ -59,15 +75,38 @@ export function checkoutTotalsFor(items, taxRate = 0, discount = 0, deliveryFee)
 export function saleTotalsFor(sale = {}) {
   const hasBefore=sale.totalBeforeRounding!==undefined,hasAdjustment=sale.rounding!==undefined,hasDeliveryFee=sale.deliveryFee!==undefined;
   if(sale.schemaVersion===2){if(hasBefore||hasAdjustment||hasDeliveryFee)throw new Error('Legacy receipts cannot contain counter-rounding or delivery-fee fields.');return totalsFor(sale.items,sale.taxRate,sale.discount);}
-  if(sale.schemaVersion===3){if(!hasBefore||!hasAdjustment)throw new Error('Counter-rounding fields are required.');return checkoutTotalsFor(sale.items,sale.taxRate,sale.discount,hasDeliveryFee?sale.deliveryFee:undefined);}
+  if(sale.schemaVersion===3){if(!hasBefore||!hasAdjustment)throw new Error('Counter-rounding fields are required.');if(sale.pricingSnapshotId)return lockedCheckoutTotals(sale.items,sale);return checkoutTotalsFor(sale.items,sale.taxRate,sale.discount,hasDeliveryFee?sale.deliveryFee:undefined);}
   throw new Error('The receipt version is not supported.');
 }
-export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, deliveryFee, overrideReason = "" }) {
+function lockedCheckoutTotals(items, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The accepted quote is incomplete.');
+  const required = ['subtotal','discountAmount','tax','taxRate','totalBeforeRounding','rounding','total'];
+  const totals = Object.fromEntries(required.map(key => [key, Number(value[key])]));
+  if (required.some(key => !Number.isFinite(totals[key])) || totals.subtotal < 0 || totals.discountAmount < 0 ||
+      totals.discountAmount > totals.subtotal || totals.tax < 0 || totals.taxRate < 0 || totals.taxRate > 100 ||
+      totals.totalBeforeRounding < 0 || totals.total <= 0 || Math.abs(totals.rounding) > 0.02)
+    throw new Error('The accepted quote totals are invalid.');
+  const moneyFields = ['subtotal','discountAmount','tax','totalBeforeRounding','rounding','total'];
+  if (moneyFields.some(key => Math.abs(totals[key] * 100 - cents(totals[key])) >= 1e-6))
+    throw new Error('The accepted quote totals are invalid.');
+  const deliveryFee = value.deliveryFee === undefined ? undefined : Number(value.deliveryFee);
+  const feeCents = deliveryFeeCents(deliveryFee);
+  const subtotalCents = lockedSubtotalCents(items);
+  if (subtotalCents !== cents(totals.subtotal) ||
+      cents(totals.subtotal) - cents(totals.discountAmount) + cents(totals.tax) + feeCents !== cents(totals.totalBeforeRounding) ||
+      cents(totals.totalBeforeRounding) + cents(totals.rounding) !== cents(totals.total))
+    throw new Error('The accepted quote totals are invalid.');
+  return { ...totals, discount: 0, ...(deliveryFee === undefined ? {} : { deliveryFee }) };
+}
+export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, deliveryFee, lockedTotals, pricingSnapshotId = '', overrideReason = "" }) {
   if (!items.length) throw new Error('Add an item to this order first.');
   if (overrideReason.trim() && (overrideReason.trim().length < 3 || overrideReason.trim().length > 1000)) throw new Error('Use 3 to 1,000 characters for the manager override reason.');
   if (!company?.id || !user?.uid) throw new Error('Sign in and choose a store first.');
   if (!['Cash', 'QR Pay', 'Card'].includes(method)) throw new Error('Choose a payment method.');
-  const totals = checkoutTotalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount, deliveryFee);
+  if (Boolean(lockedTotals) !== Boolean(pricingSnapshotId)) throw new Error('The accepted quote is incomplete.');
+  const totals = lockedTotals
+    ? lockedCheckoutTotals(items, lockedTotals)
+    : checkoutTotalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount, deliveryFee);
   if (totals.total <= 0) throw new Error('The order total must be greater than zero.');
   const tender = method === 'Cash' ? cents(received) : cents(totals.total);
   if (!Number.isFinite(tender) || tender < cents(totals.total)) throw new Error('Enter enough cash to cover this order.');
@@ -76,7 +115,7 @@ export function createSale({ id, items, company, user, method, received, confirm
   if (!validEmail(customerEmail)) throw new Error('Enter a valid customer email.');
   const customerId = customer?.id || (customerEmail ? `pos-${id}` : '');
   const date = new Date().toISOString();
-  return { id, schemaVersion: 3, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
+  return { id, schemaVersion: 3, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, ...(pricingSnapshotId ? { pricingSnapshotId } : {}), paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
 }
 export function deductItems(products, items, allowShortage = false) {
   const updates = new Map(), movements = [];

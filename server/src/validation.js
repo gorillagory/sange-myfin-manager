@@ -196,6 +196,7 @@ export const sale = z.strictObject({
   totalBeforeRounding: opt(number),
   rounding: opt(rounding),
   deliveryFee: opt(senAmount),
+  pricingSnapshotId: opt(z.union([id, z.literal("")])),
   paymentMethod: z.enum(["Cash", "QR Pay", "Card"]),
   received: number,
   change: number,

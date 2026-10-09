@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonical, cents } from '../../src/domain/pos.js';
-import { manager, owner, requireCapability } from './access.js';
+import { manager, owner, publicTransaction, requireCapability } from './access.js';
 import { assertUnreservedSaleStock, activeReservationQuantities, releaseOrderReservations } from './customer-order-reservations.js';
 import { expireIfNeeded, orderLines, orderOutput } from './storefront-public.js';
 import { redactExpiredOrderContacts } from './storefront-privacy.js';
+import { consumeOrderPromotionReservations, extendOrderPromotionReservations,
+  releaseOrderPromotionReservations } from './pricing-engine.js';
 import * as v from './validation.js';
 
 const activeStatuses = ['awaiting_acceptance','accepted','preparing','ready'];
@@ -46,7 +48,12 @@ async function expireCompany(c, companyId) {
 async function findOrder(c, companyId, id, lock = false) {
   const result = await c.query(
     `SELECT o.*,l.name AS location_name,l.fulfillment_mode,l.table_label,l.pickup_instructions,
-            p.sale_id,fo.status AS fulfillment_status
+            p.sale_id,fo.status AS fulfillment_status,
+            coalesce((SELECT jsonb_agg(jsonb_build_object('name',d.display_name,
+              'amount',d.discount_sen::numeric/100) ORDER BY d.sequence)
+              FROM myfin.pricing_snapshot_discounts d
+              WHERE d.company_id=o.company_id AND d.snapshot_id=o.pricing_snapshot_id),'[]'::jsonb)
+              AS promotion_discounts
        FROM myfin.customer_order_requests o
        JOIN myfin.shop_locations l ON l.company_id=o.company_id AND l.id=o.location_id
        LEFT JOIN myfin.customer_order_payments p ON p.company_id=o.company_id AND p.order_id=o.id
@@ -78,6 +85,8 @@ function staffOutput(row, lines) {
         variant: line.variant_name || '', sku: line.sku || '', desc: line.description,
         price: Number(line.unit_price), unit: line.unit, qty: Number(line.quantity) })),
       customer: { id: '', name: row.guest_name || '', email: row.guest_email || '', phone: row.guest_phone || '' },
+      pricingSnapshotId: row.pricing_snapshot_id || '',
+      discounts: row.promotion_discounts || [],
       totals: { subtotal: Number(row.subtotal), discountAmount: Number(row.discount_amount), tax: Number(row.tax),
         taxRate: Number(row.tax_rate), discount: 0, totalBeforeRounding: Number(row.total_before_rounding),
         rounding: Number(row.rounding), total: Number(row.total),
@@ -130,6 +139,7 @@ function assertTenderMatches(order, lines, sale) {
   const actual = sale.items.map(line => ({ productId: line.productId, variantId: line.variantId || '',
     quantity: Number(line.qty), price: Number(line.price) }));
   const fieldsMatch = sale.company_id === order.company_id && sale.storeSnapshot?.currency === order.currency &&
+    (sale.pricingSnapshotId || null) === (order.pricing_snapshot_id || null) &&
     sale.subtotal === Number(order.subtotal) &&
     sale.discountAmount === Number(order.discount_amount) && sale.discount === 0 &&
     sale.tax === Number(order.tax) && sale.taxRate === Number(order.tax_rate) &&
@@ -149,6 +159,7 @@ async function canonicalTenderSale(c, order, lines, sale) {
   )).rows[0]?.client_id || '';
   return {
     ...saleWithoutDeliveryFee,
+    ...(order.pricing_snapshot_id ? { pricingSnapshotId: order.pricing_snapshot_id } : {}),
     ...(order.service_mode === 'delivery' ? { deliveryFee: Number(order.delivery_fee_sen || 0) / 100 } : {}),
     items: lines.map(line => ({ productId: line.product_id, variantId: line.variant_id || '',
       variant: line.variant_name || '', sku: line.sku || '', desc: line.description,
@@ -282,7 +293,6 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
       row.expires_at = expiresAt;
       await reserve(c, companyId, row, lines);
     }
-    if (['cancelled','expired'].includes(change.status)) await releaseOrderReservations(c, companyId, id, change.status);
     const updated = (await c.query(
       `UPDATE myfin.customer_order_requests SET status=$3,version=$4,updated_at=now(),
          accepted_at=CASE WHEN $3='accepted' THEN now() ELSE accepted_at END,
@@ -291,6 +301,12 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
       [companyId, id, change.status, nextVersion, change.pickupAt || null, expiresAt, row.version],
     )).rows[0];
     if (!updated) v.fail(409, 'customer_order_changed');
+    if (change.status === 'accepted')
+      await extendOrderPromotionReservations(c, { companyId, orderId: id, expiresAt });
+    if (['cancelled','expired'].includes(change.status)) {
+      await releaseOrderReservations(c, companyId, id, change.status);
+      await releaseOrderPromotionReservations(c, { companyId, orderId: id, reason: change.status });
+    }
     await c.query(
       `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,staff_actor_id,request_id,request_digest,action,from_status,to_status,note)
        VALUES($1,$2,$3,$4,'staff',$5,$6,$7,'status_changed',$8,$9,$10)`,
@@ -314,7 +330,14 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
       if (replay.request_digest !== requestDigest) v.fail(409, 'request_id_reused');
       const current = await findOrder(c, companyId, id);
       if (current.sale_id !== replay.sale_id) v.fail(409, 'request_id_reused');
-      return { order: staffOutput(current, await orderLines(c, companyId, id)), saleId: replay.sale_id };
+      const saved = (await c.query(
+        'SELECT company_id,id,data FROM myfin.transactions WHERE company_id=$1 AND id=$2',
+        [companyId, replay.sale_id],
+      )).rows[0];
+      if (!saved) v.fail(409, 'request_id_reused');
+      return { order: staffOutput(current, await orderLines(c, companyId, id)),
+        sale: publicTransaction({ ...saved.data, id:saved.id, company_id:saved.company_id }, req.identity),
+        saleId: replay.sale_id };
     }
     const order = await findOrder(c, companyId, id, true);
     if (order.version !== input.expectedVersion) v.fail(409, 'customer_order_changed');
@@ -337,6 +360,8 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     )).rows[0];
     if (!updated) v.fail(409, 'customer_order_changed');
     await releaseOrderReservations(c, companyId, id, 'paid');
+    await consumeOrderPromotionReservations(c, { companyId, orderId: id,
+      saleId: input.sale.id, occurredAt: new Date().toISOString() });
     await c.query(
       `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,staff_actor_id,request_id,request_digest,action,from_status,to_status,note)
        VALUES($1,$2,$3,$4,'staff',$5,$6,$7,'paid',$8,'paid','Paid at counter')`,

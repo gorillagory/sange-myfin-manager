@@ -60,14 +60,19 @@ test('delivery quote tokens bind zone and every address field without exposing t
       city:'Kuala Lumpur', state:'Kuala Lumpur', countryCode:'MY', instructions:'Lobby' } } };
   const quote = { locationId:'counter', serviceMode:'delivery', subtotal:19.92, deliveryFee:2.53,
     totalBeforeRounding:22.45, rounding:0, total:22.45 };
-  const token = quoteToken(secret, context, input, quote);
+  const binding = { snapshotId:'snapshot-a', snapshotRequestDigest:'a'.repeat(64),
+    principalDigest:'principal-a', expiresAt:Date.now()+60_000 };
+  const token = quoteToken(secret, context, input, quote, binding);
   assert.doesNotMatch(token, /Jalan|Lobby/);
-  assert.doesNotThrow(() => verifyQuoteToken(secret, token, context, input, quote));
+  assert.doesNotThrow(() => verifyQuoteToken(secret, token, context, input, quote,
+    { principalDigest:binding.principalDigest }));
   assert.throws(() => verifyQuoteToken(secret, token, context,
-    { ...input, delivery:{ ...input.delivery, address:{ ...input.delivery.address, postcode:'50001' } } }, quote),
+    { ...input, delivery:{ ...input.delivery, address:{ ...input.delivery.address, postcode:'50001' } } }, quote,
+    { principalDigest:binding.principalDigest }),
   error => error.statusCode === 409 && error.message === 'quote_changed');
   assert.throws(() => verifyQuoteToken(secret, token, context,
-    { ...input, delivery:{ ...input.delivery, zoneId:'other' } }, quote),
+    { ...input, delivery:{ ...input.delivery, zoneId:'other' } }, quote,
+    { principalDigest:binding.principalDigest }),
   error => error.statusCode === 409 && error.message === 'quote_changed');
   const first = orderRequestDigest(context, { ...input, quoteToken:token });
   assert.equal(first, orderRequestDigest(context, { ...input, quoteToken:token }));
@@ -79,7 +84,7 @@ test('delivery quote tokens bind zone and every address field without exposing t
 test('delivery fee is added in integer sen before the existing five-sen rounding rule', () => {
   const result = totalsWithDelivery({ subtotal:19.91, discountAmount:0, tax:0, taxRate:0,
     totalBeforeRounding:19.91, rounding:-0.01, total:19.9 }, 253);
-  assert.deepEqual(result, { subtotal:19.91, discountAmount:0, tax:0, taxRate:0,
+  assert.deepEqual(result, { subtotal:19.91, discountAmount:0, discount:0, tax:0, taxRate:0,
     totalBeforeRounding:22.44, rounding:0.01, total:22.45, deliveryFee:2.53 });
 });
 
@@ -89,15 +94,24 @@ test('reviewed quotes are host, cart, totals and expiry bound by an authenticate
   const input = { locationId: 'counter', serviceMode: 'pickup',
     items: [{ productId: 'latte', variantId: '', quantity: 2 }] };
   const quote = { locationId: 'counter', serviceMode: 'pickup', total: 19.9, rounding: -0.01 };
-  const token = quoteToken(secret, context, input, quote);
-  assert.ok(token.length < 500);
-  assert.doesNotThrow(() => verifyQuoteToken(secret, token, context, input, quote));
-  assert.throws(() => verifyQuoteToken(secret, token, context, input, { ...quote, total: 20 }),
+  const binding = { snapshotId:'snapshot-a', snapshotRequestDigest:'b'.repeat(64),
+    principalDigest:'principal-a', expiresAt:Date.now()+60_000 };
+  const token = quoteToken(secret, context, input, quote, binding);
+  assert.ok(token.length < 1000);
+  assert.doesNotThrow(() => verifyQuoteToken(secret, token, context, input, quote,
+    { principalDigest:binding.principalDigest }));
+  assert.throws(() => verifyQuoteToken(secret, token, context, input, { ...quote, total: 20 },
+    { principalDigest:binding.principalDigest }),
     error => error.statusCode === 409 && error.message === 'quote_changed');
-  assert.throws(() => verifyQuoteToken(secret, token, { ...context, hostname: 'staff.finn3.com' }, input, quote),
+  assert.throws(() => verifyQuoteToken(secret, token, { ...context, hostname: 'staff.finn3.com' }, input, quote,
+    { principalDigest:binding.principalDigest }),
     error => error.statusCode === 409 && error.message === 'quote_changed');
-  assert.throws(() => verifyQuoteToken('x'.repeat(64), token, context, input, quote),
+  assert.throws(() => verifyQuoteToken('x'.repeat(64), token, context, input, quote,
+    { principalDigest:binding.principalDigest }),
     error => error.statusCode === 409 && error.message === 'quote_changed');
+  assert.throws(() => verifyQuoteToken(secret, token, context, input, quote,
+    { principalDigest:'different-principal' }),
+  error => error.statusCode === 409 && error.message === 'quote_changed');
 });
 
 test('public order projection maps submitted status and excludes contacts and internal SKU', () => {
@@ -160,6 +174,11 @@ test('counter tender must match the accepted immutable cart and server totals', 
     tax: 0, taxRate: 0, totalBeforeRounding: 19.92, rounding: -0.02, total: 19.9,
     items: [{ productId: 'latte', variantId: '', qty: 2, price: 9.955 }] };
   assert.doesNotThrow(() => assertTenderMatches(order, lines, sale));
+  const snapshotOrder = { ...order, currency:'RM', pricing_snapshot_id:'snapshot-a' };
+  const snapshotSale = { ...sale, storeSnapshot:{ currency:'RM' }, pricingSnapshotId:'snapshot-a' };
+  assert.doesNotThrow(() => assertTenderMatches(snapshotOrder, lines, snapshotSale));
+  assert.throws(() => assertTenderMatches(snapshotOrder, lines, { ...snapshotSale, pricingSnapshotId:'' }),
+    error => error.statusCode === 409 && error.message === 'customer_order_checkout_changed');
   assert.throws(() => assertTenderMatches(order, lines, { ...sale, total: 19.95 }),
     error => error.statusCode === 409 && error.message === 'customer_order_checkout_changed');
   assert.throws(() => assertTenderMatches(order, lines, { ...sale,
@@ -188,6 +207,12 @@ test('counter tender rebuilds receipt lines and customer linkage from the accept
   assert.equal(result.customerName, 'Walk-in customer');
   assert.equal(result.customerEmail, '');
   assert.equal(Object.hasOwn(result,'deliveryFee'), false);
+  assert.equal(Object.hasOwn(result,'pricingSnapshotId'), false);
+
+  const snapshotResult = await canonicalTenderSale(
+    { query: async () => { throw Error('guest must not select a client'); } },
+    { ...order, pricing_snapshot_id:'snapshot-a' }, lines, crafted);
+  assert.equal(snapshotResult.pricingSnapshotId, 'snapshot-a');
 
   const deliveryResult = await canonicalTenderSale(
     { query: async () => { throw Error('guest must not select a client'); } },

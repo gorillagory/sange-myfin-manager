@@ -23,6 +23,28 @@ test('delivery fee is an exact-sen sale fact collected before five-sen rounding'
  assert.equal(Object.hasOwn(createSale({id:'pickup',items:[cartItem(product)],company,user,method:'Cash',received:1}),'deliveryFee'),false);
  assert.equal(createSale({id:'free-delivery',items:[cartItem(product)],company,user,method:'Cash',received:1,deliveryFee:0}).deliveryFee,0);
 });
+test('snapshot-backed sales preserve fixed discounts without inventing a percentage',()=>{
+ const items=[cartItem({...product,price:20})];
+ const lockedTotals={subtotal:20,discountAmount:1.25,tax:1.13,taxRate:6,totalBeforeRounding:19.88,rounding:.02,total:19.90};
+ const sale=createSale({id:'promotion-sale',items,company,user,method:'Cash',received:20,
+   lockedTotals,pricingSnapshotId:'snapshot-a'});
+ assert.equal(sale.discount,0);assert.equal(sale.discountAmount,1.25);
+ assert.equal(sale.pricingSnapshotId,'snapshot-a');assert.equal(sale.change,.10);
+ assert.deepEqual(saleTotalsFor(sale),{...lockedTotals,discount:0});
+ assert.throws(()=>createSale({id:'changed-promotion',items,company,user,method:'Cash',received:20,
+   lockedTotals:{...lockedTotals,discountAmount:1.24},pricingSnapshotId:'snapshot-a'}),/accepted quote totals are invalid/);
+ assert.throws(()=>createSale({id:'missing-snapshot',items,company,user,method:'Cash',received:20,
+   lockedTotals}),/accepted quote is incomplete/);
+});
+test('snapshot-backed fractional quantities use the server integer-sen rounding boundary',()=>{
+ const items=[{...cartItem({...product,price:.25}),qty:.58}];
+ const lockedTotals={subtotal:.15,discountAmount:0,tax:0,taxRate:0,totalBeforeRounding:.15,rounding:0,total:.15};
+ const sale=createSale({id:'fractional-promotion-sale',items,company,user,method:'Cash',received:.15,
+   lockedTotals,pricingSnapshotId:'snapshot-fractional'});
+ assert.equal(sale.subtotal,.15);assert.equal(sale.total,.15);
+ assert.throws(()=>createSale({id:'over-precise-quantity',items:[{...items[0],qty:.5801}],company,user,
+   method:'Cash',received:.15,lockedTotals,pricingSnapshotId:'snapshot-fractional'}),/accepted quote totals are invalid/);
+});
 test('invalid tender, quantity and external confirmation are rejected',()=>{for(const received of [0,-1,NaN])assert.throws(()=>createSale({id:'x',items:[cartItem(product)],company,user,method:'Cash',received}));assert.throws(()=>totalsFor([{price:1,qty:0}]));assert.throws(()=>createSale({id:'x',items:[cartItem(product)],company,user,method:'Card',received:1,confirmed:false}));});
 test('legacy SKU, tax, variants and service stock adapt without data migration',()=>{const p=normalizeProduct({id:'v',code:'OLD',category:'Retail',variants:[{name:'Blue',price:10,stock:2}]});assert.equal(p.sku,'OLD');assert.equal(p.variants[0].id,'legacy-0');assert.equal(cartItem(p,p.variants[0]).variantId,'legacy-0');assert.equal(normalizeProduct({name:'Service',category:'Service',stock:0}).trackStock,false);assert.equal(normalizeProduct({name:'Uncounted'}).trackStock,false);});
 test('deduction aggregates quantities, isolates variants and rejects overselling',()=>{const p=normalizeProduct({id:'v',name:'Cup',trackStock:true,variants:[{id:'a',name:'A',price:10,stock:2},{id:'b',name:'B',price:10,stock:4}]});const result=deductItems([p],[{...cartItem(p,p.variants[0]),qty:2}]);assert.equal(result.updates[0].variants[0].stock,0);assert.equal(result.updates[0].variants[1].stock,4);assert.equal(p.variants[0].stock,2);assert.throws(()=>deductItems([product],[{...cartItem(product),qty:4}]));});

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { releaseOrderReservations } from './customer-order-reservations.js';
+import { releaseOrderPromotionReservations } from './pricing-engine.js';
 import { redactExpiredOrderContacts } from './storefront-privacy.js';
 
 const activeStatuses = Object.freeze(['awaiting_acceptance','accepted','preparing','ready']);
@@ -46,6 +47,9 @@ export async function expireStaleCustomerOrders(c, { now = new Date(), limit = 1
     );
     if (!updated.rowCount) continue;
     await releaseOrderReservations(c, order.company_id, order.id, 'expired');
+    await releaseOrderPromotionReservations(c, {
+      companyId:order.company_id, orderId:order.id, reason:'expired',
+    });
     const requestId = expiryRequestId(order);
     await c.query(
       `INSERT INTO myfin.customer_order_events(

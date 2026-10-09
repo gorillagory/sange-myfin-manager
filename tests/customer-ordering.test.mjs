@@ -67,6 +67,14 @@ test('customer bootstrap bypasses the staff offline worker', async () => {
   assert.doesNotMatch(main, /Store\.init\(\)/);
 });
 
+test('storefront discards a stale promotion quote before refreshing it', async () => {
+  const source = await readFile(new URL('../src/components/customer/CustomerStorefront.vue', import.meta.url), 'utf8');
+  const recovery = source.slice(source.indexOf("if (['quote_changed','promotion_unavailable'].includes"));
+  assert.ok(recovery.indexOf("retry = null; quote.value = null; quoteToken.value = ''") <
+    recovery.indexOf('await quoteCustomerOrder(currentOrder(true))'));
+  assert.match(recovery, /A promotion or voucher changed\. Review the refreshed total/);
+});
+
 test('public menu and cart retain server IDs while enforcing availability caps', () => {
   assert.equal(menu.storefront.name, 'Ba|Li');
   const line = publicCartLine(menu.products[0], 'iced');
