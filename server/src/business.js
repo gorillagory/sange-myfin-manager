@@ -23,7 +23,8 @@ import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
 import { registerStock } from "./stock.js";
-import { consumeRecipeStock, registerInventoryRecipes } from "./inventory-recipes.js";
+import { consumeRecipeStock, offlineRecipeBoundary, recipeAvailabilityForProducts,
+  registerInventoryRecipes } from "./inventory-recipes.js";
 import { registerProcurement } from "./procurement.js";
 import { companyReport,companyRows,reportFilterShape } from "./reporting.js";
 import { registerReportAutomation } from "./report-automation.js";
@@ -264,7 +265,7 @@ async function acceptedOrderPricing(c, companyId, orderId, sale) {
   return { totals: expected, discounts };
 }
 export async function checkout(c, who, companyId, input, approval=null, options={}) {
-  const sale = v.parse(v.sale, input);
+  const submittedSale = v.parse(v.sale, input), sale={...submittedSale};
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
   if (sale.pricingSnapshotId && (!options.acceptedOrderQuote || !options.reservationOrderId))
@@ -283,9 +284,14 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     cents(sale.change) / 100 !== sale.change
   )
     v.fail(400, "invalid_receipt_fields");
+  const serverRow=options.serverNow?{server_now:options.serverNow}:(await c.query('SELECT now() AS server_now')).rows[0];
+  const serverOccurredAt=new Date(serverRow?.server_now),capturedAt=new Date(sale.date),
+    effectiveOffline=sale.offline&&!options.acceptedOrderQuote;
+  if(!Number.isFinite(serverOccurredAt.getTime())||!Number.isFinite(capturedAt.getTime()))v.fail(500,'server_time_unavailable');
+  const serverIso=serverOccurredAt.toISOString(),capturedIso=capturedAt.toISOString();
   if((sale.receiptTemplateId&&!(sale.receiptTemplateVersion>0))||(!sale.receiptTemplateId&&sale.receiptTemplateVersion>0))v.fail(400,"invalid_receipt_template_reference");
   const fingerprint = createHash("sha256")
-    .update(JSON.stringify(canonical(sale)))
+    .update(JSON.stringify(canonical(submittedSale)))
     .digest("hex");
   // Serialize same receipt before checking existence; different receipts then lock
   // product rows in a stable order. Both lock classes are transaction-scoped.
@@ -306,7 +312,16 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     };
     if (existing.rows[0].fingerprint !== fingerprint && intent(existing.rows[0].data)!==intent(sale))
       v.fail(409, "receipt_payload_changed");
+    // A review approval must never attach a recipe decision to a transaction
+    // that was already posted under different inventory evidence. Exact retries
+    // of the decision that created the transaction remain idempotent.
+    const requestedResolution=approval?.inventoryRecipeResolution||null,
+      recordedResolution=existing.rows[0].data?.inventoryRecipeResolution||null;
+    if(approval&&requestedResolution!==recordedResolution)v.fail(409,"inventory_recipe_resolution_changed");
     return publicTransaction(asRecord(existing.rows[0]),who);
+  }
+  if(!effectiveOffline){
+    sale.date=serverIso;sale.businessDate=businessDate(serverIso);sale.offline=false;
   }
   const reviewResolution=await c.query("SELECT status FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR SHARE",[companyId,sale.id]);
   if(reviewResolution.rows[0]?.status==="dismissed")v.fail(409,"receipt_dismissed");
@@ -318,6 +333,15 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   );
   if (rows.rowCount !== ids.length) v.fail(409, "receipt_review_required_product_changed");
   await assertUnreservedSaleStock(c,companyId,rows.rows,sale.items,options.reservationOrderId||"");
+  if(effectiveOffline){
+    const boundary=await offlineRecipeBoundary(c,{companyId,items:sale.items,capturedAt:capturedIso});
+    if(boundary.changed&&!approval?.inventoryRecipeResolution)v.fail(409,'receipt_review_required_recipe_timing');
+    if(!boundary.changed&&approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
+  }
+  else if(approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
+  if(effectiveOffline&&!approval&&(capturedAt.getTime()>serverOccurredAt.getTime()+5*60*1000||
+      serverOccurredAt.getTime()-capturedAt.getTime()>72*60*60*1000))
+    v.fail(409,'receipt_review_required_offline_time');
   const companyRow=(await c.query("SELECT name,data FROM myfin.companies WHERE id=$1",[companyId])).rows[0];
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
@@ -376,6 +400,9 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     cashierId: who.id,
     cashierName: who.username,
     stockShortage: shortage,
+    serverRecordedAt:serverIso,
+    ...(sale.date!==capturedIso?{clientCapturedAt:capturedIso}:{}),
+    ...(approval?.inventoryRecipeResolution?{inventoryRecipeResolution:approval.inventoryRecipeResolution}:{}),
     storeSnapshot:expectedStore,companySnapshot,templateSnapshot:template.settings,
     ...(lockedPricing ? { promotionDiscounts: lockedPricing.discounts } : {}),
   };
@@ -384,13 +411,23 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     [companyId, sale.id, who.id, sale.total, fingerprint, saved, sale.pricingSnapshotId || null],
   );
   await assertOrderCreated(c, companyId, sale.id);
-  await consumeRecipeStock(c, {
-    companyId,
-    actorId: who.id,
-    saleId: sale.id,
-    occurredAt: sale.date,
-    items: sale.items,
-  });
+  try {
+    await consumeRecipeStock(c, {
+      companyId,
+      actorId: who.id,
+      saleId: sale.id,
+      serverOccurredAt:serverIso,
+      capturedAt:capturedIso,
+      items: sale.items,
+      reservationOrderId:options.reservationOrderId||'',
+      offline:effectiveOffline,
+      inventoryRecipeResolution:approval?.inventoryRecipeResolution||'',
+    });
+  } catch (error) {
+    if(!options.reservationOrderId&&error?.message==='recipe_stock_unavailable')
+      v.fail(409,'receipt_review_required_recipe_stock');
+    throw error;
+  }
   for (const p of updates) {
     p.version++;
     await c.query(
@@ -570,8 +607,19 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         }
         args.push(q.limit+1);
         const select=name==="transactions"?"t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount":"*";
-        const r=await c.query(`SELECT ${select} FROM myfin.${name} t WHERE ${predicates.join(" AND ")} ORDER BY id LIMIT $${args.length}`,args);
-        return {rows:r.rows.slice(0,q.limit).map(row=>name==="products"?publicProduct(asRecord(row),req.identity):name==="clients"?publicClient(asRecord(row),req.identity):name==="transactions"?recordOutput(row,req.identity):name==="stock_movements"?publicStockMovement(asRecord(row),req.identity):asRecord(row)),next:r.rows.length>q.limit?r.rows[q.limit-1].id:null};
+        const r=await c.query(`SELECT ${select} FROM myfin.${name} t WHERE ${predicates.join(" AND ")} ORDER BY id LIMIT $${args.length}${name==="products"?" FOR SHARE OF t":""}`,args);
+        let page=r.rows.slice(0,q.limit);
+        if(name==="products"&&page.length){
+          const availability=await recipeAvailabilityForProducts(c,co,page),key=(productId,variantId='')=>`${productId}\u0000${variantId}`;
+          page=page.map(row=>{
+            const data=asRecord(row),variants=(data.variants||[]).map(variant=>{
+              const recipe=availability.get(key(row.id,variant.id));return recipe?{...variant,...recipe}:variant;
+            }),recipe=availability.get(key(row.id));
+            return {...data,...(recipe||{}),variants,
+              ...(!recipe&&variants.some(variant=>variant.recipeTracked)?{recipeTracked:true}:{})};
+          });
+        }
+        return {rows:page.map(row=>name==="products"?publicProduct(row.data?asRecord(row):row,req.identity):name==="clients"?publicClient(asRecord(row),req.identity):name==="transactions"?recordOutput(row,req.identity):name==="stock_movements"?publicStockMovement(asRecord(row),req.identity):asRecord(row)),next:r.rows.length>q.limit?r.rows[q.limit-1].id:null};
       }),
     );
     if (!schemas[name]) continue;

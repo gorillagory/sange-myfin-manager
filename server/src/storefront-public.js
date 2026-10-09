@@ -6,6 +6,7 @@ import { activeReservationQuantities, releaseOrderReservations } from './custome
 import { customerOrderDefaults, customerPhoneSchema, customerSession } from './customer-auth.js';
 import { createPricingSnapshot, loadPricingSnapshot, releaseOrderPromotionReservations,
   reserveOrderPromotions } from './pricing-engine.js';
+import { assertRecipeAvailability, recipeAvailabilityForProducts } from './inventory-recipes.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
   storefrontPrivacyComplete, storefrontPrivacyOutput } from './storefront-privacy.js';
 import * as v from './validation.js';
@@ -200,6 +201,14 @@ async function publishedCart(c, companyId, input, snapshot = null) {
       qty: item.quantity,
     };
   });
+  try{
+    await assertRecipeAvailability(c,{companyId,items:lines.map(line=>({productId:line.productId,
+      variantId:line.variantId,qty:line.qty,lineNo:line.lineNo})),lock:'share'});
+  }catch(error){
+    if(['recipe_stock_unavailable','recipe_stock_changed','recipe_count_requires_whole_units'].includes(error?.message))
+      v.fail(409,'menu_item_unavailable');
+    throw error;
+  }
   if (snapshot) {
     if (snapshot.lines.length !== lines.length) v.fail(409, 'quote_changed');
     for (const line of lines) {
@@ -418,20 +427,24 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sort_order,sp.sold_out
            FROM myfin.products p JOIN myfin.storefront_products sp
              ON sp.company_id=p.company_id AND sp.product_id=p.id
-          WHERE p.company_id=$1 AND sp.published ORDER BY sp.sort_order,p.id`, [context.company_id],
+          WHERE p.company_id=$1 AND sp.published ORDER BY sp.sort_order,p.id FOR SHARE OF p`, [context.company_id],
       )).rows;
       const ids = products.map(row => row.id);
       const variantRows = ids.length ? (await c.query(
         `SELECT product_id,variant_id,published,sold_out,sort_order FROM myfin.storefront_product_variants
           WHERE company_id=$1 AND product_id=ANY($2::text[])`, [context.company_id, ids],
       )).rows : [];
-      const reserved = await activeReservationQuantities(c, context.company_id, ids);
       const cap = Number(config.max_item_quantity);
+      const reserved = await activeReservationQuantities(c, context.company_id, ids);
+      const recipeAvailability = await recipeAvailabilityForProducts(c,context.company_id,products,{cap});
       const projection = products.map(row => {
         const product = row.data;
-        const availability = target => product.trackStock
-          ? Math.max(0, Math.min(cap, Math.floor((Number(target.stock || 0) - (reserved.get(`${row.id}\u0000${target.id || ''}`) || 0)) * 1000) / 1000))
-          : cap;
+        const availability = target => {
+          const recipe=recipeAvailability.get(`${row.id}\u0000${target.id||''}`);
+          return recipe?recipe.availableQuantity:product.trackStock
+            ? Math.max(0, Math.min(cap, Math.floor((Number(target.stock || 0) - (reserved.get(`${row.id}\u0000${target.id || ''}`) || 0)) * 1000) / 1000))
+            : cap;
+        };
         const variants = (product.variants || []).map(variant => {
           const publication = variantRows.find(entry => entry.product_id === row.id && entry.variant_id === variant.id);
           const maxQuantity = publication?.sold_out ? 0 : availability(variant);

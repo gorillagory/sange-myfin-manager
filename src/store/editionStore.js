@@ -559,13 +559,20 @@ export const Store = reactive({
     }
     return { resolved: false, status: error.network ? "network_error" : "failed" };
   },
-  async approveReceiptReview(id, reason) {
+  async approveReceiptReview(id, reason, inventoryRecipeResolution = "") {
     if (!state.online || !this.can("receiptReviewsResolve")) throw new Error("An online manager or owner must approve this payment.");
     if (reason.trim().length < 3) throw new Error("Explain why the original recorded payment is approved (at least 3 characters).");
+    const review = state.receiptReviews.find(row => row.id === id),
+      recipeTiming = review?.reasonCode === "receipt_review_required_recipe_timing",
+      allowedRecipeResolutions = ["current_recipe", "captured_recipe"];
+    if (inventoryRecipeResolution && !allowedRecipeResolutions.includes(inventoryRecipeResolution))
+      throw new Error("Choose a valid inventory recipe resolution.");
+    if (recipeTiming && !allowedRecipeResolutions.includes(inventoryRecipeResolution))
+      throw new Error("Choose whether inventory should use the current recipe or the recipe captured with the sale.");
     const co = state.selectedCompany?.id;
     if (!co) throw new Error("Choose a workspace first.");
     const result = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews/" + encodeURIComponent(id) + "/approve", {
-      method:"POST", body:{reason:reason.trim()},
+      method:"POST", body:{reason:reason.trim(),...(inventoryRecipeResolution?{inventoryRecipeResolution}:{})},
     });
     await this.refreshReceiptReviews();
     await this.refreshPostedSales([result.receipt]);

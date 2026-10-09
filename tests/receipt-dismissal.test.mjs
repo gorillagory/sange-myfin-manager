@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { createSale,cartItem,totalsFor,cents } from '../src/domain/pos.js';
 
@@ -36,6 +37,10 @@ globalThis.fetch=async(path,options={})=>{
  if(path.endsWith('/receipt-dismissal-requests')){
   const sale=JSON.parse(options.body).sale,mode=modes.get(sale.id);
   return response({id:sale.id,status:mode==='posted'?'posted':mode==='dismissed'?'dismissed':'pending',reasonCode:'cashier_requested_dismissal',...(mode==='posted'?{receipt:sale}:{})});
+ }
+ if(path.endsWith('/approve')){
+  const body=JSON.parse(options.body);
+  return response({id:'recipe-timing-sale',status:'approved',inventoryRecipeResolution:body.inventoryRecipeResolution,receipt:{id:'recipe-timing-sale'}});
  }
  if(path.endsWith('/receipt-reviews'))return response([]);
  return response({rows:[],next:null});
@@ -88,5 +93,27 @@ try{
   const approval={managerCode:'123456',reason:'Duplicate network entry'};
   await Store.deleteExpense('expense-1',approval);
   assert.deepEqual(sent('/expenses/expense-1','DELETE'),[approval]);
+ });
+ await test('recipe timing review forwards only a valid explicit inventory resolution',async()=>{
+  reset();Store.state.currentUser={uid:'receipt-manager',id:'receipt-manager',role:'manager',company_id:company.id};
+  actor={...Store.state.currentUser};
+  Store.state.receiptReviews=[{id:'recipe-timing-sale',reasonCode:'receipt_review_required_recipe_timing'}];
+  await assert.rejects(Store.approveReceiptReview('recipe-timing-sale','Approve original sale'),/Choose whether inventory/);
+  await assert.rejects(Store.approveReceiptReview('recipe-timing-sale','Approve original sale','invented_recipe'),/valid inventory recipe resolution/);
+  await Store.approveReceiptReview('recipe-timing-sale','  Use captured recipe  ','captured_recipe');
+  assert.deepEqual(sent('/receipt-reviews/recipe-timing-sale/approve'),[{
+   reason:'Use captured recipe',inventoryRecipeResolution:'captured_recipe',
+  }]);
+ });
+ await test('recipe timing review UI requires and explains the structured recipe choice',async()=>{
+  const source=await readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8');
+  assert.match(source,/receipt_review_required_recipe_timing/);
+  assert.match(source,/<option value="current_recipe">Current recipe<\/option>/);
+ assert.match(source,/<option value="captured_recipe">Recipe active when the sale was captured<\/option>/);
+ assert.match(source,/:disabled="approvalBlocked"/);
+ assert.match(source,/approveReceiptReview\(selected\.value\.id, explanation, inventoryRecipeResolution\.value\)/);
+  assert.match(source,/row\?\.recipeTimingRequired === true/);
+  assert.match(source,/e\.message === 'receipt_review_required_recipe_timing'/);
+  assert.match(source,/selected\.value = \{ \.\.\.selected\.value, recipeTimingRequired: true \}/);
  });
 }finally{Store.clearSession();await vite.close();}

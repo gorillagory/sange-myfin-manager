@@ -21,6 +21,27 @@ export function normalizeProduct(product) {
   const hasStock = product.stock != null || (product.variants || []).some(v => v.stock != null);
   return { ...product, sku: product.sku || product.code || '', price: Number(product.price || 0), cost: Number(product.cost || 0), stock: Number(product.stock || 0), unit: product.unit || 'pcs', variants, trackStock: product.category !== 'Service' && (product.trackStock ?? hasStock) };
 }
+export const limitsSaleQuantity = (product, variant = null) => Boolean(product?.trackStock) ||
+  (variant ? variant.recipeTracked === true : product?.recipeTracked === true);
+export function sellableQuantity(product, variant, pendingSales = []) {
+  const target = variant ? (product.variants || []).find(candidate => candidate.id === variant.id) : product;
+  if (!target) return 0;
+  if (!limitsSaleQuantity(product, target)) return Infinity;
+  const raw = product.trackStock
+    ? target.stock
+    : target.availableQuantity;
+  const base = product.trackStock ? Number(raw) : raw;
+  if (typeof base !== 'number' || !Number.isFinite(base) || base < 0) return 0;
+  let pending = 0;
+  for (const sale of pendingSales) for (const item of Array.isArray(sale?.items) ? sale.items : []) {
+    if (item.productId !== product.id || (item.variantId || '') !== (variant?.id || '')) continue;
+    const quantity = Number(item.qty);
+    if (!Number.isFinite(quantity) || quantity <= 0) return 0;
+    pending += quantity;
+    if (!Number.isFinite(pending)) return 0;
+  }
+  return base - pending;
+}
 export function cartItem(product, variant) {
   const p = normalizeProduct(product), v = variant && p.variants.find(v => v.id === variant.id);
   if (variant && !v) throw new Error('This option is no longer available.');

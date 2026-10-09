@@ -29,3 +29,113 @@ test('a posted transaction takes precedence over an earlier pending dismissal re
  await assert.rejects(handler({...req,body:{sale:changed}}),error=>error.statusCode===409&&error.message==='receipt_payload_changed');
  assert.equal(transactionChecks,2,'changed paid facts must fail before the posted lookup');
 });
+
+test('recipe timing approval requires, applies, persists and exposes an inventory recipe resolution',async()=>{
+ const manager={id:'manager-a',role:'manager'},cashier={id:'cashier-a',username:'Cashier'},companyId='company-a';
+ const review={id:'recipe-timing-sale',company_id:companyId,actor_id:cashier.id,status:'pending',
+  payload:{id:'recipe-timing-sale',company_id:companyId,cashierId:cashier.id,items:[],offline:true},
+  reason_code:'receipt_review_required_recipe_timing',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
+ let checkoutCalls=0;
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-a'}]};
+  if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:1,rows:[review]};
+  if(sql.includes('FROM myfin.app_identities'))return {rowCount:1,rows:[cashier]};
+  if(sql.includes('UPDATE myfin.receipt_reviews')){
+   assert.match(sql,/inventory_recipe_resolution=\$5/);
+   assert.deepEqual(args,[companyId,review.id,manager.id,'Use the current kitchen recipe','current_recipe']);
+   Object.assign(review,{status:'approved',approved_by:manager.id,approval_reason:args[3],
+    inventory_recipe_resolution:args[4],approved_at:new Date().toISOString()});
+   return {rowCount:1,rows:[]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(`POST ${path}`,handler),
+  get:(path,handler)=>routes.set(`GET ${path}`,handler)};
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},
+  checkout:async(_client,actor,co,payload,approval)=>{
+   if(review.reason_code!=='receipt_review_required_recipe_timing'&&approval?.inventoryRecipeResolution)
+    throw Object.assign(Error('inventory_recipe_resolution_not_applicable'),{statusCode:400});
+   checkoutCalls++;assert.deepEqual(actor,{...cashier,role:'operator',company_id:companyId});assert.equal(co,companyId);
+   assert.equal(payload,review.payload);assert.deepEqual(approval,{who:manager,reason:'Use the current kitchen recipe',inventoryRecipeResolution:'current_recipe'});
+   return payload;
+  },audit:async()=>{}});
+ const approve=routes.get('POST /api/companies/:company/receipt-reviews/:id/approve'),request=body=>approve({
+  params:{company:companyId,id:review.id},identity:manager,authLevel:'password',authSessionId:'session-a',body,
+ });
+ await assert.rejects(request({reason:'Choose recipe'}),error=>error.statusCode===400&&error.message==='inventory_recipe_resolution_required');
+ await assert.rejects(request({reason:'Choose recipe',inventoryRecipeResolution:'invented_recipe'}),
+  error=>error.statusCode===400&&error.message==='invalid_input');
+ review.reason_code='receipt_review_required_pricing_policy';
+ review.payload.offline=false;
+ await assert.rejects(request({reason:'Choose recipe',inventoryRecipeResolution:'current_recipe'}),
+  error=>error.statusCode===400&&error.message==='inventory_recipe_resolution_not_applicable');
+ assert.equal(checkoutCalls,0,'an online review must reject recipe evidence before checkout');
+ review.payload.offline=true;
+ await assert.rejects(request({reason:'Choose recipe',inventoryRecipeResolution:'current_recipe'}),
+  error=>error.statusCode===400&&error.message==='inventory_recipe_resolution_not_applicable');
+ review.reason_code='receipt_review_required_recipe_timing';
+ const approved=await request({reason:'Use the current kitchen recipe',inventoryRecipeResolution:'current_recipe'});
+ assert.equal(checkoutCalls,1);assert.equal(approved.inventoryRecipeResolution,'current_recipe');
+ const listed=await routes.get('GET /api/companies/:company/receipt-reviews')({
+  params:{company:companyId},identity:manager,authLevel:'password',authSessionId:'session-a',
+ });
+ assert.equal(listed[0].inventoryRecipeResolution,'current_recipe');
+ await assert.rejects(request({reason:'Change the decision',inventoryRecipeResolution:'captured_recipe'}),
+  error=>error.statusCode===409&&error.message==='inventory_recipe_resolution_changed');
+ assert.equal(checkoutCalls,1);
+});
+
+test('recipe shortage stays pending until replenished, then approves and replays exactly once',async()=>{
+ const cashier={id:'cashier-stock',role:'operator',username:'Cashier'},manager={id:'manager-stock',role:'manager'},
+  company={id:'company-stock',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};
+ const sale=stripConfidential(createSale({id:'recipe-shortage',items:[cartItem({id:'latte',name:'Latte',price:10,
+  stock:0,trackStock:false})],company,user:{uid:cashier.id,username:cashier.username},method:'Cash',received:10,offline:true}));
+ let review=null,stockAvailable=false,recipeChanged=false,checkoutCalls=0,posts=0,updates=0;
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-stock'}]};
+  if(sql.includes('pg_advisory_xact_lock')||/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))
+   return {rowCount:0,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:review?1:0,rows:review?[review]:[]};
+  if(sql.includes('INSERT INTO myfin.receipt_reviews')){
+   review={id:sale.id,company_id:company.id,actor_id:cashier.id,payload:sale,request_digest:args[4],
+    reason_code:args[5],status:'pending',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
+   return {rowCount:1,rows:[]};
+  }
+  if(sql.includes('FROM myfin.app_identities'))return {rowCount:1,rows:[cashier]};
+  if(sql.includes('UPDATE myfin.receipt_reviews')){
+   updates++;Object.assign(review,{status:'approved',approved_by:manager.id,approval_reason:args[3],
+    inventory_recipe_resolution:args[4],approved_at:new Date().toISOString()});return {rowCount:1,rows:[]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(`POST ${path}`,handler),
+  get:(path,handler)=>routes.set(`GET ${path}`,handler)};
+ const shortage=()=>Object.assign(Error('receipt_review_required_recipe_stock'),{statusCode:409});
+ const timing=()=>Object.assign(Error('receipt_review_required_recipe_timing'),{statusCode:409});
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},audit:async()=>{},
+  checkout:async(_client,_actor,_company,_sale,approval)=>{checkoutCalls++;if(!stockAvailable)throw shortage();
+   if(recipeChanged&&!approval?.inventoryRecipeResolution)throw timing();
+   if(!review.posted){review.posted=true;posts++;}return sale;}});
+ const context={params:{company:company.id},identity:cashier,authLevel:'password',authSessionId:'session-stock'};
+ const submit=routes.get('POST /api/companies/:company/receipt-reviews');
+ const pending=await submit({...context,body:{sale}});
+ assert.equal(pending.status,'pending');assert.equal(pending.reasonCode,'receipt_review_required_recipe_stock');
+ const approve=routes.get('POST /api/companies/:company/receipt-reviews/:id/approve'),approval={
+  params:{company:company.id,id:sale.id},identity:manager,authLevel:'password',authSessionId:'session-stock',
+  body:{reason:'Inventory was checked and replenished'},
+ };
+ await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_stock');
+ await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_stock');
+ assert.equal(review.status,'pending');assert.equal(updates,0);assert.equal(posts,0);
+ stockAvailable=true;recipeChanged=true;
+ await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_timing');
+ assert.equal(review.status,'pending');assert.equal(updates,0);assert.equal(posts,0);
+ approval.body.inventoryRecipeResolution='current_recipe';
+ const approved=await approve(approval);
+ assert.equal(approved.status,'approved');assert.equal(review.status,'approved');assert.equal(updates,1);assert.equal(posts,1);
+ assert.equal(review.inventory_recipe_resolution,'current_recipe');
+ const replay=await approve(approval);
+ assert.equal(replay.status,'approved');assert.equal(updates,1);assert.equal(posts,1);
+ assert.equal(checkoutCalls,6);
+});

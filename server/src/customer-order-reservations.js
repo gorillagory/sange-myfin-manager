@@ -60,4 +60,10 @@ export async function releaseOrderReservations(c, companyId, orderId, reason) {
       WHERE company_id=$1 AND order_id=$2 AND released_at IS NULL`,
     [companyId, orderId, reason],
   );
+  await c.query(
+    `UPDATE myfin.customer_order_recipe_reservations
+        SET state='released',released_at=now(),release_reason=$3,updated_at=now()
+      WHERE company_id=$1 AND order_id=$2 AND state='active'`,
+    [companyId, orderId, reason],
+  );
 }

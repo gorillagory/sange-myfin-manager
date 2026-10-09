@@ -7,6 +7,7 @@ import { expireIfNeeded, orderLines, orderOutput } from './storefront-public.js'
 import { redactExpiredOrderContacts } from './storefront-privacy.js';
 import { consumeOrderPromotionReservations, extendOrderPromotionReservations,
   releaseOrderPromotionReservations } from './pricing-engine.js';
+import { reserveRecipeStock } from './inventory-recipes.js';
 import * as v from './validation.js';
 
 const activeStatuses = ['awaiting_acceptance','accepted','preparing','ready'];
@@ -35,6 +36,18 @@ const loyaltySchema = z.strictObject({
 const hash = value => createHash('sha256').update(value).digest('hex');
 const privileged = who => owner(who) || manager(who);
 const apiStatus = status => status === 'awaiting_acceptance' ? 'submitted' : status;
+
+export function customerOrderTransitionExpiry(row,change,now=Date.now()){
+  if(change.pickupAt&&change.status!=='accepted')v.fail(400,'pickup_time_only_on_acceptance');
+  if(change.pickupAt){
+    const pickup=new Date(change.pickupAt);
+    if(pickup<=new Date(now)||pickup>new Date(now+7*86400000))v.fail(400,'invalid_pickup_time');
+    return new Date(pickup.getTime()+30*60000);
+  }
+  return change.status==='accepted'
+    ? new Date(Math.max(new Date(row.expires_at).getTime(),now+60*60000))
+    : row.expires_at;
+}
 
 async function expireCompany(c, companyId) {
   const rows = (await c.query(
@@ -131,6 +144,7 @@ async function reserve(c, companyId, order, lines) {
       [companyId, order.id, line.line_no, line.product_id, line.variant_id, line.quantity, order.expires_at],
     );
   }
+  await reserveRecipeStock(c,{companyId,order,lines});
 }
 
 function assertTenderMatches(order, lines, sale) {
@@ -280,15 +294,9 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     row = await expireIfNeeded(c, row);
     if (row.version !== change.expectedVersion) v.fail(409, 'customer_order_changed');
     if (!transitions[row.status]?.includes(change.status)) v.fail(409, 'invalid_customer_order_transition');
-    if (change.pickupAt) {
-      const pickup = new Date(change.pickupAt);
-      if (pickup <= new Date() || pickup > new Date(Date.now() + 7 * 86400000)) v.fail(400, 'invalid_pickup_time');
-    }
     const lines = await orderLines(c, companyId, id);
     const nextVersion = Number(row.version) + 1;
-    const expiresAt = change.pickupAt ? new Date(new Date(change.pickupAt).getTime() + 30 * 60000)
-      : change.status === 'accepted' ? new Date(Math.max(new Date(row.expires_at).getTime(), Date.now() + 60 * 60000))
-      : row.expires_at;
+    const expiresAt=customerOrderTransitionExpiry(row,change);
     if (change.status === 'accepted') {
       row.expires_at = expiresAt;
       await reserve(c, companyId, row, lines);

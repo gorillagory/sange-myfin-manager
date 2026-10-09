@@ -8,7 +8,9 @@ import { managementLock,managementSession } from "./management.js";
 export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
  const scope=(req,fn)=>db.transaction(async c=>{await managementLock(c);await managementSession(c,req);const co=v.parse(v.id,req.params.company);await authorize(c,req.identity,co);return fn(c,co,req.identity);});
  const lockSale=(c,co,id)=>c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7))",[co+":sale:"+id]);
- const output=(row,who)=>({id:row.id,status:row.status,reasonCode:row.reason_code,sale:publicTransaction(row.payload,who),createdAt:row.created_at,approvedAt:row.approved_at,dismissedAt:row.dismissed_at,dismissalReason:row.dismissal_reason});
+ const output=(row,who)=>({id:row.id,status:row.status,reasonCode:row.reason_code,
+  inventoryRecipeResolution:row.inventory_recipe_resolution||null,sale:publicTransaction(row.payload,who),
+  createdAt:row.created_at,approvedAt:row.approved_at,dismissedAt:row.dismissed_at,dismissalReason:row.dismissal_reason});
  const paidIntent=(input,co,who)=>{
   const sale=stripConfidential(v.parse(v.sale,input));
   if(sale.company_id!==co||sale.cashierId!==who.id)v.fail(403,"invalid_sale_actor");
@@ -42,15 +44,27 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   requireCapability(who,"checkout");const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND ($2 OR actor_id=$3) ORDER BY created_at DESC LIMIT 1001",[co,!operator(who),who.id]);if(r.rowCount>1000)v.fail(409,"receipt_review_list_limit");return r.rows.map(row=>output(row,who));
  }));
  app.post("/api/companies/:company/receipt-reviews/:id/approve",req=>scope(req,async(c,co,who)=>{
-  requireCapability(who,"receiptReviewsResolve");const {reason}=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000)}),req.body),id=v.parse(v.id,req.params.id);
+  requireCapability(who,"receiptReviewsResolve");const {reason,inventoryRecipeResolution}=v.parse(z.strictObject({
+   reason:z.string().trim().min(3).max(1000),inventoryRecipeResolution:z.enum(["current_recipe","captured_recipe"]).optional(),
+  }),req.body),id=v.parse(v.id,req.params.id);
   await lockSale(c,co,id);
   const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,id]);if(!r.rowCount)v.fail(404,"not_found");const row=r.rows[0];
   if(row.status==="dismissed")v.fail(409,"receipt_dismissed");
+  const recipeTiming=row.reason_code==="receipt_review_required_recipe_timing",storedResolution=row.inventory_recipe_resolution||null;
+  if((inventoryRecipeResolution||storedResolution)&&row.payload?.offline!==true)v.fail(400,"inventory_recipe_resolution_not_applicable");
+  if(recipeTiming&&!inventoryRecipeResolution)v.fail(400,"inventory_recipe_resolution_required");
+  if(storedResolution&&inventoryRecipeResolution&&storedResolution!==inventoryRecipeResolution)v.fail(409,"inventory_recipe_resolution_changed");
+  // A different review cause can remain pending long enough for its captured
+  // recipe to diverge from the current recipe. In that case checkout discovers
+  // the timing ambiguity and the manager retries with an explicit choice. Keep
+  // the original reason as evidence while forwarding that later resolution.
+  const resolution=inventoryRecipeResolution||storedResolution||null;
   const actor=(await c.query("SELECT id,display_name AS username FROM myfin.app_identities WHERE id=$1",[row.actor_id])).rows[0];if(!actor)v.fail(409,"original_cashier_unavailable");
   // Approval is server context; clients cannot pass an approver to ordinary checkout.
-  const receipt=await checkout(c,{...actor,role:"operator",company_id:co},co,row.payload,{who,reason});
-  if(row.status!=="approved")await c.query("UPDATE myfin.receipt_reviews SET status='approved',approved_by=$3,approval_reason=$4,approved_at=now() WHERE company_id=$1 AND id=$2",[co,id,who.id,reason]);
-  return {id,status:"approved",receipt:publicTransaction(receipt,who)};
+  const approval={who,reason,...(resolution?{inventoryRecipeResolution:resolution}:{})};
+  const receipt=await checkout(c,{...actor,role:"operator",company_id:co},co,row.payload,approval);
+  if(row.status!=="approved")await c.query("UPDATE myfin.receipt_reviews SET status='approved',approved_by=$3,approval_reason=$4,inventory_recipe_resolution=$5,approved_at=now() WHERE company_id=$1 AND id=$2",[co,id,who.id,reason,resolution]);
+  return {id,status:"approved",inventoryRecipeResolution:resolution,receipt:publicTransaction(receipt,who)};
  }));
  app.post("/api/companies/:company/receipt-reviews/:id/dismiss",req=>scope(req,async(c,co,who)=>{
   requireCapability(who,"receiptReviewsResolve");const {reason}=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000)}),req.body),id=v.parse(v.id,req.params.id);

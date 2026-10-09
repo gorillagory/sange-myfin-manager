@@ -53,6 +53,7 @@ GRANT SELECT,INSERT ON myfin.pricing_snapshots,myfin.pricing_snapshot_lines,
  myfin.pricing_snapshot_discounts,myfin.pricing_snapshot_discount_lines,
  myfin.promotion_redemptions TO myfin_dev_runtime;
 GRANT SELECT ON myfin.promotion_reservations,myfin.promotion_reservation_events TO myfin_dev_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.customer_order_recipe_reservations TO myfin_dev_runtime;
 GRANT EXECUTE ON FUNCTION myfin.reserve_order_promotions(text,text,text,timestamptz),
  myfin.extend_order_promotion_reservations(text,text,timestamptz),
  myfin.release_order_promotion_reservations(text,text,text),

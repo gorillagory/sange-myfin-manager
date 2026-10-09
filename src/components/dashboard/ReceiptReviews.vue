@@ -5,7 +5,8 @@ import { needsReceiptReview } from '../../domain/offlinePolicy';
 import { money } from '../../domain/pos';
 import Modal from '../ui/EditionModal.vue';
 
-const busy = ref(false), error = ref(''), selected = ref(null), reason = ref('');
+const busy = ref(false), error = ref(''), selected = ref(null), reason = ref(''), inventoryRecipeResolution = ref('');
+const recipeResolutions = ['current_recipe', 'captured_recipe'];
 const rows = computed(() => Store.state.receiptReviews || []);
 const unlistedSales = computed(() => Store.state.pendingSales.filter(sale =>
   sale.cashierId === Store.state.currentUser?.uid &&
@@ -22,6 +23,9 @@ const status = computed(() => Store.state.online
 const isPosted = row => ['posted', 'approved'].includes(row.status);
 const isDismissed = row => row.status === 'dismissed';
 const isPending = row => row.status === 'pending';
+const isRecipeTimingReview = row => row?.reasonCode === 'receipt_review_required_recipe_timing' || row?.recipeTimingRequired === true;
+const approvalBlocked = computed(() => busy.value || reason.value.trim().length < 3 ||
+  (isRecipeTimingReview(selected.value) && !recipeResolutions.includes(inventoryRecipeResolution.value)));
 const queuedSale = row => Store.state.pendingSales.find(sale => sale.id === row.id && sale.cashierId === Store.state.currentUser?.uid);
 const queueConfirmation = sale => Store.state.pendingSales.some(entry => entry.id === sale.id)
   ? ' Retry sync on this device to clear its saved receipt.'
@@ -33,6 +37,8 @@ function reasonText(code) {
     receipt_review_required_pricing_policy: 'Catalog price, tax or discount policy changed',
     receipt_review_required_merchant_changed: 'Original merchant details differ from current settings',
     receipt_review_required_product_changed: 'The original product option changed; reconcile the catalog before approval',
+    receipt_review_required_recipe_timing: 'The inventory recipe changed after this offline sale was captured',
+    receipt_review_required_recipe_stock: 'Recipe ingredients are below the amount required by this paid sale',
     stock_unavailable: 'Stock needs review',
     price_changed: 'Catalog price changed',
     tax_changed: 'Tax policy changed',
@@ -40,6 +46,13 @@ function reasonText(code) {
     receipt_review_required: 'Recorded payment differs from current checkout policy',
     cashier_requested_dismissal: 'Original cashier requested dismissal after reconciliation',
   })[code] || 'Recorded payment needs review against the current checkout policy';
+}
+
+function recipeResolutionText(resolution) {
+  return ({
+    current_recipe: 'Current recipe',
+    captured_recipe: 'Recipe active when the sale was captured',
+  })[resolution] || '';
 }
 
 async function refresh() {
@@ -73,7 +86,7 @@ async function requestDismissal(sale) {
     error.value = e.message || 'Dismissal could not be confirmed. The original payment remains queued.';
   } finally { busy.value = false; }
 }
-function choose(row) { selected.value = row; reason.value = ''; error.value = ''; }
+function choose(row) { selected.value = row; reason.value = ''; inventoryRecipeResolution.value = ''; error.value = ''; }
 async function resolve(decision) {
   if (busy.value || !selected.value) return;
   error.value = '';
@@ -82,17 +95,31 @@ async function resolve(decision) {
     error.value = 'Enter a ' + (decision === 'approve' ? 'approval' : 'dismissal') + ' reason of at least 3 characters.';
     return;
   }
+  if (decision === 'approve' && isRecipeTimingReview(selected.value) &&
+      !recipeResolutions.includes(inventoryRecipeResolution.value)) {
+    error.value = 'Choose which inventory recipe should be used for this sale.';
+    return;
+  }
   busy.value = true;
   try {
     if (decision === 'approve') {
-      await Store.approveReceiptReview(selected.value.id, explanation);
+      await Store.approveReceiptReview(selected.value.id, explanation, inventoryRecipeResolution.value);
       Store.notify('Original payment approved and posted. The cashier can now reconcile the device queue.');
     } else {
       await Store.dismissReceiptReview(selected.value.id, explanation);
       Store.notify('Payment reviewed and not recorded. The original cashier can now reconcile the device queue.');
     }
     selected.value = null;
-  } catch (e) { error.value = e.message; }
+  } catch (e) {
+    if (decision === 'approve' && e.message === 'receipt_review_required_recipe_timing') {
+      // A recipe can change while another review cause (for example an
+      // ingredient shortage) is pending. Preserve the server's original cause
+      // and reveal the explicit manager reconciliation required on retry.
+      selected.value = { ...selected.value, recipeTimingRequired: true };
+      inventoryRecipeResolution.value = '';
+      error.value = 'The inventory recipe changed while this payment was waiting. Choose which recipe to use, then approve again.';
+    } else error.value = e.message;
+  }
   finally { busy.value = false; }
 }
 
@@ -155,6 +182,7 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
             <td>
               <span class="ed-pill">{{ isPosted(row) ? 'Approved and posted' : isDismissed(row) ? 'Reviewed · not recorded' : 'Awaiting review' }}</span>
               <small>{{ reasonText(row.reasonCode) }}</small>
+              <small v-if="row.inventoryRecipeResolution">Inventory recipe: {{ recipeResolutionText(row.inventoryRecipeResolution) }}</small>
               <small v-if="isDismissed(row) && row.dismissalReason">Dismissal reason: {{ row.dismissalReason }}</small>
             </td>
             <td>
@@ -181,12 +209,21 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
         <dt>Payment method</dt><dd>{{ selected.sale.paymentMethod }}</dd>
       </dl>
       <div v-for="(item, i) in selected.sale.items" :key="i" class="ed-row"><span>{{ item.desc }} × {{ item.qty }}</span><strong>{{ money(item.price, currency(selected.sale)) }} each</strong></div>
+      <label v-if="isRecipeTimingReview(selected)" class="ed-field">
+        <span>Inventory recipe for stock deduction</span>
+        <select v-model="inventoryRecipeResolution" :disabled="busy" required>
+          <option disabled value="">Choose which recipe to use</option>
+          <option value="current_recipe">Current recipe</option>
+          <option value="captured_recipe">Recipe active when the sale was captured</option>
+        </select>
+        <small>The current recipe uses today’s recipe configuration. The captured recipe uses the configuration active at the recorded sale time.</small>
+      </label>
       <label class="ed-field"><span>Reason for this decision</span><textarea v-model="reason" rows="3" maxlength="500" :disabled="busy" placeholder="Explain why this payment should be approved or dismissed."></textarea></label>
       <p v-if="error" class="ed-alert" role="alert">{{ error }}</p>
       <template #actions>
         <button class="ed-btn" :disabled="busy" @click="selected = null">Cancel</button>
         <button class="ed-btn" :disabled="busy || reason.trim().length < 3" @click="resolve('dismiss')">{{ busy ? 'Confirming…' : 'Dismiss · not recorded' }}</button>
-        <button class="ed-btn primary" :disabled="busy || reason.trim().length < 3" @click="resolve('approve')">{{ busy ? 'Confirming…' : 'Approve original payment' }}</button>
+        <button class="ed-btn primary" :disabled="approvalBlocked" @click="resolve('approve')">{{ busy ? 'Confirming…' : 'Approve original payment' }}</button>
       </template>
     </Modal>
   </div>
