@@ -171,7 +171,7 @@ watch(() => company.value.id, load, { immediate:true });
 <template>
   <section class="ed-page mf-student-programs">
     <header class="ed-page-head"><div><div class="ed-eyebrow">ADMINISTRATION / STUDENT PROGRAMS</div><h1>Student access and offers.</h1><p>Review student eligibility for this workspace and configure controlled promotion versions for {{ company.name }}.</p></div><button class="ed-btn" :disabled="loading || !Store.state.online" @click="load"><Icon name="clock"/>{{ loading?'Loading…':'Refresh' }}</button></header>
-    <div class="ed-notice warning"><Icon name="alert"/><div><strong>Configured foundation</strong>Promotion and voucher rules on this page are not applied to live checkout or the public storefront yet. Prices stay unchanged until the shared pricing path is connected and verified.</div></div>
+    <div class="ed-notice"><Icon name="spark"/><div><strong>Live storefront pricing</strong>Enabled promotion and voucher versions apply to public online-order quotes. Ordinary walk-in POS sales and manual quotes or invoices keep their existing pricing unless staff apply their normal discount workflow.</div></div>
     <p v-if="error && !review && !promotionEditor && !voucherEditor" class="ed-notice error" role="alert">{{ error }}</p>
     <div class="ed-tabs" role="tablist" aria-label="Student program administration">
       <button role="tab" :aria-selected="tab==='students'" :class="{active:tab==='students'}" @click="tab='students'">Student verification</button>
@@ -215,7 +215,7 @@ watch(() => company.value.id, load, { immediate:true });
     </Modal>
 
     <Modal v-if="promotionEditor" :title="promotionEditor._new?'Create promotion':'Create promotion version'" wide :busy="busy" @close="promotionEditor=null;error=''">
-      <div class="ed-notice warning"><Icon name="alert"/><div>This saves configuration only. It does not change prices in checkout or online ordering.</div></div>
+      <div class="ed-notice warning"><Icon name="alert"/><div>An enabled version can change public online-order prices as soon as its validity window starts. Review its scope, limits and dates before saving. Walk-in POS and manual documents are not automatically repriced.</div></div>
       <form id="promotion-form" class="mf-promotion-form" @submit.prevent="savePromotion"><div class="ed-form-grid">
         <label class="ed-field wide"><span>Promotion name</span><input v-model="promotionEditor.name" required maxlength="160"></label><label class="mf-check"><input v-model="promotionEditor.enabled" type="checkbox">Configured as enabled</label>
         <label class="ed-field"><span>Redemption</span><select v-model="promotionEditor.redemptionMode"><option value="automatic">Automatic</option><option value="voucher">Voucher code</option></select></label><label class="ed-field"><span>Discount type</span><select v-model="promotionEditor.discountType"><option value="percentage">Percentage</option><option value="fixed">Fixed amount</option></select></label>

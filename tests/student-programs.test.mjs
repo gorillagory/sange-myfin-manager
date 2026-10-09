@@ -110,9 +110,10 @@ test('money entry converts to integer sen without floating point rounding', () =
   assert.throws(() => senFromRinggit('19.999'), /two decimal/);
 });
 
-test('student programs UI labels the pricing foundation and never captures identity documents', async () => {
+test('student programs UI explains live storefront pricing and never captures identity documents', async () => {
   const component = await readFile(new URL('../src/components/dashboard/StudentProgramsTab.vue', import.meta.url), 'utf8');
-  assert.match(component, /not applied to live checkout/i);
+  assert.match(component, /enabled promotion and voucher versions apply to public online-order quotes/i);
+  assert.match(component, /walk-in POS and manual documents are not automatically repriced/i);
   assert.match(component, /Student verification/);
   assert.match(component, /Promotions &(?:amp;)? vouchers/);
   assert.match(component, /never enter or upload/i);
