@@ -1,244 +1,273 @@
 # MyFin platform expansion
 
-**Status:** implementation programme, 9 October 2026  
-**Baseline:** `6e08462` on the existing PostgreSQL/Fastify/Vue deployment  
-**Scope:** payments and commerce channels, online ordering, inventory, analytics,
-student programmes, and the nexus hosting platform
+**Status:** source release candidate implemented and source-tested; development
+deployment and browser acceptance are pending
 
-## Decisions
+**Recorded:** 9 October 2026
 
-1. MyFin remains the system of record for products, prices, orders, sales,
-   stock effects and accounting records. External marketplaces and payment
-   providers enter through adapters and immutable event ledgers.
-2. "GoCo" is not treated as an identified vendor yet. The closest verified
-   match is Gokoo / 悟空海外, whose partner API includes Malaysia marketplace
-   orders, catalog/stock synchronisation and financial details. That is a
-   commerce-channel integration, not evidence of a general payment gateway.
-   Production credentials and callbacks remain disabled until the vendor and
-   callback-signature contract are confirmed.
-3. One server-side pricing engine will eventually price POS and storefront
-   orders. Promotions, vouchers, student prices and loyalty redemptions will be
-   immutable adjustments on a sale or order; clients will not calculate an
-   authoritative discount.
-4. Existing ordering, customer accounts, reservations and loyalty are extended
-   rather than replaced. The current pickup/table and pay-at-counter flow stays
-   available while delivery and online payment are added behind feature gates.
-5. Existing stock-room records become the ingredient/consumable ledger. A
-   versioned recipe/BOM bridges sellable products to stock items. Existing
-   products remain in legacy catalog-stock mode until each recipe is reconciled
-   and explicitly enabled.
-6. Financial records and immutable ledgers stay authoritative. Analytics facts
-   and forecasts are rebuildable projections with reconciliation and coverage
-   indicators. Profit is never presented when cost coverage is incomplete.
-7. Customer identity stays separate from staff identity. A future SSO link is
-   made only from a verified issuer and subject, never by matching an email
-   string. Loyalty remains separate per workspace.
-8. Student eligibility is an expiring workspace attestation. MyFin should keep
-   institution, status, dates and a reference digest; raw identity-card images
-   are outside the first release. Operators see eligibility and the applied
-   benefit, while reviewers see the administration record.
+**Live baseline:** commit `6e08462`, database migrations through `0019`
 
-## What already works
+**Candidate:** `27190a67bcd4c835c318b13cbd2285d894951c88` on branch
+`codex/platform-expansion`, database migrations through `0028`
 
-The current release already provides:
+This document describes what exists in source. It does not claim that the
+candidate is running in development or production. The live development and
+production containers remain on `6e08462` until the deployment procedure in
+`PLATFORM_EXPANSION_RELEASE_20261009.md` is completed.
 
-- tenant-isolated staff hosts and separate public `order-*` storefront hosts;
-- guest or customer-account ordering, pickup/table QR locations, current menu
-  availability, accepted-order reservations, preparation states and atomic
-  pay-at-counter tendering;
-- workspace-scoped loyalty earning and marketing-consent events;
-- POS sales, quotes, invoices, invoice payments, expenses and cash-book data;
-- product/variant stock deduction and an independent count/weight/volume stock
-  ledger with package conversion, suppliers, expenses, wastage and camera/USB
-  barcode scanning;
-- daily/weekly/monthly financial reports and workspace consolidation.
+## Product and accounting decisions
 
-The material gaps are delivery, online payments/refunds/settlements, marketplace
-channel adapters, promotions and redemption, student verification, ingredient
-recipes, purchasing/lots/cost valuation, multidimensional analytics, scheduled
-reports and forecasting.
+1. MyFin is the system of record for products, prices, orders, sales, stock
+   effects and accounting records. External commerce channels and payment
+   providers enter through adapters and immutable evidence ledgers.
+2. All authoritative prices and monetary adjustments use integer sen. The
+   server prices public orders; a browser never establishes an authoritative
+   promotion, voucher, tax, delivery fee or rounded total.
+3. Quotes are pipeline documents. They are not revenue, cash or stock effects.
+   An issued invoice becomes a receivable, an invoice payment becomes cash, and
+   a POS/customer-order tender creates a paid sale.
+4. Customer identity is separate from staff identity. One customer account may
+   visit several workspaces, while loyalty, consent, student eligibility and
+   order access remain workspace-scoped. A future SSO link must use a verified
+   issuer and subject; email matching is not an identity link.
+5. Existing products remain on catalog-stock behaviour until a versioned
+   recipe is deliberately enabled. An enabled recipe makes the stock-room
+   ledger authoritative for its ingredients.
+6. Analytics projections are rebuildable. Source sales, invoice payments,
+   expenses, stock ledgers and immutable provider evidence remain
+   authoritative. Profit is withheld when cost coverage is incomplete.
+7. Student eligibility is an expiring workspace attestation. Raw identity-card
+   images are outside this release.
 
-A live read-only check on 9 October found zero storefront settings and zero
-active storefront hosts in both `myfin_dev` and `myfin_prod`. The ordering code
-and migration are deployed, but no public shop is currently published. Publishing
-the first shop is therefore a configuration/privacy acceptance task, not a new
-ordering implementation.
+## Source capabilities in the candidate
 
-## Target architecture
+### Commerce, customer accounts and fulfilment
 
-```text
-Staff POS / back office        Public shop / customer account
-           |                                |
-           +---------- MyFin API -----------+
-                          |
-       +------------------+-------------------+
-       |                  |                   |
- PostgreSQL ledgers   pricing/rules       job outbox
- sales, orders,       promotions,         reports, sync,
- payments, stock      loyalty, student    notifications
-       |                                      |
-       +------- adapter boundary -------------+
-               |                        |
-       commerce channels           payment providers
-       (Gokoo candidate)       (separately selected acquirer)
-```
+- Guest checkout and optional customer accounts, with order history and
+  workspace-specific loyalty.
+- Tenant-isolated staff hosts and public storefront hosts, QR/table or pickup
+  locations, live menu availability, idempotent order submission, staff
+  acceptance, preparation, ready, collection/cancellation and exact-once
+  pay-at-counter tender.
+- Opt-in delivery zones with minimum order, exact delivery fee, lead time and a
+  signed address/zone binding. Terminal delivery/contact data is redacted by a
+  scheduled retention job.
+- Versioned promotion and student pricing, voucher digests, usage caps,
+  short-lived server quotes and immutable pricing snapshots. Order acceptance
+  reserves promotion/voucher capacity; cancellation and expiry release it;
+  tender consumes it exactly once.
+- Delivery fee, promotion names and exact fixed discount amounts flow through
+  the paid sale, receipt, PDF and financial reporting.
 
-### Payment and reconciliation
+Customer-order payment remains pay at counter. No online acquirer or hosted
+payment page is enabled. Delivery covers ordering and collection of delivery
+details; dispatch, courier tracking and driver operations are not included.
 
-Two interfaces are required:
+### Inventory, recipes and procurement
 
-- `CommerceChannelAdapter`: authorize merchant, pull/push menu and availability,
-  receive orders, change fulfilment state and import channel financial details.
-- `PaymentProviderAdapter`: create/check/cancel an intent, refund, verify a
-  callback and list settlements.
+- Count, weight and volume stock items, manual movements, wastage, supplier
+  links, package conversion, camera/USB barcode scanning and a separate
+  manufacturer/supplier/internal identifier directory.
+- Purchase orders, partial goods receipts, supplier prices, batch/expiry
+  evidence, weighted-average receipt cost and low-stock alert workflow.
+- Opt-in immutable recipe/BOM versions connecting a sellable product to one or
+  more stock items. POS tender aggregates shared ingredients, locks them in a
+  stable order and writes exactly-once recipe consumption.
+- Accepted public orders reserve the exact recipe version and component
+  quantities in `customer_order_recipe_reservations`. Availability is computed
+  across the complete cart so two products that share an ingredient cannot
+  oversell it.
+- The database stock-floor guard blocks counts, waste, procurement reversals,
+  archive operations and other decrements below active recipe holds. Tender
+  consumes the stored reservation rather than whatever recipe is current at
+  payment time. Cancellation, rejection, expiry and maintenance release holds.
+- Online tender uses server time. An offline sale that crosses a recipe-version
+  boundary requires a manager to record `current_recipe` or `captured_recipe`
+  during receipt review, instead of silently using a client-supplied date.
 
-Both write an append-only provider-event inbox and canonical payment ledger.
-Customer collection, provider receivable, provider fees/tax, refunds and bank
-payout are distinct events. A customer-paid marketplace order is not bank cash
-until settlement is confirmed. Provider credentials stay in protected files or
-secret storage; PostgreSQL stores a credential reference only.
-
-The first Gokoo release is read-only shadow reconciliation in development. It
-must prove merchant binding, token refresh, duplicate and out-of-order callback
-handling, currency/cent mapping, refund mapping and gross-to-net reconciliation
-before it may create a MyFin order or change stock. Catalog/stock write-back is
-the final enablement step. See `GOCO_GOKOO_INTEGRATION_ASSESSMENT.md`.
-
-Bank Negara Malaysia says a party providing merchant-acquiring services must be
-registered. MyFin should therefore integrate a contracted acquirer and avoid
-holding itself out as the acquirer. See [BNM's merchant-acquiring policy](https://www.bnm.gov.my/-/pd-merchant-acquiring-services)
-and [approval/registration guidance](https://www.bnm.gov.my/application-for-approval-and-registration).
-
-### Ordering, promotions and student programme
-
-The existing customer-order lifecycle remains the base. Planned additions are:
-
-1. company outlets and service locations;
-2. service hours, capacity/lead times and pickup slots;
-3. delivery zones, server-calculated fee and short-lived address snapshots;
-4. versioned promotion rules and benefits;
-5. voucher digests, hints, expiry, caps and append-only redemption events;
-6. loyalty redemption and refund/reversal events;
-7. expiring student eligibility and student-only promotion audiences;
-8. provider payment intents, then refund and settlement recovery.
-
-Marketing consent remains separate from service messages. The Malaysian data
-protection authority describes notice, purpose/disclosure, security, retention,
-integrity and access as separate personal-data principles. Student and delivery
-data therefore need explicit purpose, access and retention controls. See the
-[official principles](https://www.pdp.gov.my/ppdpv1/en/principles-of-personal-data-protection/)
-and [privacy-notice guidance](https://www.pdp.gov.my/ppdpv1/en/akta/guidance-on-the-preparation-of-personal-data-protection-notices/).
-
-### Inventory and purchasing
-
-The first implementation connects sellable products to ingredients with an
-opt-in, versioned recipe. A sale aggregates every component, locks stock items in
-stable order, checks availability, and writes exactly-once immutable consumption
-rows in the same database transaction. Existing products do not change until a
-recipe is deliberately enabled. Quotes never consume stock; later, invoices use
-an explicit fulfilment event rather than issue or payment time.
-
-The next inventory release adds a common identifier directory, purchase orders,
-partial goods receipts, supplier prices, batches/expiry, weighted-average cost,
-reason-coded wastage and low-stock alert lifecycle. Manufacturer GTINs stay
-separate from MyFin SKU/internal codes. GS1 defines a GTIN as the identifier for
-a trade item, while richer GS1 symbols can also carry lot and date attributes;
-the code is a lookup key, not a complete product record. See [GS1 GTIN](https://www.gs1.org/standards/id-keys/gtin),
+Manufacturer barcodes remain lookup identifiers. A GTIN does not by itself
+contain MyFin's ingredient, unit conversion, cost or recipe data. See
+[GS1 GTIN](https://www.gs1.org/standards/id-keys/gtin),
 [GS1 barcodes](https://www.gs1.org/standards/barcodes) and
 [GS1 Digital Link](https://www.gs1.org/standards/gs1-digital-link).
 
-### Analytics and reporting
+### Accounting, analytics and reporting
 
-The delivery order is:
+- POS sales, customer-order sales, quotes, invoices, invoice payments, expenses
+  and cash-book movements contribute according to their accounting event.
+  Imported Firebase document shapes are normalized so migrated sales and
+  invoice payments appear in financial analysis.
+- Daily, weekly, monthly and custom-date reporting with company, outlet,
+  category, payment method and channel dimensions. Quote pipeline and converted
+  value stay separate from recognized sales and cash.
+- Operational/customer/student/inventory/product analytics, including order
+  funnel, repeat/spend behaviour, promotion/discount participation, stock
+  turnover, wastage, product performance and payment reconciliation evidence.
+- Cost coverage, COGS and gross-margin views are restricted to owners and
+  SuperAdmins. Student/customer cohort outputs suppress small cohorts.
+- Company-scoped daily/weekly/monthly schedules, immutable in-app report
+  snapshots and advisory demand forecasts. The worker uses retryable jobs and a
+  process-owned, generation-fenced lease so an expired worker cannot finalize a
+  newer worker's job.
 
-1. filtered sales/cash analytics by channel, payment method and product
-   category while preserving current report definitions;
-2. outlet and customer dimensions;
-3. payment reconciliation and order-funnel metrics;
-4. inventory, wastage and product performance;
-5. cost coverage, COGS and gross margin for owners only;
-6. student participation/discount/campaign cohorts with small-cohort suppression;
-7. saved report definitions and in-app scheduled results;
-8. email delivery through a reviewed SMTP contract;
-9. transparent demand forecasting after sufficient history exists.
+Forecasts show their as-of time, history coverage and measured error. They do
+not create purchase orders or stock movements. Scheduled delivery is in-app;
+email delivery has not been connected to Mailcow.
 
-Forecasting begins with weekday/seasonal baselines, an as-of timestamp,
-confidence range and measured WAPE/MAE. It advises purchasing and never places
-an order automatically in the first release.
+### Student programme and administration
 
-## Live hosting assessment
+- Owner/SuperAdmin administration for pending, verified, rejected and revoked
+  student eligibility, including institution, method, validity and non-sensitive
+  reference evidence.
+- Versioned student/public promotions, fixed or percentage benefits, scope,
+  dates, caps and audience rules. Managers can read eligibility needed for
+  operations but cannot mutate verification state.
+- Procurement, storefront, promotion, student, analytics, payment-operations
+  and scheduled-report workspaces are integrated into role-aware navigation.
 
-A read-only sample was taken at approximately **03:34 MYT on 9 October 2026**.
-It is a point-in-time capacity observation, not a load test.
+### Payment and integration boundary
+
+The candidate implements a disabled, provider-neutral foundation:
+
+- versioned integration connection metadata with secret references only;
+- append-only provider event, financial and reconciliation evidence;
+- a pure Gokoo Malaysia financial mapper using exact MYR sen;
+- an owner-only integration/evidence view and payment-operations workspace;
+- strict tenant keys, immutable history and no runtime delete privilege.
+
+The requested "GoCo" vendor identity is still ambiguous. Gokoo / 悟空海外 is
+the closest verified match and documents Malaysia merchant, catalog, order and
+financial-detail APIs. That makes it a plausible commerce channel; it does not
+prove a general payment gateway contract. The current source performs no
+provider network calls, OAuth flow, webhook handling, catalog/stock write-back,
+provider-driven order mutation, payment capture, refund, settlement or cash
+posting. Activation remains blocked by the gates in
+`GOCO_GOKOO_INTEGRATION_ASSESSMENT.md`.
+
+## Data and transaction architecture
+
+```text
+Staff POS / back office          Public shop / customer account
+            |                                 |
+            +----------- MyFin API -----------+
+                            |
+       +--------------------+-----------------------+
+       |                    |                       |
+ PostgreSQL ledgers   pricing/reservations      report worker
+ sales, documents,    promotions, vouchers,     schedules, snapshots,
+ stock, recipes       delivery, ingredients     retention, forecasts
+       |                                            |
+       +------------- adapter boundary -------------+
+                     |                    |
+             commerce channels      payment providers
+             (Gokoo candidate)      (provider not selected)
+```
+
+The acceptance transaction for a recipe-backed online order locks current
+recipe and stock evidence, verifies aggregate ingredient availability, then
+creates catalog, promotion and recipe reservations atomically. Tender verifies
+the stored immutable versions and writes the sale, payment, stock ledger,
+reservation transitions and loyalty effect in one transaction. A failure rolls
+all effects back; an idempotent replay returns the existing result.
+
+Provider customer collection, receivable, fee/tax, refund and bank payout are
+separate facts. A provider-side `pay_code` cannot establish MyFin cash. Bank
+Negara Malaysia requires merchant-acquiring services to be registered; MyFin
+should integrate a contracted acquirer rather than act as one. See the
+[BNM merchant-acquiring policy](https://www.bnm.gov.my/-/pd-merchant-acquiring-services)
+and [registration guidance](https://www.bnm.gov.my/application-for-approval-and-registration).
+
+## Validation recorded for the source candidate
+
+- The expansion through migration `0027` passed 186/186 server tests, 63/63
+  frontend tests, the 27/27 receipt/PDF/POS/customer-order focused set and the
+  production build.
+- A disposable PostgreSQL 16.14 instance applied migrations `0001` through
+  `0027` and passed promotion-cap concurrency, release/reuse, extension,
+  rollback, post-expiry/version-change tender, exact replay and immutable
+  redemption checks.
+- The recipe-order candidate applied the complete migration chain `0001`
+  through `0028` on disposable PostgreSQL 16.13 and passed its 8/8 adversarial
+  database acceptance scenarios: concurrent shared-ingredient holds,
+  version-bound exact-once tender/retry, atomic tender rollback, terminal/expiry
+  release, trusted-time/offline-boundary handling, per-line count-unit
+  validation, late manager-review recovery and the database stock floor.
+- Migration `0028` also has structural/API tests for immutable evidence,
+  transition guards, runtime grants and every terminal release path.
+- Exact candidate `27190a6` passed 200/200 server tests, 66/66 frontend tests,
+  11/11 offline tests, 7/7 management tests, 21/21 focused server checks,
+  22/22 focused frontend checks, the production build with 57 offline assets
+  and `git diff --check`.
+
+Source validation is not deployment, live migration or browser acceptance.
+
+## Hosting and recovery assessment
+
+A read-only sample at approximately **03:34 MYT on 9 October 2026** found enough
+capacity for the development release and a modest single-node production load.
+It was not a load test.
 
 | Component | Observation |
 | --- | --- |
-| `nexus-pbund` | 8 GiB RAM, about 7.8 GiB available; 40 GiB root, 23 GiB available; load 0.03/0.01/0.00 |
-| `nexus-docker` | about 11.6 GiB RAM, 10 GiB available; 79 GiB root, 26 GiB available; `/srv/docker` 295 GiB with 278 GiB available; load 0.14/0.15/0.10 |
-| MyFin production | API healthy at about 88 MiB of its 512 MiB limit; web healthy at about 2.5 MiB of its 128 MiB limit |
-| MyFin development | API healthy at about 74 MiB of its 512 MiB limit; web healthy at about 2.5 MiB of its 128 MiB limit |
-| Shared PostgreSQL | about 200 MiB resident; `max_connections=100`; 18 sessions, one active; `myfin_prod` 14 MiB and `myfin_dev` 11 MiB |
-| Database recovery settings | `archive_mode=off`, PostgreSQL `ssl=off` inside the current trusted data network |
-| Docker storage | 46.82 GB images and 36.99 GB build cache reported; root filesystem headroom must be watched even though `/srv/docker` has ample space |
-| Cloudflare ingress | one `cloudflared` process on `nexus-pbund`, active with zero service restarts since 5 September; no second origin replica observed |
-| Release backups | recent manual production and development checkpoints exist; no MyFin backup systemd timer was observed on `nexus-docker` |
+| `nexus-pbund` | Source/controller and sole Cloudflare tunnel process; 8 GiB RAM with about 7.8 GiB available; 40 GiB root with about 23 GiB available |
+| `nexus-docker` | App runtimes and shared PostgreSQL; about 11.6 GiB RAM with 10 GiB available; `/srv/docker` had about 278 GiB available |
+| MyFin live | Separate healthy dev/prod API and web containers on `6e08462`; expansion migrations are not applied |
+| PostgreSQL | `max_connections=100`; `archive_mode=off`; no continuous WAL archive/PITR observed |
+| Backups | Manual checkpoints existed, but no MyFin backup timer was observed |
+| Ingress | One `cloudflared` origin path; no second replica observed |
 
-Current resources are adequate for the next development slice and a modest
-single-node production workload. They do not establish throughput for online
-ordering, large reports or concurrent integration jobs. Before enabling public
-campaigns or provider callbacks, measure menu, quote, order, tender and one-year
-report latency under representative concurrency, plus PostgreSQL pool, locks,
-I/O and container memory.
-
-The current topology remains appropriate:
+The topology remains:
 
 - `nexus-pbund`: canonical source/controller and Cloudflare tunnel;
-- `nexus-docker`: isolated MyFin web/API containers and the shared PostgreSQL;
-- `temp-mailserver`: Mailcow only, reached through a future reviewed SMTP
+- `nexus-docker`: isolated MyFin web/API/report-worker containers and shared
+  PostgreSQL;
+- `temp-mailserver`: Mailcow only, reached later through a reviewed SMTP
   contract and never used as MyFin compute or storage.
 
-The main production risks are recovery and single failure domains. Set an agreed
-RPO/RTO, automate encrypted off-host backups of database/uploads/config, and run
-scheduled restore drills. PostgreSQL's documented PITR design combines a base
-backup with a continuous WAL archive; enabling it changes the shared database
-platform and must be coordinated and tested for every tenant database. See the
-[PostgreSQL 16 PITR documentation](https://www.postgresql.org/docs/16/continuous-archiving.html).
-Cloudflare supports additional `cloudflared` replicas for origin failover; a
-second replica on a separate host is the appropriate ingress follow-up. See
-[Cloudflare Tunnel high availability](https://developers.cloudflare.com/tunnel/configuration/).
+Before public campaigns, payment callbacks or higher order volume, establish an
+RPO/RTO, automate encrypted off-host database/uploads/config backups, test an
+isolated restore, add PostgreSQL PITR through a coordinated shared-platform
+change, and run a second `cloudflared` replica on another host. Also load-test
+menu, quote, order, tender and one-year report paths while observing pool usage,
+locks, I/O and container memory. See the
+[PostgreSQL 16 PITR documentation](https://www.postgresql.org/docs/16/continuous-archiving.html)
+and [Cloudflare Tunnel high availability](https://developers.cloudflare.com/tunnel/configuration/).
 
-## Execution programme
+## Remaining programme
 
-| Release | Deliverable | Promotion gate |
+| Area | Source status | Remaining work or gate |
 | --- | --- | --- |
-| E1 | filtered financial analytics; inventory recipe bridge; disabled integration/reconciliation foundation; architecture and live-capacity record | full tests/build, migration review, development backup/restore and browser acceptance |
-| E2 | recipe-based POS/customer-order consumption and reversal; common identifier directory; low-stock workflow | legacy/recipe shadow reconciliation, concurrency/idempotency tests, opening-count approval |
-| E3 | outlets, pricing engine, promotions/vouchers, loyalty redemption and student eligibility | pricing parity, discount caps, expiry/refund tests, privacy review |
-| E4 | analytics facts/backfill, outlet/customer/payment/inventory/student views and exports | exact-cent/source reconciliation and permission tests |
-| E5 | report worker, schedules, in-app delivery and baseline forecasts | dedupe/retry/access-revocation tests and measured forecast accuracy |
-| E6 | delivery zones/slots and selected payment-provider intents/refunds/settlements | acquirer contract, hosted payment flow, signed webhook vectors and settlement reconciliation |
-| E7 | Gokoo order intake, then menu/stock write-back | vendor identity confirmed, sandbox finance parity, timeout/retry and stale-write tests |
+| Ordering | Pickup/table, opt-in delivery, customer history and pay-at-counter implemented | Development browser acceptance, public-shop configuration, later online payment and courier operations |
+| Pricing | Promotions, vouchers, student rules and reservation lifecycle implemented for the storefront | Validate live policy/data; manual POS/documents do not automatically apply storefront rules |
+| Inventory | Recipes, ingredient reservations, procurement, identifiers, cost and low-stock workflow implemented | Reconcile opening counts/recipes and approve each opt-in recipe before enabling it |
+| Analytics | Dynamic operational, customer, student, inventory and finance views implemented | Reconcile live imported totals and cost coverage; performance-test large periods |
+| Reporting | In-app schedules, worker and advisory forecasts implemented | Configure worker in dev/prod; email delivery remains future work |
+| Payments | Evidence/reconciliation and operations view implemented | Select contracted acquirer; add hosted intents, signed callbacks, refunds and settlement reconciliation |
+| Gokoo | Disabled metadata/mapper foundation implemented | Confirm vendor identity and contract, then sandbox read-only shadow reconciliation before any write path |
+| Recovery | Deployment scripts and backup commands exist | Fresh backup, off-host checksum, isolated restore drill, PITR and second tunnel replica |
 
-Every release follows `develop -> staging -> main`, uses additive migrations,
-backs up before migration, proves restore separately, deploys exact image IDs,
-and retains the previous application image for rollback. Schema additions remain
-backward compatible so application rollback is possible without destructive
-down-migrations.
+Every promotion follows `develop -> staging -> main`, uses additive migrations,
+backs up before migration, deploys exact image IDs and retains the prior images.
+No destructive down-migration is part of rollback. The release-specific gates
+and acceptance record are in `PLATFORM_EXPANSION_RELEASE_20261009.md`.
 
 ## Acceptance measures
 
-- No duplicate sale, payment, stock or voucher effect under retry/concurrency.
+- No duplicate sale, payment, stock, loyalty, promotion or voucher effect under
+  retry or concurrency.
+- Accepted recipe-backed orders cannot be oversold through another order,
+  manual stock edit, wastage or procurement reversal.
 - Opening stock plus immutable deltas equals the displayed balance.
-- Filtered report totals equal their included detail rows to the cent and the
-  unfiltered report stays identical to the accepted baseline.
+- Filtered report totals equal included detail rows to the sen, and migrated
+  legacy sales/invoice payments reconcile with their source facts.
 - Quotes never count as revenue and never deduct inventory.
 - Marketplace customer payment, provider receivable, fees and bank settlement
   remain separately reconcilable.
 - Cross-workspace customer login never merges loyalty, consent or eligibility.
-- Operator responses contain no provider secrets, cost, margin or verification
-  evidence outside their role.
-- Student and delivery records have explicit purpose, retention and deletion or
-  redaction behaviour.
+- Operator responses contain no provider secrets, cost, margin or student
+  verification evidence outside their role.
+- Student and delivery records have explicit purpose, retention and redaction
+  behaviour.
 - Backups have fresh checksums and a successful isolated restore receipt.
-- Production promotion occurs only from the reviewed commit and exact tested
-  images.
+- Production promotion uses the exact reviewed/tested SHA and image IDs only
+  after development and staging acceptance.
