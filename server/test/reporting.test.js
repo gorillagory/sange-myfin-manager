@@ -22,6 +22,16 @@ test('detail totals follow the approved sales, receipt and expense dates', () =>
   assert.deepEqual(companyReport(rows, '2026-10-01', '2026-10-01').totals, { sales: 0, tax: 0, expenses: 0, cashIn: 0, cashOut: 0, cashFlow: 0, quoted: 0, convertedQuoted: 0 });
 });
 
+test('delivery POS reporting recognizes the collected total including the snapshotted fee', () => {
+  const rows = { transactions: [{ id:'delivery-sale', company_id:'co', source:'pos', document_state:'issued', total:22.45,
+    data:{ businessDate:'2026-10-09', number:'POS-DELIVERY', paymentMethod:'Cash', customerName:'Delivery customer',
+      subtotal:19.91, tax:0, deliveryFee:2.53, totalBeforeRounding:22.44, rounding:.01, total:22.45,
+      items:[{ productId:'latte', desc:'Latte', qty:1, price:19.91 }] } }] };
+  const report = companyReport(rows,'2026-10-09','2026-10-09');
+  assert.equal(report.totals.sales,22.45);assert.equal(report.totals.cashIn,22.45);assert.equal(report.totals.cashFlow,22.45);
+  assert.equal(report.sales[0].total,22.45);assert.equal(report.receipts[0].amount,22.45);
+});
+
 test('imported invoices and expenses post without recognizing legacy quotes as revenue', () => {
   const rows = {
     transactions: [

@@ -81,4 +81,19 @@ test('public delivery queries require both company delivery enablement and an en
   const staff = await readFile(new URL('../src/customer-orders.js', import.meta.url), 'utf8');
   assert.match(staff, /delivery_address_snapshot/);
   assert.match(staff, /contactPurpose: row\.delivery_contact_purpose/);
+  assert.match(staff, /reservationOrderId: id, acceptedOrderQuote: true/);
+});
+
+test('staff fulfillment sees the delivery address while customer status remains region-only', async () => {
+  const [ordersUi,statusUi,posUi] = await Promise.all([
+    readFile(new URL('../../src/components/dashboard/OrdersTab.vue', import.meta.url),'utf8'),
+    readFile(new URL('../../src/components/customer/CustomerOrderStatus.vue', import.meta.url),'utf8'),
+    readFile(new URL('../../src/components/dashboard/EditionPos.vue', import.meta.url),'utf8'),
+  ]);
+  assert.match(ordersUi, /address\.addressLine1/);assert.match(ordersUi, /Customer instruction/);
+  assert.match(ordersUi, /serviceInstructions/);assert.match(ordersUi, /removed under the retention policy/);
+  assert.match(statusUi, /address\.postcode/);assert.match(statusUi, /address\.city/);
+  assert.doesNotMatch(statusUi, /addressLine1|addressLine2/);
+  assert.match(posUi, /deliveryFee:Number\(locked\.deliveryFee\)/);
+  assert.match(posUi, /Delivery fee/);
 });

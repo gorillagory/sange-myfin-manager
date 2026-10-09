@@ -42,4 +42,9 @@ test("sale validation accepts rounded v3 and legacy v2 receipts while projection
   const projected=publicTransaction(current,{role:"operator"});assert.equal(projected.totalBeforeRounding,19.93);assert.equal(projected.rounding,.02);assert.equal(projected.total,19.95);
   const legacy={...current,schemaVersion:2,total:19.93,change:.07};delete legacy.totalBeforeRounding;delete legacy.rounding;assert.equal(parse(saleSchema,legacy).schemaVersion,2);
   assert.throws(()=>parse(saleSchema,{...current,rounding:.03}),/invalid_input/);
+  const delivered=createSale({id:"delivery-sale",items:[cartItem(product)],company,user,method:"Cash",received:30,deliveryFee:2.53});
+  assert.equal(parse(saleSchema,delivered).deliveryFee,2.53);
+  const deliveredProjection=publicTransaction(delivered,{role:"operator"});
+  assert.equal(deliveredProjection.deliveryFee,2.53);assert.equal(deliveredProjection.total,22.45);
+  assert.throws(()=>parse(saleSchema,{...delivered,deliveryFee:2.531}),/invalid_input/);
 });

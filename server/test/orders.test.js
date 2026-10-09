@@ -28,7 +28,8 @@ function fixture(role = 'operator') {
         (!sql.includes("$2='all'") || ['all', 'active', row.status].includes(params[1]) &&
           (params[1] !== 'active' || row.status !== 'completed')) &&
         (params[2] || row.status !== 'completed' || row.sale_actor_id === params[3]);
-      return { rowCount: visible ? 1 : 0, rows: visible ? [{ ...row }] : [] };
+      return { rowCount: visible ? 1 : 0, rows: visible ? [{ ...row,
+        ...(sql.includes('true AS delivery_detail') ? { delivery_detail:true } : {}) }] : [] };
     }
     if (sql.includes('SELECT * FROM myfin.order_events WHERE company_id')) {
       const event = records.find(item => item.request_id === params[1]);
@@ -86,6 +87,26 @@ test('order queue is company scoped and excludes payment, price, cost, and conta
   row.sale_data.customerEmail = '';
   assert.equal((await list(req)).rows[0].customerName, 'Customer',
     'whitespace around an email must not bypass the shared-queue mask');
+});
+
+test('paid delivery fulfillment keeps list privacy and exposes the retained address only in detail', async () => {
+  const { routes, req, row } = fixture();
+  Object.assign(row,{ customer_order_service_mode:'delivery', delivery_fee_sen:253,
+    delivery_zone_snapshot:{ name:'Campus', serviceInstructions:'Call from the lobby' },
+    delivery_address_snapshot:{ addressLine1:'12 Private Street', addressLine2:'Unit 3', postcode:'50000',
+      city:'Kuala Lumpur', state:'Kuala Lumpur', countryCode:'MY', instructions:'Blue door' },
+    delivery_address_redacted_at:null });
+  row.sale_data.deliveryFee=2.53;
+  const list=(await routes.get('GET /api/companies/:company/orders')(req)).rows[0];
+  assert.equal(list.serviceMode,'delivery');assert.equal(list.deliveryFee,2.53);
+  assert.equal(list.delivery.zoneName,'Campus');assert.equal(list.delivery.address,undefined);
+  assert.doesNotMatch(JSON.stringify(list),/Private Street|Blue door/);
+  const detail=(await routes.get('GET /api/companies/:company/orders/:id')(req)).order;
+  assert.equal(detail.delivery.address.addressLine1,'12 Private Street');
+  assert.equal(detail.delivery.address.instructions,'Blue door');
+  row.delivery_address_snapshot={};row.delivery_address_redacted_at=new Date();
+  const redacted=(await routes.get('GET /api/companies/:company/orders/:id')(req)).order;
+  assert.equal(redacted.delivery.address,undefined);assert.equal(redacted.delivery.addressRedacted,true);
 });
 
 test('operators share active fulfillment but see only their own completed sale history', async () => {

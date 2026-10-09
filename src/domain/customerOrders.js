@@ -67,5 +67,7 @@ export function validCustomerOrderCart(items) {
 
 export function customerOrderTenderMatches(sale, totals = {}) {
   const fields = ['subtotal','discountAmount','tax','taxRate','totalBeforeRounding','rounding','total'];
-  return fields.every(field => Number(sale?.[field]) === Number(totals?.[field])) && Number(sale?.discount || 0) === Number(totals?.discount || 0);
+  return fields.every(field => Number(sale?.[field]) === Number(totals?.[field])) &&
+    Number(sale?.deliveryFee || 0) === Number(totals?.deliveryFee || 0) &&
+    Number(sale?.discount || 0) === Number(totals?.discount || 0);
 }

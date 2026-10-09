@@ -165,6 +165,14 @@ test('counter tender must match the accepted immutable cart and server totals', 
   assert.throws(() => assertTenderMatches(order, lines, { ...sale,
     items: [{ ...sale.items[0], qty: 3 }] }),
     error => error.statusCode === 409 && error.message === 'customer_order_checkout_changed');
+
+  const deliveryOrder = { ...order, service_mode:'delivery', delivery_fee_sen:253,
+    total_before_rounding:22.45, rounding:0, total:22.45 };
+  const deliverySale = { ...sale, deliveryFee:2.53, totalBeforeRounding:22.45, rounding:0, total:22.45 };
+  assert.doesNotThrow(() => assertTenderMatches(deliveryOrder, lines, deliverySale));
+  for (const changed of [{ ...deliverySale, deliveryFee:2.5 }, { ...deliverySale, deliveryFee:undefined }])
+    assert.throws(() => assertTenderMatches(deliveryOrder, lines, changed),
+      error => error.statusCode === 409 && error.message === 'customer_order_checkout_changed');
 });
 
 test('counter tender rebuilds receipt lines and customer linkage from the accepted order', async () => {
@@ -179,6 +187,12 @@ test('counter tender rebuilds receipt lines and customer linkage from the accept
   assert.equal(result.client_id, '');
   assert.equal(result.customerName, 'Walk-in customer');
   assert.equal(result.customerEmail, '');
+  assert.equal(Object.hasOwn(result,'deliveryFee'), false);
+
+  const deliveryResult = await canonicalTenderSale(
+    { query: async () => { throw Error('guest must not select a client'); } },
+    { ...order, service_mode:'delivery', delivery_fee_sen:253 }, lines, { ...crafted, deliveryFee:999 });
+  assert.equal(deliveryResult.deliveryFee, 2.53);
 
   const accountResult = await canonicalTenderSale({ query: async () => ({ rows: [] }) },
     { ...order, customer_id: 'customer-a' }, lines, crafted);

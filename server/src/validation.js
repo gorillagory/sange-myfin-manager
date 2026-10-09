@@ -21,6 +21,8 @@ const rounding = z
   .min(-0.02)
   .max(0.02)
   .refine((n) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6);
+const senAmount = z.number().finite().min(0).max(1000000)
+  .refine((n) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6);
 const opt = (x) => x.optional();
 const date = z
   .string()
@@ -193,6 +195,7 @@ export const sale = z.strictObject({
   ...totals,
   totalBeforeRounding: opt(number),
   rounding: opt(rounding),
+  deliveryFee: opt(senAmount),
   paymentMethod: z.enum(["Cash", "QR Pay", "Card"]),
   received: number,
   change: number,

@@ -46,6 +46,15 @@ test('receipt channels use saved merchant/template and disclose Malaysian counte
  assert.deepEqual(receiptLines(sale),documentTextLines(view));assert.deepEqual(receiptPrintJob(sale,'58').lines,receiptLines(sale));assert.match(decodeURIComponent(receiptMailto(sale,'customer@example.test')),/Awaiting server sync/);assert.match(documentTextLines(view).join('\n'),/Saved bank/);assert.ok(documentTextLines(view).includes('Total before rounding: RM 19.08'));assert.ok(documentTextLines(view).includes('Rounding: +RM 0.02'));assert.match(view.displayDate,/13/);
  const legacy={...sale,schemaVersion:2,...totalsFor(items,6,10),change:10.92};delete legacy.totalBeforeRounding;delete legacy.rounding;assert.equal(presentReceipt(legacy).total,19.08);assert.doesNotMatch(receiptLines(legacy).join('\n'),/Rounding/);
 });
+test('delivery receipt channels disclose the snapshotted fee inside the collected total',async()=>{
+ const items=[{desc:'Delivery order',qty:1,price:19.91,unit:'item'}];
+ const sale={id:'delivery-receipt',schemaVersion:3,date:'2026-10-09T02:00:00Z',number:'POS-DELIVERY',type:'Invoice',status:'Paid',items,
+  ...checkoutTotalsFor(items,0,0,2.53),paymentMethod:'Cash',received:22.45,change:0,
+  storeSnapshot:{name:'Delivery Shop',currency:'RM',paperWidth:'58',footer:'Thank you'}};
+ const view=presentReceipt(sale);assert.equal(view.deliveryFee,2.53);assert.equal(view.totalBeforeRounding,22.44);assert.equal(view.rounding,.01);assert.equal(view.total,22.45);
+ const lines=receiptLines(sale);assert(lines.includes('Delivery fee: RM 2.53'));assert(lines.includes('TOTAL: RM 22.45'));
+ const pdf=await createDocumentPdf(view,{paperWidth:'58'});assert.match(content(pdf).join('\n'),/Delivery fee/);
+});
 test('A4 PDF is selectable text with repeated table headers, wrapped long descriptions and numbered pages',async()=>{
  const doc=presentDocument({...draft(),items:Array.from({length:85},(_,index)=>({desc:`Service ${index+1}: `+'Long detailed description with enough content to wrap across the page width. '.repeat(3),qty:1,unit:'hours',price:10})),notes:'Final notes retained after the last item.'},company,customer,template);
  const pdf=await createDocumentPdf(doc);assert(pdf.getNumberOfPages()>2);assert(Math.abs(pdf.internal.pageSize.getWidth()-210)<0.1);assert(Math.abs(pdf.internal.pageSize.getHeight()-297)<0.1);

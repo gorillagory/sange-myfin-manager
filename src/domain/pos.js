@@ -44,22 +44,30 @@ export function roundToFiveSen(value) {
   const adjustmentCents = remainder === 0 ? 0 : remainder <= 2 ? -remainder : 5 - remainder;
   return { totalBeforeRounding: totalCents / 100, rounding: adjustmentCents / 100, total: (totalCents + adjustmentCents) / 100 };
 }
-export function checkoutTotalsFor(items, taxRate = 0, discount = 0) {
-  const totals = totalsFor(items, taxRate, discount);
-  return { ...totals, ...roundToFiveSen(totals.total) };
+function deliveryFeeCents(value) {
+  const amount = value === undefined ? 0 : Number(value), amountCents = cents(amount);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 1000000 ||
+      !Number.isSafeInteger(amountCents) || Math.abs(amount * 100 - amountCents) >= 1e-6)
+    throw new Error('The delivery fee must be an exact amount in sen.');
+  return amountCents;
+}
+export function checkoutTotalsFor(items, taxRate = 0, discount = 0, deliveryFee) {
+  const totals = totalsFor(items, taxRate, discount), feeCents = deliveryFeeCents(deliveryFee);
+  return { ...totals, ...(deliveryFee !== undefined ? { deliveryFee: feeCents / 100 } : {}),
+    ...roundToFiveSen((cents(totals.total) + feeCents) / 100) };
 }
 export function saleTotalsFor(sale = {}) {
-  const hasBefore=sale.totalBeforeRounding!==undefined,hasAdjustment=sale.rounding!==undefined;
-  if(sale.schemaVersion===2){if(hasBefore||hasAdjustment)throw new Error('Legacy receipts cannot contain counter-rounding fields.');return totalsFor(sale.items,sale.taxRate,sale.discount);}
-  if(sale.schemaVersion===3){if(!hasBefore||!hasAdjustment)throw new Error('Counter-rounding fields are required.');return checkoutTotalsFor(sale.items,sale.taxRate,sale.discount);}
+  const hasBefore=sale.totalBeforeRounding!==undefined,hasAdjustment=sale.rounding!==undefined,hasDeliveryFee=sale.deliveryFee!==undefined;
+  if(sale.schemaVersion===2){if(hasBefore||hasAdjustment||hasDeliveryFee)throw new Error('Legacy receipts cannot contain counter-rounding or delivery-fee fields.');return totalsFor(sale.items,sale.taxRate,sale.discount);}
+  if(sale.schemaVersion===3){if(!hasBefore||!hasAdjustment)throw new Error('Counter-rounding fields are required.');return checkoutTotalsFor(sale.items,sale.taxRate,sale.discount,hasDeliveryFee?sale.deliveryFee:undefined);}
   throw new Error('The receipt version is not supported.');
 }
-export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, overrideReason = "" }) {
+export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, deliveryFee, overrideReason = "" }) {
   if (!items.length) throw new Error('Add an item to this order first.');
   if (overrideReason.trim() && (overrideReason.trim().length < 3 || overrideReason.trim().length > 1000)) throw new Error('Use 3 to 1,000 characters for the manager override reason.');
   if (!company?.id || !user?.uid) throw new Error('Sign in and choose a store first.');
   if (!['Cash', 'QR Pay', 'Card'].includes(method)) throw new Error('Choose a payment method.');
-  const totals = checkoutTotalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount);
+  const totals = checkoutTotalsFor(items, company.preferences?.taxRate ?? company.preferences?.tax ?? 0, discount, deliveryFee);
   if (totals.total <= 0) throw new Error('The order total must be greater than zero.');
   const tender = method === 'Cash' ? cents(received) : cents(totals.total);
   if (!Number.isFinite(tender) || tender < cents(totals.total)) throw new Error('Enter enough cash to cover this order.');

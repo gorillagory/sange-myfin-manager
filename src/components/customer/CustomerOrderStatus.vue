@@ -8,22 +8,27 @@ const route = useRoute();
 const code = computed(() => String(route.params.code || '').trim().toUpperCase());
 const result = ref(null), loading = ref(true), error = ref('');
 const isPaid = computed(() => result.value?.order?.paymentState === 'paid' || result.value?.order?.status === 'paid');
+const isDelivery = computed(() => result.value?.order?.serviceMode === 'delivery');
+const deliveryRegion = computed(() => {
+  const address = result.value?.order?.delivery?.address || {};
+  return [[address.postcode,address.city].filter(Boolean).join(' '),address.state].filter(Boolean).join(', ');
+});
 const progress = computed(() => orderProgress(result.value?.order?.status, result.value?.order?.fulfillmentStatus));
 const pollingComplete = computed(() => progress.value.terminal || progress.value.current === 'completed');
 const statusCopy = computed(() => ({
   submitted: ['Order received', 'The shop will review availability and accept your order.'],
-  accepted: ['Order accepted', 'The shop has confirmed your order and pickup estimate.'],
+  accepted: ['Order accepted', isDelivery.value ? 'The shop has confirmed your delivery order and timing.' : 'The shop has confirmed your order and pickup estimate.'],
   preparing: ['Being prepared', 'Your order is now being prepared.'],
-  ready: ['Ready to collect', 'Show this order code and pay at the counter.'],
-  completed: ['Collected', 'Payment and collection are complete.'],
+  ready: [isDelivery.value ? 'Ready for delivery' : 'Ready to collect', isDelivery.value ? 'The shop has prepared your order for delivery.' : 'Show this order code and pay at the counter.'],
+  completed: [isDelivery.value ? 'Delivered' : 'Collected', isDelivery.value ? 'Delivery and payment are complete.' : 'Payment and collection are complete.'],
   cancelled: ['Order cancelled', 'This order will not be prepared. Contact the shop if you need help.'],
-  expired: ['Order expired', 'The collection window has passed. Start a new order when you are ready.'],
+  expired: ['Order expired', isDelivery.value ? 'The delivery window has passed. Start a new order when you are ready.' : 'The collection window has passed. Start a new order when you are ready.'],
   declined: ['Order unavailable', 'The shop could not accept this order.'],
 })[progress.value.current] || ['Order received', 'Check again shortly for an update.']);
 let timer, request = 0;
 
 const timestamp = value => value ? new Intl.DateTimeFormat('en-MY', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kuala_Lumpur' }).format(new Date(value)) : '';
-const eventLabel = event => ({ awaiting_acceptance: 'Order received', accepted: 'Order accepted', preparing: 'Preparation started', ready: 'Ready to collect', paid: 'Payment received', completed: 'Order collected', cancelled: 'Order cancelled', expired: 'Order expired' })[event.status || event.toStatus] || event.label || event.action || 'Order updated';
+const eventLabel = event => ({ awaiting_acceptance: 'Order received', accepted: 'Order accepted', preparing: 'Preparation started', ready: isDelivery.value ? 'Ready for delivery' : 'Ready to collect', paid: 'Payment received', completed: isDelivery.value ? 'Order delivered' : 'Order collected', cancelled: 'Order cancelled', expired: 'Order expired' })[event.status || event.toStatus] || event.label || event.action || 'Order updated';
 const friendlyError = caught => caught?.status === 401 || caught?.status === 403
   ? 'This private order is not available in this browser. Open it on the device that placed the order.'
   : caught?.status === 404 ? 'This order could not be found at this shop.'
@@ -56,18 +61,19 @@ onBeforeUnmount(() => { request++; clearInterval(timer); document.removeEventLis
     <section v-else-if="!result" class="customer-status-card customer-status-empty"><span class="customer-status-symbol">!</span><h1>Status unavailable</h1><p>{{ error }}</p><RouterLink to="/shop" class="customer-status-action">Return to menu</RouterLink></section>
     <section v-else class="customer-status-card">
       <header><div><span class="customer-kicker">ORDER {{ result.order.code || code }}</span><h1>{{ statusCopy[0] }}</h1><p>{{ statusCopy[1] }}</p></div>
-        <span class="customer-payment" :class="{paid:isPaid}">{{ isPaid ? 'Paid' : 'Pay at counter' }}</span></header>
+        <span class="customer-payment" :class="{paid:isPaid}">{{ isPaid ? 'Paid' : isDelivery ? 'Payment pending' : 'Pay at counter' }}</span></header>
       <div v-if="error" class="customer-status-warning" role="alert">{{ error }}</div>
       <ol v-if="!progress.terminal" class="customer-progress">
-        <li v-for="(step,index) in progress.steps" :key="step" :class="{done:index<=progress.currentIndex,current:index===progress.currentIndex}"><i></i><span>{{ {submitted:'Received',accepted:'Accepted',preparing:'Preparing',ready:'Ready',completed:'Collected'}[step] }}</span></li>
+        <li v-for="(step,index) in progress.steps" :key="step" :class="{done:index<=progress.currentIndex,current:index===progress.currentIndex}"><i></i><span>{{ {submitted:'Received',accepted:'Accepted',preparing:'Preparing',ready:'Ready',completed:isDelivery?'Delivered':'Collected'}[step] }}</span></li>
       </ol>
       <div v-else class="customer-terminal">{{ statusCopy[0] }}</div>
       <div class="customer-status-grid">
-        <section><span class="customer-kicker">COLLECTION</span><strong>{{ result.order.location?.tableLabel || result.order.location?.name || (result.order.location?.fulfillmentMode === 'table' ? 'At your table' : 'Shop counter') }}</strong><p v-if="result.order.location?.pickupInstructions">{{ result.order.location.pickupInstructions }}</p><p v-if="result.order.pickupAt">Estimated ready {{ timestamp(result.order.pickupAt) }}</p><p v-if="result.order.expiresAt">Collect before {{ timestamp(result.order.expiresAt) }}</p></section>
-        <section><span class="customer-kicker">TOTAL</span><strong>{{ formatCustomerMoney(result.order.total, result.order.currency) }}</strong><p>{{ isPaid ? 'Payment received' : 'Payment is due when you collect.' }}</p></section>
+        <section><span class="customer-kicker">{{ isDelivery ? 'DELIVERY' : 'COLLECTION' }}</span><strong>{{ isDelivery ? (result.order.delivery?.zoneName || 'Delivery') : result.order.location?.tableLabel || result.order.location?.name || (result.order.location?.fulfillmentMode === 'table' ? 'At your table' : 'Shop counter') }}</strong><template v-if="isDelivery"><p v-if="deliveryRegion">{{ deliveryRegion }}</p><p v-if="result.order.delivery?.serviceInstructions">{{ result.order.delivery.serviceInstructions }}</p><p v-if="result.order.delivery?.addressRedacted">The saved delivery address has been removed.</p></template><p v-else-if="result.order.location?.pickupInstructions">{{ result.order.location.pickupInstructions }}</p><p v-if="result.order.pickupAt">Estimated {{ isDelivery?'delivery':'ready' }} {{ timestamp(result.order.pickupAt) }}</p><p v-if="result.order.expiresAt">{{ isDelivery?'Order window ends':'Collect before' }} {{ timestamp(result.order.expiresAt) }}</p></section>
+        <section><span class="customer-kicker">TOTAL</span><strong>{{ formatCustomerMoney(result.order.total, result.order.currency) }}</strong><p>{{ isPaid ? 'Payment received' : isDelivery ? 'The shop will record payment for this delivery.' : 'Payment is due when you collect.' }}</p></section>
       </div>
       <section class="customer-status-items"><span class="customer-kicker">ORDER DETAILS</span>
         <div v-for="(item,index) in result.order.items || []" :key="item.id || index"><span>{{ item.quantity }} × {{ item.name || item.description }}<small v-if="item.variantName || item.variant">{{ item.variantName || item.variant }}</small></span><strong>{{ formatCustomerMoney(item.lineTotal ?? item.total ?? item.unitPrice * item.quantity, result.order.currency) }}</strong></div>
+        <div v-if="isDelivery"><span>Delivery fee</span><strong>{{ formatCustomerMoney(result.order.deliveryFee||0, result.order.currency) }}</strong></div>
       </section>
       <section v-if="result.events?.length" class="customer-timeline"><span class="customer-kicker">HISTORY</span>
         <div v-for="event in result.events" :key="event.id || event.version"><i></i><p><strong>{{ eventLabel(event) }}</strong><small>{{ timestamp(event.createdAt) }}<template v-if="event.note"> · {{ event.note }}</template></small></p></div>

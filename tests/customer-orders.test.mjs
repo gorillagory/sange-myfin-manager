@@ -26,6 +26,10 @@ test('counter tender must match every accepted quote total', () => {
   const totals={subtotal:17,discountAmount:0,discount:0,tax:1.02,taxRate:6,totalBeforeRounding:18.02,rounding:-0.02,total:18};
   assert.equal(customerOrderTenderMatches({...totals},totals),true);
   assert.equal(customerOrderTenderMatches({...totals,tax:1.36,taxRate:8,total:18.35},totals),false);
+  const delivery={...totals,deliveryFee:2.53,totalBeforeRounding:20.55,rounding:0,total:20.55};
+  assert.equal(customerOrderTenderMatches({...delivery},delivery),true);
+  assert.equal(customerOrderTenderMatches({...delivery,deliveryFee:2.50,total:20.50},delivery),false);
+  assert.equal(customerOrderTenderMatches({...totals}, {...totals,deliveryFee:0}),true);
 });
 
 test('summary counts preserve explicit active and derive it when absent', () => {

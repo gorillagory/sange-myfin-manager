@@ -55,6 +55,14 @@ await test('discount totals and immutable template reference retain receipt ID w
  const local=localReceiptPresentation(sale,company);assert.deepEqual(local.templateSnapshot,company.receiptTemplate.settings);assert.equal(local.companySnapshot.name,'Merchant');assert.equal(local.id,sale.id);assert.equal(local.total,sale.total);
 });
 
+await test('offline receipt protection preserves an accepted delivery fee and collected total',()=>{
+ const company={id:'a',name:'Merchant',preferences:{taxRate:0,currency:'RM'}};
+ const sale=createSale({id:'delivery-offline',items:[{productId:'p',qty:1,price:19.91}],company,user:staff,method:'Cash',received:22.45,deliveryFee:2.53,offline:true});
+ const cached=safePaidSale(sale),presented=localReceiptPresentation(sale,company);
+ assert.equal(cached.deliveryFee,2.53);assert.equal(cached.totalBeforeRounding,22.44);assert.equal(cached.total,22.45);
+ assert.equal(presented.deliveryFee,2.53);assert.equal(presented.total,22.45);
+});
+
 await test('review eligibility matches real suffixed server codes without retrying altered receipt payloads',()=>{
  for(const message of ['receipt_review_required','receipt_review_required_pricing_policy','receipt_review_required_merchant_changed','receipt_review_required_product_changed','manager_override_reason_required','stock_unavailable'])assert.ok(needsReceiptReview({message}));
  for(const message of ['receipt_payload_changed','invalid_input','session_required','product_not_found'])assert.equal(needsReceiptReview(message),false);

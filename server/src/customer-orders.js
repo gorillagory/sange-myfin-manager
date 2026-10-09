@@ -133,6 +133,7 @@ function assertTenderMatches(order, lines, sale) {
     sale.subtotal === Number(order.subtotal) &&
     sale.discountAmount === Number(order.discount_amount) && sale.discount === 0 &&
     sale.tax === Number(order.tax) && sale.taxRate === Number(order.tax_rate) &&
+    cents(sale.deliveryFee || 0) === Number(order.delivery_fee_sen || 0) &&
     sale.totalBeforeRounding === Number(order.total_before_rounding) && sale.rounding === Number(order.rounding) &&
     sale.total === Number(order.total);
   if (!fieldsMatch || JSON.stringify(canonical(actual)) !== JSON.stringify(canonical(expected)))
@@ -140,13 +141,15 @@ function assertTenderMatches(order, lines, sale) {
 }
 
 async function canonicalTenderSale(c, order, lines, sale) {
+  const { deliveryFee: _untrustedDeliveryFee, ...saleWithoutDeliveryFee } = sale;
   let clientId = '';
   if (order.customer_id) clientId = (await c.query(
     `SELECT client_id FROM myfin.customer_company_links WHERE company_id=$1 AND customer_id=$2`,
     [order.company_id, order.customer_id],
   )).rows[0]?.client_id || '';
   return {
-    ...sale,
+    ...saleWithoutDeliveryFee,
+    ...(order.service_mode === 'delivery' ? { deliveryFee: Number(order.delivery_fee_sen || 0) / 100 } : {}),
     items: lines.map(line => ({ productId: line.product_id, variantId: line.variant_id || '',
       variant: line.variant_name || '', sku: line.sku || '', desc: line.description,
       price: Number(line.unit_price), unit: line.unit, qty: Number(line.quantity) })),
@@ -321,7 +324,8 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     const lines = await orderLines(c, companyId, id);
     assertTenderMatches(order, lines, input.sale);
     const acceptedSale = await canonicalTenderSale(c, order, lines, input.sale);
-    const sale = await checkout(c, req.identity, companyId, acceptedSale, null, { reservationOrderId: id });
+    const sale = await checkout(c, req.identity, companyId, acceptedSale, null,
+      { reservationOrderId: id, acceptedOrderQuote: true });
     await c.query(
       `INSERT INTO myfin.customer_order_payments(company_id,order_id,sale_id,actor_id,request_id,request_digest)
        VALUES($1,$2,$3,$4,$5,$6)`, [companyId, id, input.sale.id, req.identity.id, input.requestId, requestDigest],

@@ -34,17 +34,26 @@ function displayName(row) {
   return (email && trimmed.toLowerCase() === email) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
     ? 'Customer' : name;
 }
-const output = row => ({
-  id: row.id, saleId: row.id, companyId: row.company_id,
-  number: row.sale_data?.number || '', status: row.status,
-  version: Number(row.version), legacy: row.legacy,
-  clientId: row.client_id || '',
-  customerName: displayName(row),
-  items: (row.sale_data?.items || []).map(line),
-  saleDate: row.sale_data?.date || null,
-  createdAt: row.created_at, updatedAt: row.updated_at,
-  completedAt: row.completed_at,
-});
+const output = row => {
+  const mode = row.customer_order_service_mode || '', zone = row.delivery_zone_snapshot || {};
+  const address = row.delivery_address_snapshot || {}, delivery = mode === 'delivery' ? {
+    serviceMode: 'delivery', deliveryFee: Number(row.sale_data?.deliveryFee ?? Number(row.delivery_fee_sen || 0) / 100),
+    delivery: { zoneName: zone.name || '', serviceInstructions: zone.serviceInstructions || '',
+      addressRedacted: Boolean(row.delivery_address_redacted_at),
+      ...(row.delivery_detail && !row.delivery_address_redacted_at ? { address } : {}) },
+  } : mode ? { serviceMode: mode } : {};
+  return {
+    id: row.id, saleId: row.id, companyId: row.company_id,
+    number: row.sale_data?.number || '', status: row.status,
+    version: Number(row.version), legacy: row.legacy,
+    clientId: row.client_id || '',
+    customerName: displayName(row),
+    items: (row.sale_data?.items || []).map(line),
+    saleDate: row.sale_data?.date || null,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    completedAt: row.completed_at, ...delivery,
+  };
+};
 const eventOutput = row => ({
   id: row.id, version: Number(row.version), action: row.action, fromStatus: row.from_status,
   toStatus: row.to_status, note: row.note,
@@ -81,9 +90,14 @@ async function counts(c, companyId, who) {
 }
 async function order(c, companyId, id, who, lock = false) {
   const result = await c.query(`SELECT o.*,t.data AS sale_data,t.actor_id AS sale_actor_id,
-    coalesce(nullif(o.customer_name,''),cl.data->>'name','Walk-in customer') AS customer_display
+    coalesce(nullif(o.customer_name,''),cl.data->>'name','Walk-in customer') AS customer_display,
+    cor.service_mode AS customer_order_service_mode,cor.delivery_zone_snapshot,
+    cor.delivery_address_snapshot,cor.delivery_address_redacted_at,cor.delivery_fee_sen,
+    true AS delivery_detail
     FROM myfin.orders o JOIN myfin.transactions t ON t.company_id=o.company_id AND t.id=o.id
     LEFT JOIN myfin.clients cl ON cl.company_id=o.company_id AND cl.id=o.client_id
+    LEFT JOIN myfin.customer_order_payments cop ON cop.company_id=o.company_id AND cop.sale_id=o.id
+    LEFT JOIN myfin.customer_order_requests cor ON cor.company_id=cop.company_id AND cor.id=cop.order_id
     WHERE o.company_id=$1 AND o.id=$2 AND ($3 OR o.status<>'completed' OR t.actor_id=$4)
     ${lock ? 'FOR UPDATE OF o' : ''}`, [companyId, id, who ? privileged(who) : true, who?.id || '']);
   if (!result.rowCount) v.fail(404, 'order_not_found');
@@ -113,9 +127,12 @@ export function registerOrders(app, { scoped, audit }) {
     const { view, limit, before } = v.parse(querySchema, req.query);
     const [beforeDate, beforeId] = decodeCursor(before);
     const result = await c.query(`SELECT o.*,t.data AS sale_data,
-      coalesce(nullif(o.customer_name,''),cl.data->>'name','Walk-in customer') AS customer_display
+      coalesce(nullif(o.customer_name,''),cl.data->>'name','Walk-in customer') AS customer_display,
+      cor.service_mode AS customer_order_service_mode,cor.delivery_zone_snapshot,cor.delivery_fee_sen
       FROM myfin.orders o JOIN myfin.transactions t ON t.company_id=o.company_id AND t.id=o.id
       LEFT JOIN myfin.clients cl ON cl.company_id=o.company_id AND cl.id=o.client_id
+      LEFT JOIN myfin.customer_order_payments cop ON cop.company_id=o.company_id AND cop.sale_id=o.id
+      LEFT JOIN myfin.customer_order_requests cor ON cor.company_id=cop.company_id AND cor.id=cop.order_id
       WHERE o.company_id=$1 AND ($2='all' OR ($2='active' AND o.status<>'completed') OR o.status=$2)
         AND ($3 OR o.status<>'completed' OR t.actor_id=$4)
         AND ($5::timestamptz IS NULL OR (o.created_at,o.id)<($5::timestamptz,$6))
