@@ -602,6 +602,7 @@ export function registerStudentPrograms(app, {
 
   app.put('/api/companies/:company/student-eligibilities/:customerId', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'studentEligibilityReview');
+    if (!owner(req.identity)) v.fail(403, 'access_denied');
     const customerId = v.parse(v.id, req.params.customerId);
     const result = await reviewStudent(c, req.identity, companyId, customerId, v.parse(reviewSchema, req.body));
     await audit(c, req.identity, companyId, 'Student eligibility reviewed',

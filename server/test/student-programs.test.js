@@ -95,8 +95,8 @@ test('operators are denied student-program access before tenant queries', async 
   assert.equal(fixture.calls.length, 0);
 });
 
-test('manager verification appends an immutable event in the same scope without storing raw evidence', async () => {
-  const fixture = register({ role: 'manager', query(sql) {
+test('workspace-owner verification appends an immutable event in the same scope without storing raw evidence', async () => {
+  const fixture = register({ role: 'workspace_owner', query(sql) {
     if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
     if (sql.includes('SELECT EXISTS')) return { rows: [{ found: true }], rowCount: 1 };
     if (sql.includes('FROM myfin.student_eligibilities') && sql.includes('FOR UPDATE'))
@@ -118,8 +118,8 @@ test('manager verification appends an immutable event in the same scope without 
   assert.doesNotMatch(JSON.stringify(result), /digest|student.?number/i);
   const currentWrite = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.student_eligibilities'));
   const eventWrite = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.student_eligibility_events'));
-  const visibility = fixture.calls.find(call => call.sql.includes('customer_company_links'));
-  assert.deepEqual(visibility.params, ['workspace-a', 'company-a', 'customer-a']);
+  const visibility = fixture.calls.find(call => call.sql.includes('customer_workspace_profiles'));
+  assert.deepEqual(visibility.params, ['workspace-a', 'customer-a']);
   assert.match(currentWrite.params[5], /^[0-9a-f]{64}$/);
   assert.equal(eventWrite.params[10], currentWrite.params[5]);
   assert.equal(eventWrite.params[4], 'verify');
@@ -127,8 +127,18 @@ test('manager verification appends an immutable event in the same scope without 
   assert.equal(fixture.audits[0].details.includes('***1234'), true);
 });
 
-test('student review rejects raw document and unmasked identifier fields before reading customer data', async () => {
+test('managers retain read access but cannot review workspace-wide student eligibility', async () => {
   const fixture = register({ role: 'manager' });
+  const handler = fixture.routes.get('PUT /api/companies/:company/student-eligibilities/:customerId');
+  await assert.rejects(handler(fixture.request({
+    expectedVersion: 0, status: 'pending', institutionName: 'Example College',
+    referenceHint: '', validUntil: null, reason: '',
+  }, { customerId: 'customer-a' })), error => error.statusCode === 403 && error.message === 'access_denied');
+  assert.equal(fixture.calls.length, 0);
+});
+
+test('student review rejects raw document and unmasked identifier fields before reading customer data', async () => {
+  const fixture = register({ role: 'workspace_owner' });
   const handler = fixture.routes.get('PUT /api/companies/:company/student-eligibilities/:customerId');
   for (const extra of [
     { studentNumber: 'ABC1234' }, { document: 'data:image/png;base64,abc' }, { referenceHint: 'ABC1234' },

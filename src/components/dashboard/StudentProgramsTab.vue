@@ -16,6 +16,7 @@ const company = computed(() => Store.state.selectedCompany || {});
 const students = computed(() => data.value?.students || data.value?.eligibilities || []);
 const promotions = computed(() => data.value?.promotions || []);
 const owner = computed(() => Store.can('promotionsManage'));
+const canReviewEligibility = computed(() => Store.can('studentEligibilityReview'));
 
 const stamp = value => {
   if (!value) return '—';
@@ -71,6 +72,7 @@ const load = () => loadPage();
 const loadMore = () => data.value?.next && loadPage(data.value.next, true);
 
 function openReview(row, status) {
+  if (!canReviewEligibility.value) return;
   review.value = {
     row, expectedVersion:versionOf(row), status,
     institutionName:institutionOf(row), referenceHint:hintOf(row),
@@ -177,13 +179,14 @@ watch(() => company.value.id, load, { immediate:true });
     </div>
 
     <section v-if="tab==='students'" class="mf-program-section" aria-labelledby="student-verification-title">
-      <div class="ed-section-head"><div><h2 id="student-verification-title">Student verification</h2><small>Managers and owners can review registered customers for this workspace.</small></div><span class="ed-pill">{{ students.length }} customer{{ students.length===1?'':'s' }}</span></div>
+      <div class="ed-section-head"><div><h2 id="student-verification-title">Student verification</h2><small>Managers can view eligibility. Workspace owners and super administrators control reviews across the workspace.</small></div><span class="ed-pill">{{ students.length }} customer{{ students.length===1?'':'s' }}</span></div>
+      <div v-if="!canReviewEligibility" class="ed-notice"><Icon name="shield"/><div><strong>Read-only for managers</strong>A workspace owner must start, verify, reject, renew or revoke student eligibility.</div></div>
       <div class="ed-notice"><Icon name="shield"/><div><strong>Minimal verification record</strong>Check evidence outside MyFin. Never enter or upload student ID numbers, identity documents, scans or photos. Save only the institution, decision, expiry and an optional masked hint such as ***1234.</div></div>
       <div v-if="loading && !data" class="ed-empty" role="status">Loading student eligibility…</div>
       <div v-else class="ed-table-wrap"><table class="ed-table">
         <thead><tr><th>Customer</th><th>Eligibility</th><th>Institution</th><th>Reference / expiry</th><th>Review</th></tr></thead>
         <tbody>
-          <tr v-for="row in students" :key="personId(row)"><td><strong>{{ personName(row) }}</strong><small>{{ personEmail(row) }}</small></td><td><span class="ed-pill" :class="{ready:statusOf(row)==='verified',warning:statusOf(row)==='pending'}">{{ eligibilityStatusLabel(statusOf(row)) }}</span><small v-if="versionOf(row)">Version {{ versionOf(row) }}</small></td><td>{{ institutionOf(row) || 'Not supplied' }}</td><td><strong>{{ hintOf(row) || 'No hint saved' }}</strong><small>{{ expiryOf(row) ? `Expires ${stamp(expiryOf(row))}` : 'No active expiry' }}</small></td><td><div class="ed-actions"><button v-for="action in eligibilityActions({status:statusOf(row)})" :key="action" class="ed-btn small" :disabled="!Store.state.online" @click="openReview(row,action)">{{ action==='pending'?'Start review':action==='verified'?(statusOf(row)==='verified'?'Renew':'Verify'):action==='rejected'?'Reject':'Revoke' }}</button></div></td></tr>
+          <tr v-for="row in students" :key="personId(row)"><td><strong>{{ personName(row) }}</strong><small>{{ personEmail(row) }}</small></td><td><span class="ed-pill" :class="{ready:statusOf(row)==='verified',warning:statusOf(row)==='pending'}">{{ eligibilityStatusLabel(statusOf(row)) }}</span><small v-if="versionOf(row)">Version {{ versionOf(row) }}</small></td><td>{{ institutionOf(row) || 'Not supplied' }}</td><td><strong>{{ hintOf(row) || 'No hint saved' }}</strong><small>{{ expiryOf(row) ? `Expires ${stamp(expiryOf(row))}` : 'No active expiry' }}</small></td><td><div v-if="canReviewEligibility" class="ed-actions"><button v-for="action in eligibilityActions({status:statusOf(row)})" :key="action" class="ed-btn small" :disabled="!Store.state.online" @click="openReview(row,action)">{{ action==='pending'?'Start review':action==='verified'?(statusOf(row)==='verified'?'Renew':'Verify'):action==='rejected'?'Reject':'Revoke' }}</button></div><span v-else class="ed-muted">Read only</span></td></tr>
           <tr v-if="!students.length"><td colspan="5" class="ed-empty">No registered customer is available for student review in this workspace.</td></tr>
         </tbody>
       </table></div><div v-if="data?.next" class="ed-actions"><button class="ed-btn" :disabled="loading" @click="loadMore">{{ loading?'Loading…':'Load more customers' }}</button></div>
@@ -200,7 +203,7 @@ watch(() => company.value.id, load, { immediate:true });
       <div v-if="!loading && !promotions.length" class="ed-empty"><Icon name="spark"/><h3>No promotion rules configured.</h3><p>Create a disabled rule first, review its scope, then enable a new version when ready.</p></div>
     </section>
 
-    <Modal v-if="review" :title="`${eligibilityStatusLabel(review.status)} · ${personName(review.row)}`" :busy="busy" @close="review=null;error=''">
+    <Modal v-if="review&&canReviewEligibility" :title="`${eligibilityStatusLabel(review.status)} · ${personName(review.row)}`" :busy="busy" @close="review=null;error=''">
       <div class="ed-notice"><Icon name="shield"/><div>Review evidence outside MyFin. Never enter or upload an ID number or document here.</div></div>
       <form id="student-review-form" class="ed-form-grid" @submit.prevent="saveReview">
         <label class="ed-field wide"><span>Institution name</span><input v-model="review.institutionName" required minlength="2" maxlength="160" autocomplete="organization"></label>

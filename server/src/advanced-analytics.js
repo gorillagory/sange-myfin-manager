@@ -60,11 +60,12 @@ function percentageOfSen(amount, percentage) {
 }
 
 function allocate(total, weights) {
-  const amount = total < 0n ? 0n : total;
-  const sum = weights.reduce((value, weight) => value + (weight > 0n ? weight : 0n), 0n);
+  const sign = total < 0n ? -1n : 1n, amount = total < 0n ? -total : total;
+  const magnitudes = weights.map(weight => weight < 0n ? -weight : weight);
+  const sum = magnitudes.reduce((value, weight) => value + weight, 0n);
   if (!sum) return weights.map(() => 0n);
-  const parts = weights.map((weight, index) => {
-    const numerator = amount * (weight > 0n ? weight : 0n);
+  const parts = magnitudes.map((weight, index) => {
+    const numerator = amount * weight;
     return { index, value: numerator / sum, remainder: numerator % sum };
   });
   let remainder = amount - parts.reduce((value, part) => value + part.value, 0n);
@@ -73,31 +74,34 @@ function allocate(total, weights) {
     if (!remainder) break;
     part.value += 1n; remainder -= 1n;
   }
-  return parts.sort((left, right) => left.index - right.index).map(part => part.value);
+  return parts.sort((left, right) => left.index - right.index).map(part => part.value * sign);
 }
 
 function normalizedLine(item = {}) {
   const quantity = decimal(item.qty ?? item.quantity);
   const price = decimal(item.price ?? item.unitPrice ?? item.unit_price);
-  if (!quantity || quantity.digits <= 0n || !price || price.digits < 0n) return null;
+  if (!quantity || quantity.digits === 0n || !price || price.digits < 0n) return null;
   const quantityMilli = roundRatio(quantity.digits * 1000n, power10(quantity.scale));
   const grossSen = lineAmountSen(item.price ?? item.unitPrice ?? item.unit_price, item.qty ?? item.quantity);
-  if (quantityMilli === null || quantityMilli <= 0n || grossSen === null || grossSen < 0n) return null;
+  if (quantityMilli === null || quantityMilli === 0n || grossSen === null) return null;
   const hasCost = Object.prototype.hasOwnProperty.call(item, 'cost')
     || Object.prototype.hasOwnProperty.call(item, 'unitCost')
     || Object.prototype.hasOwnProperty.call(item, 'unit_cost');
   const rawCost = item.cost ?? item.unitCost ?? item.unit_cost;
-  const costSen = hasCost ? lineAmountSen(rawCost, item.qty ?? item.quantity) : null;
+  const unitCost = hasCost ? decimal(rawCost) : null;
+  const costSen = unitCost && unitCost.digits >= 0n
+    ? lineAmountSen(rawCost, item.qty ?? item.quantity) : null;
   return {
     productId: safeText(item.productId ?? item.product_id, 128),
     sku: safeText(item.sku, 120), description: safeText(item.desc ?? item.description, 160) || 'Unlabelled item',
     quantityMilli, grossSen,
-    costSen: costSen !== null && costSen >= 0n ? costSen : null,
+    costSen,
   };
 }
 
 export function analyzeSalesRows(rows = []) {
   let salesSen = 0n, taxSen = 0n, netSalesSen = 0n, coveredRevenueSen = 0n, recognizedCogsSen = 0n;
+  let coverageRevenueSen = 0n, coveredRevenueMagnitudeSen = 0n;
   let salesLineCount = 0, costedSalesLineCount = 0, fullyCostedSalesCount = 0, salesWithoutUsableLines = 0;
   const products = new Map();
   for (const row of rows) {
@@ -120,8 +124,9 @@ export function analyzeSalesRows(rows = []) {
       }
     }
     tax ??= 0n;
-    const net = total > tax ? total - tax : 0n;
+    const net = total - tax;
     salesSen += total; taxSen += tax; netSalesSen += net;
+    coverageRevenueSen += net < 0n ? -net : net;
     if (!lines.length) { if (net) salesWithoutUsableLines += 1; continue; }
     const allocation = allocate(net, lines.map(line => line.grossSen));
     let fullyCosted = true;
@@ -130,7 +135,9 @@ export function analyzeSalesRows(rows = []) {
       if (line.costSen === null) fullyCosted = false;
       else {
         costedSalesLineCount += 1;
-        coveredRevenueSen += allocation[index]; recognizedCogsSen += line.costSen;
+        coveredRevenueSen += allocation[index];
+        coveredRevenueMagnitudeSen += allocation[index] < 0n ? -allocation[index] : allocation[index];
+        recognizedCogsSen += line.costSen;
       }
       const key = line.productId ? `product:${line.productId}`
         : line.sku ? `sku:${line.sku.toLocaleLowerCase('en-US')}`
@@ -144,8 +151,8 @@ export function analyzeSalesRows(rows = []) {
   }
   const missingCostLineCount = salesLineCount - costedSalesLineCount;
   const complete = missingCostLineCount === 0 && salesWithoutUsableLines === 0;
-  const coverageBasisPoints = netSalesSen > 0n
-    ? Number((coveredRevenueSen * 10000n + netSalesSen / 2n) / netSalesSen)
+  const coverageBasisPoints = coverageRevenueSen > 0n
+    ? Number((coveredRevenueMagnitudeSen * 10000n + coverageRevenueSen / 2n) / coverageRevenueSen)
     : salesLineCount ? Math.round(costedSalesLineCount * 10000 / salesLineCount) : 0;
   const productPerformance = [...products.values()]
     .sort((left, right) => left.grossLineSalesSen === right.grossLineSalesSen
@@ -247,8 +254,10 @@ const ORDER_SQL = `WITH period_orders AS (
     count(*) FILTER(WHERE customer_id IS NOT NULL)::integer AS account_orders,
     count(DISTINCT customer_id)::integer AS registered_customers,
     (SELECT count(*)::integer FROM repeat_customers) AS repeat_customers,
-    coalesce(round(sum(total)*100),0)::bigint AS order_value_sen,
-    coalesce(round(avg(total)*100),0)::bigint AS average_order_sen,
+    coalesce(round(sum(total)*100),0)::bigint AS submitted_demand_value_sen,
+    coalesce(round(avg(total)*100),0)::bigint AS submitted_average_order_sen,
+    coalesce(round(sum(total) FILTER(WHERE payment_state='paid')*100),0)::bigint AS paid_order_value_sen,
+    coalesce(round(avg(total) FILTER(WHERE payment_state='paid')*100),0)::bigint AS paid_average_order_sen,
     round(avg(extract(epoch FROM (accepted_at-created_at))/60)
       FILTER(WHERE accepted_at IS NOT NULL))::integer AS average_acceptance_minutes
   FROM period_orders`;
@@ -341,11 +350,17 @@ const EXPENSE_SQL = `SELECT coalesce(sum(amount_sen),0)::bigint AS amount_sen FR
 
 function orderOutput(row = {}) {
   const total = safeInt(row.total_orders);
+  const paidOrderValueSen = String(row.paid_order_value_sen || '0');
+  const paidAverageOrderSen = String(row.paid_average_order_sen || '0');
   return {
     total, statuses:{ submitted:safeInt(row.awaiting_acceptance), accepted:safeInt(row.accepted),
       preparing:safeInt(row.preparing), ready:safeInt(row.ready), cancelled:safeInt(row.cancelled),
       expired:safeInt(row.expired), paid:safeInt(row.paid) },
-    orderValueSen:String(row.order_value_sen || '0'), averageOrderSen:String(row.average_order_sen || '0'),
+    submittedDemandValueSen:String(row.submitted_demand_value_sen || '0'),
+    submittedAverageOrderSen:String(row.submitted_average_order_sen || '0'),
+    paidOrderValueSen, paidAverageOrderSen,
+    // Compatibility aliases keep an older UI accurate during a rolling deployment.
+    orderValueSen:paidOrderValueSen, averageOrderSen:paidAverageOrderSen,
     averageAcceptanceMinutes:row.average_acceptance_minutes === null || row.average_acceptance_minutes === undefined
       ? null : Number(row.average_acceptance_minutes),
   };
@@ -393,7 +408,7 @@ export function registerAdvancedAnalytics(app, { scoped }) {
       productPerformance:saleMetrics.productPerformance,student:studentAggregate(student.rows[0]),
       inventory:inventoryOutput(inventory.rows[0]),
       coverage:{
-        orders:'Online order requests created in the selected range. POS walk-ins and manually issued invoices are outside customer/order aggregates.',
+        orders:'Online order requests created in the selected range. Submitted demand includes later cancellations and expiries; paid value includes only paid requests. POS walk-ins and manually issued invoices are outside customer/order aggregates.',
         products:'Issued POS and invoice lines with valid business or issue dates. Values are gross line sales before transaction-level discount, tax and rounding.',
         students:'Student activity appears only when immutable student pricing or redemption evidence exists. Small cohorts are suppressed.',
       } };

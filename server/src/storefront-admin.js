@@ -54,6 +54,9 @@ const deliveryZoneSchema = z.strictObject({
 const hashToken = token => createHash('sha256').update(token).digest('hex');
 const canConfigure = who => owner(who) || manager(who);
 function requireConfigure(who) { if (!canConfigure(who)) v.fail(403, 'access_denied'); }
+const lockDeliveryConfiguration = (c, companyId) => c.query(
+  'SELECT pg_advisory_xact_lock(hashtextextended($1,35))', [`${companyId}:storefront-delivery-configuration`],
+);
 
 async function configOutput(c, companyId) {
   const settings = (await c.query('SELECT * FROM myfin.storefront_settings WHERE company_id=$1', [companyId])).rows[0];
@@ -118,6 +121,7 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
   app.put('/api/companies/:company/storefront', req => scoped(req, async (c, companyId) => {
     requireConfigure(req.identity);
     const input = v.parse(configSchema, req.body);
+    await lockDeliveryConfiguration(c, companyId);
     const deliveryEnabled = input.deliveryEnabled === undefined
       ? Boolean((await c.query(
         'SELECT delivery_enabled FROM myfin.storefront_settings WHERE company_id=$1 FOR UPDATE', [companyId],
@@ -127,19 +131,25 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
       const hostname = normalizeHostname(input.hostname);
       if (!hostname || !hostname.startsWith('order-') || !hostAllowed(hostname, authOptions.allowedHosts))
         v.fail(400, 'invalid_storefront_hostname');
+      // This is the same hostname lock used by the cross-surface database trigger. It also
+      // protects a currently absent hostname until this transaction commits its claim.
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,18))', [hostname]);
       const existing = await c.query(
-        `SELECT company_id FROM myfin.storefront_hosts WHERE hostname=$1 FOR UPDATE`, [hostname],
+        'SELECT company_id FROM myfin.storefront_hosts WHERE hostname=$1 FOR UPDATE', [hostname],
       );
       if (existing.rowCount && existing.rows[0].company_id !== companyId) v.fail(409, 'hostname_unavailable');
       await c.query(
         `UPDATE myfin.storefront_hosts SET disabled_at=now()
           WHERE company_id=$1 AND hostname<>$2 AND disabled_at IS NULL`, [companyId, hostname],
       );
-      await c.query(
+      const claimed = await c.query(
         `INSERT INTO myfin.storefront_hosts(hostname,company_id,created_by)
-         VALUES($1,$2,$3) ON CONFLICT(hostname) DO UPDATE SET disabled_at=NULL`,
+         VALUES($1,$2,$3) ON CONFLICT(hostname) DO UPDATE SET disabled_at=NULL
+           WHERE myfin.storefront_hosts.company_id=EXCLUDED.company_id
+         RETURNING company_id`,
         [hostname, companyId, req.identity.id],
       );
+      if (!claimed.rowCount || claimed.rows[0]?.company_id !== companyId) v.fail(409, 'hostname_unavailable');
     }
     if (input.published) {
       if (!storefrontPrivacyComplete(input)) v.fail(409, 'storefront_privacy_notice_required');
@@ -199,6 +209,7 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
   app.patch('/api/companies/:company/storefront/delivery-zones/:id', req => scoped(req, async (c, companyId) => {
     requireConfigure(req.identity);
     const id = v.parse(v.id, req.params.id), input = v.parse(deliveryZoneSchema, req.body);
+    await lockDeliveryConfiguration(c, companyId);
     if (!input.enabled) {
       const settings = (await c.query(
         'SELECT delivery_enabled FROM myfin.storefront_settings WHERE company_id=$1 FOR UPDATE', [companyId],

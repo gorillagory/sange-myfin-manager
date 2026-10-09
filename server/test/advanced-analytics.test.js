@@ -61,6 +61,25 @@ test('complete cost coverage returns gross margin and operating contribution in 
   assert.equal(result.operatingContributionSen,'837');
 });
 
+test('refund lines preserve signed quantity, revenue, cost and exact-cent allocation', () => {
+  const result = financialPerformance([{
+    id:'refund', total:'-10.01', tax:'-0.71', items:[
+      { productId:'latte',desc:'Latte',price:'6.00',qty:'-1',cost:'2.50' },
+      { productId:'tart',desc:'Tart',price:'4.00',qty:'-1',cost:'1.25' },
+    ],
+  }],'0');
+  assert.deepEqual({ sales:result.salesSen,tax:result.taxSen,net:result.netSalesSen,
+    covered:result.coveredRevenueSen,cogs:result.recognizedCogsSen,
+    recognizedMargin:result.recognizedGrossMarginSen,grossMargin:result.grossMarginSen }, {
+    sales:'-1001',tax:'-71',net:'-930',covered:'-930',cogs:'-375',
+    recognizedMargin:'-555',grossMargin:'-555',
+  });
+  assert.equal(result.coverageBasisPoints,10000);
+  assert.equal(result.complete,true);
+  assert.deepEqual(result.productPerformance.map(row => [row.productId,row.quantityMilli,row.grossLineSalesSen]),
+    [['tart','-1000','-400'],['latte','-1000','-600']]);
+});
+
 test('student aggregates suppress enrollment, activity and per-promotion cohorts below five', () => {
   const result = studentAggregate({ eligible_customer_count:4,active_customer_count:3,
     priced_order_count:12,subtotal_sen:'9000',discount_sen:'900',redemption_count:7,
@@ -78,7 +97,8 @@ test('manager operational analytics are aggregated, tenant bounded and contain n
   const fx = fixture('manager', async sql => {
     if (sql.includes('WITH period_orders')) return { rows:[{ total_orders:8,awaiting_acceptance:1,
       accepted:1,preparing:1,ready:1,cancelled:1,expired:1,paid:2,guest_orders:3,account_orders:5,
-      registered_customers:4,repeat_customers:1,order_value_sen:'12345',average_order_sen:'1543',
+      registered_customers:4,repeat_customers:1,submitted_demand_value_sen:'12345',
+      submitted_average_order_sen:'1543',paid_order_value_sen:'4567',paid_average_order_sen:'2284',
       average_acceptance_minutes:7 }],rowCount:1 };
     if (sql.includes('WITH period_ledger')) return { rows:[{ movement_count:4,receive_count:1,
       count_count:0,adjust_count:1,consume_count:1,waste_count:1,receipt_documents:1,reversed_receipts:0,
@@ -93,6 +113,11 @@ test('manager operational analytics are aggregated, tenant bounded and contain n
   });
   const result = await fx.routes.get('/api/companies/:company/analytics/operations')(fx.request);
   assert.equal(result.orders.total,8);
+  assert.equal(result.orders.submittedDemandValueSen,'12345');
+  assert.equal(result.orders.submittedAverageOrderSen,'1543');
+  assert.equal(result.orders.paidOrderValueSen,'4567');
+  assert.equal(result.orders.paidAverageOrderSen,'2284');
+  assert.equal(result.orders.orderValueSen,'4567');
   assert.equal(result.customers.repeatRateBasisPoints,2500);
   assert.equal(result.inventory.wasteItems[0].baseUnit,'ml');
   assert.equal(result.productPerformance[0].grossLineSalesSen,'1000');
@@ -103,6 +128,8 @@ test('manager operational analytics are aggregated, tenant bounded and contain n
   const sql = fx.calls.map(call => call.sql).join('\n');
   assert.doesNotMatch(sql,/primary_email|guest_email|guest_phone|display_name/);
   assert.match(sql,/LIMIT \$4/);
+  assert.match(sql,/sum\(total\) FILTER\(WHERE payment_state='paid'\)/);
+  assert.match(result.coverage.orders,/Submitted demand includes later cancellations and expiries/);
 });
 
 test('operators are denied all advanced analytics before any database query', async () => {

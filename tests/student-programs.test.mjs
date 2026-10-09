@@ -19,14 +19,23 @@ test('student administration capabilities distinguish review from owner configur
   for (const role of ['manager', 'company_admin']) {
     const permission = permissionsFor({ role });
     assert.equal(permission.studentProgramsRead, true);
-    assert.equal(permission.studentEligibilityReview, true);
+    assert.equal(permission.studentEligibilityReview, false);
     assert.equal(permission.promotionsManage, false);
+    assert.equal(canVisit({ role }, '/student-programs'), true);
   }
   for (const role of ['operator', 'company_user']) {
     assert.equal(permissionsFor({ role }).studentProgramsRead, false);
     assert.equal(canVisit({ role }, '/student-programs'), false);
   }
   assert.equal(ROUTE_CAPABILITIES['/student-programs'], 'studentProgramsRead');
+});
+
+test('student review controls are hidden from read-only managers', async () => {
+  const source = await readFile(new URL('../src/components/dashboard/StudentProgramsTab.vue', import.meta.url), 'utf8');
+  assert.match(source, /canReviewEligibility = computed\(\(\) => Store\.can\('studentEligibilityReview'\)\)/);
+  assert.match(source, /v-if="canReviewEligibility" class="ed-actions"/);
+  assert.match(source, /v-if="!canReviewEligibility" class="ed-notice"/);
+  assert.match(source, /<Modal v-if="review&&canReviewEligibility"/);
 });
 
 test('student review payload permits only masked reference hints and decision fields', () => {

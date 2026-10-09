@@ -54,4 +54,8 @@ test('advanced analytics panel compiles and keeps cost requests behind owner cap
   assert.match(componentSource,/if \(owner\.value\) requests\.push\(api\(companyPath\(Store,`\/analytics\/cost-performance/);
   assert.match(componentSource,/<section v-if="owner&&costs"/);
   assert.match(componentSource,/Customer identities and contact details are never included/);
+  assert.match(componentSource,/<label>Submitted demand<\/label>/);
+  assert.match(componentSource,/<label>Paid order value<\/label>/);
+  assert.match(componentSource,/submitted average/);
+  assert.match(componentSource,/paid average/);
 });
