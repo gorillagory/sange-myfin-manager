@@ -3,7 +3,7 @@ export const ROUTE_CAPABILITIES = {
   '/overview':'checkout', '/pos':'checkout', '/orders':'checkout', '/sales':'documentsRead', '/documents':'documentsRead',
   '/receipt-reviews':'checkout', '/products':'inventoryRead', '/stock':'inventoryRead', '/procurement':'inventoryRead', '/contacts':'clientsRead', '/profile':'active',
   '/analytics':'financialReports', '/consolidation':'financialReports', '/finance-sales':'financialReports', '/payment-operations':'financialReports', '/cashbook':'financialReports', '/expenses':'expensesRead',
-  '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead', '/student-programs':'studentProgramsRead',
+  '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead', '/marketing':'marketingRead', '/student-programs':'studentProgramsRead',
   '/templates':'templatesWrite', '/settings':'deviceSettingsWrite', '/integrations':'integrationsRead',
 };
 export function canVisit(user,path) {

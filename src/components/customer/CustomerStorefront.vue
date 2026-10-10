@@ -15,6 +15,8 @@ const error = ref(''), notice = ref(''), category = ref('All'), query = ref(''),
 const serviceChoice = ref('pickup');
 const reviewing = ref(false), cartOpen = ref(false), online = ref(navigator.onLine), variantChoices = reactive({});
 const account = ref({ authenticated: false }), accountOpen = ref(false), accountLoading = ref(true);
+const accountLoyaltyBalance = computed(() => Number(account.value.loyalty?.pointBalance ?? account.value.loyalty?.balance ?? account.value.loyalty?.stampBalance ?? 0));
+const accountLoyaltyUnit = computed(() => account.value.loyalty?.unitLabel || (account.value.loyalty?.stampBalance != null ? 'stamps' : 'points'));
 const guest = reactive({ name: '', email: '', phone: '' });
 const delivery = reactive({ addressLine1:'', addressLine2:'', postcode:'', city:'', state:'', instructions:'' });
 const deliveryZoneId = ref('');
@@ -202,7 +204,7 @@ onBeforeUnmount(() => { loadRequest++; window.removeEventListener('online', netw
 <template>
   <div class="customer-shell">
     <header class="customer-nav"><a href="/shop" class="customer-wordmark"><i aria-hidden="true"></i> myfin <small>order</small></a>
-      <div class="customer-nav-actions"><button type="button" class="customer-account" :aria-expanded="accountOpen" @click="accountOpen=true"><span aria-hidden="true">◎</span> {{ account.authenticated ? (account.profile?.displayName || account.customer?.displayName || 'Account') : 'Sign in' }} <small v-if="account.authenticated && account.loyalty?.enabled">{{ account.loyalty.stampBalance || 0 }} stamps</small></button>
+      <div class="customer-nav-actions"><button type="button" class="customer-account" :aria-expanded="accountOpen" @click="accountOpen=true"><span aria-hidden="true">◎</span> {{ account.authenticated ? (account.profile?.displayName || account.customer?.displayName || 'Account') : 'Sign in' }} <small v-if="account.authenticated && account.loyalty?.enabled">{{ accountLoyaltyBalance }} {{ accountLoyaltyUnit }}</small></button>
         <button type="button" class="customer-mobile-cart" :aria-expanded="cartOpen" @click="cartOpen=!cartOpen">Order <b>{{ itemCount }}</b></button></div></header>
 
     <main v-if="loading" class="customer-state" role="status"><span class="customer-loader"></span><h1>Opening the menu…</h1></main>

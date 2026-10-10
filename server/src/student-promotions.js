@@ -6,6 +6,7 @@ const verificationMethods = new Set(['staff_attestation', 'institution_email', '
 const promotionKeys = new Set([
   'id', 'version', 'name', 'enabled', 'redemptionMode', 'validFrom', 'validUntil',
   'discountType', 'discountBasisPoints', 'discountSen', 'maxDiscountSen', 'minSubtotalSen',
+  'rewardProductId', 'rewardVariantId', 'rewardQuantityMilli',
   'maxTotalRedemptions', 'perCustomerLimit', 'requiresCustomer', 'requiresStudent',
   'priority', 'stackable', 'productTargets', 'categoryTargets', 'customerTargets', 'usage', 'voucher',
 ]);
@@ -181,14 +182,25 @@ export function normalizePromotion(input) {
   const validUntil = instant(input.validUntil, { nullable: true, message: 'invalid_promotion_validity' });
   if (validUntil && validUntil <= validFrom) fail('invalid_promotion_validity');
   const discountType = input.discountType;
-  if (!['percentage', 'fixed'].includes(discountType)) fail('invalid_promotion_discount');
+  if (!['percentage', 'fixed', 'free_item'].includes(discountType)) fail('invalid_promotion_discount');
   const discountBasisPoints = discountType === 'percentage'
     ? integer(input.discountBasisPoints, { min: 1, max: 10000, message: 'invalid_promotion_discount' }) : null;
   const discountSen = discountType === 'fixed'
     ? integer(input.discountSen, { min: 1, max: MAX_SEN, message: 'invalid_promotion_discount' }) : null;
   if ((discountType === 'percentage' && input.discountSen != null)
-    || (discountType === 'fixed' && input.discountBasisPoints != null)) fail('invalid_promotion_discount');
+    || (discountType === 'fixed' && input.discountBasisPoints != null)
+    || (discountType === 'free_item' && (input.discountBasisPoints != null || input.discountSen != null)))
+    fail('invalid_promotion_discount');
   const maxDiscountSen = integer(input.maxDiscountSen, { min: 1, max: MAX_SEN, nullable: true });
+  const rewardProductId = discountType === 'free_item'
+    ? text(input.rewardProductId, { min: 1, message: 'invalid_free_item_reward' }) : '';
+  const rewardVariantId = discountType === 'free_item'
+    ? text(input.rewardVariantId || '', { max: 128, message: 'invalid_free_item_reward' }) : '';
+  const rewardQuantityMilli = discountType === 'free_item'
+    ? integer(input.rewardQuantityMilli, { min: 1, max: 1_000_000_000, message: 'invalid_free_item_reward' }) : null;
+  if (discountType === 'free_item' && maxDiscountSen !== null) fail('invalid_free_item_reward');
+  if (discountType !== 'free_item' && (input.rewardProductId || input.rewardVariantId || input.rewardQuantityMilli != null))
+    fail('invalid_free_item_reward');
   const maxTotalRedemptions = integer(input.maxTotalRedemptions, { min: 1, nullable: true });
   const perCustomerLimit = integer(input.perCustomerLimit, { min: 1, nullable: true });
   const requiresStudent = boolean(input.requiresStudent ?? false, 'invalid_promotion');
@@ -207,6 +219,7 @@ export function normalizePromotion(input) {
   if ((redemptionMode === 'voucher') !== Boolean(voucher)) fail('voucher_selection_required');
   return { id, version, name, enabled, redemptionMode, validFrom, validUntil,
     discountType, discountBasisPoints, discountSen, maxDiscountSen,
+    rewardProductId, rewardVariantId, rewardQuantityMilli,
     minSubtotalSen: integer(input.minSubtotalSen ?? 0, { max: MAX_SEN }),
     maxTotalRedemptions, perCustomerLimit, requiresCustomer, requiresStudent,
     priority: integer(input.priority ?? 0, { min: -1000000, max: 1000000 }),
@@ -300,14 +313,30 @@ export function priceWithPromotions({
     if (applications.length && !promotion.stackable) continue;
     if (!promotionActive(promotion, pricedAt, customer, student) || subtotalSen < promotion.minSubtotalSen) continue;
     const indexes = normalizedLines.map((line, index) => eligibleLine(promotion, line) && remaining[index] > 0 ? index : -1).filter(index => index >= 0);
-    const eligibleSen = indexes.reduce((sum, index) => sum + remaining[index], 0);
-    if (!eligibleSen) continue;
-    let discountSen = promotion.discountType === 'fixed' ? promotion.discountSen
-      : safeNumber(roundedRatio(BigInt(eligibleSen) * BigInt(promotion.discountBasisPoints), 10000n));
-    if (promotion.maxDiscountSen !== null) discountSen = Math.min(discountSen, promotion.maxDiscountSen);
-    discountSen = Math.min(discountSen, eligibleSen);
-    if (!discountSen) continue;
-    const lineDiscounts = allocate(discountSen, indexes, remaining);
+    let discountSen;
+    let lineDiscounts;
+    if (promotion.discountType === 'free_item') {
+      if ((promotion.productTargets.length || promotion.categoryTargets.length) && !indexes.length) continue;
+      const rewardIndex = normalizedLines.findIndex((line, index) => line.productId === promotion.rewardProductId
+        && line.variantId === promotion.rewardVariantId && remaining[index] > 0);
+      if (rewardIndex < 0) continue;
+      const rewardLine = normalizedLines[rewardIndex];
+      const rewardedQuantity = Math.min(rewardLine.quantityMilli, promotion.rewardQuantityMilli);
+      discountSen = Math.min(remaining[rewardIndex], safeNumber(roundedRatio(
+        BigInt(rewardLine.unitPriceSen) * BigInt(rewardedQuantity), 1000n,
+      )));
+      if (!discountSen) continue;
+      lineDiscounts = [{ index: rewardIndex, amount: discountSen }];
+    } else {
+      const eligibleSen = indexes.reduce((sum, index) => sum + remaining[index], 0);
+      if (!eligibleSen) continue;
+      discountSen = promotion.discountType === 'fixed' ? promotion.discountSen
+        : safeNumber(roundedRatio(BigInt(eligibleSen) * BigInt(promotion.discountBasisPoints), 10000n));
+      if (promotion.maxDiscountSen !== null) discountSen = Math.min(discountSen, promotion.maxDiscountSen);
+      discountSen = Math.min(discountSen, eligibleSen);
+      if (!discountSen) continue;
+      lineDiscounts = allocate(discountSen, indexes, remaining);
+    }
     for (const row of lineDiscounts) remaining[row.index] -= row.amount;
     applications.push({ promotionId: promotion.id, promotionVersion: promotion.version,
       name: promotion.name, voucherId: promotion.voucher?.id || '', voucherVersion: promotion.voucher?.version || null,

@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { z } from 'zod';
 import { normalizeHostname } from './tenancy.js';
 import { requirePublishedStorefrontPrivacy } from './storefront-privacy.js';
+import { releaseExpiredLoyaltyReservations } from './marketing-loyalty.js';
 import * as v from './validation.js';
 
 const scrypt = promisify(scryptCallback);
@@ -178,16 +179,22 @@ export async function customerOrderDefaults(c, workspaceId, session) {
 }
 
 async function mePayload(c, context, session) {
+  await releaseExpiredLoyaltyReservations(c, {
+    workspaceId: context.workspace_id, customerId: session.customerId, limit: 100,
+  });
   const profile = (await c.query(
     `SELECT display_name,phone FROM myfin.customer_workspace_profiles
       WHERE workspace_id=$1 AND customer_id=$2`, [context.workspace_id, session.customerId],
   )).rows[0];
   const settings = (await c.query(
-    `SELECT enabled,stamps_required,reward_label,minimum_spend FROM myfin.workspace_loyalty_settings
+    `SELECT enabled,stamps_required,reward_label,minimum_spend,version,unit_label,earn_mode,
+            points_per_order,spend_step_sen,points_per_spend_step,minimum_spend_sen,
+            redemption_threshold_points
+       FROM myfin.workspace_loyalty_settings
       WHERE workspace_id=$1`, [context.workspace_id],
   )).rows[0];
   const loyalty = (await c.query(
-    `SELECT stamp_balance FROM myfin.customer_loyalty_accounts
+    `SELECT stamp_balance,reserved_points,version FROM myfin.customer_loyalty_accounts
       WHERE workspace_id=$1 AND customer_id=$2`, [context.workspace_id, session.customerId],
   )).rows[0];
   const consentRows = (await c.query(
@@ -211,9 +218,18 @@ async function mePayload(c, context, session) {
     marketingNoticeVersion,
     marketingConsent: consent,
     loyalty: { workspaceId: context.workspace_id, enabled: settings?.enabled ?? true,
+      version: Number(settings?.version || 0), unitLabel: settings?.unit_label || 'points',
+      earnMode: settings?.earn_mode || 'per_order', pointsPerOrder: Number(settings?.points_per_order ?? 1),
+      spendStepSen: Number(settings?.spend_step_sen ?? 100),
+      pointsPerSpendStep: Number(settings?.points_per_spend_step ?? 1),
+      minimumSpendSen: Number(settings?.minimum_spend_sen ?? 0),
+      redemptionThresholdPoints: Number(settings?.redemption_threshold_points ?? settings?.stamps_required ?? 10),
+      balance: Number(loyalty?.stamp_balance ?? 0), reserved: Number(loyalty?.reserved_points ?? 0),
+      available: Number(loyalty?.stamp_balance ?? 0) - Number(loyalty?.reserved_points ?? 0),
+      accountVersion: Number(loyalty?.version || 0),
       stampsRequired: Number(settings?.stamps_required ?? 10), rewardLabel: settings?.reward_label || 'Reward',
       minimumSpend: Number(settings?.minimum_spend ?? 0), stampBalance: Number(loyalty?.stamp_balance ?? 0),
-      earnRule: 'one_stamp_per_eligible_paid_order' },
+      earnRule: settings?.earn_mode === 'spend_step' ? 'points_per_spend_step' : 'one_stamp_per_eligible_paid_order' },
   };
 }
 

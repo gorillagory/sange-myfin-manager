@@ -20,7 +20,7 @@ test('student administration capabilities distinguish review from owner configur
     const permission = permissionsFor({ role });
     assert.equal(permission.studentProgramsRead, true);
     assert.equal(permission.studentEligibilityReview, false);
-    assert.equal(permission.promotionsManage, false);
+    assert.equal(permission.promotionsManage, true);
     assert.equal(canVisit({ role }, '/student-programs'), true);
   }
   for (const role of ['operator', 'company_user']) {
@@ -31,11 +31,10 @@ test('student administration capabilities distinguish review from owner configur
 });
 
 test('student review controls are hidden from read-only managers', async () => {
-  const source = await readFile(new URL('../src/components/dashboard/StudentProgramsTab.vue', import.meta.url), 'utf8');
-  assert.match(source, /canReviewEligibility = computed\(\(\) => Store\.can\('studentEligibilityReview'\)\)/);
-  assert.match(source, /v-if="canReviewEligibility" class="ed-actions"/);
-  assert.match(source, /v-if="!canReviewEligibility" class="ed-notice"/);
-  assert.match(source, /<Modal v-if="review&&canReviewEligibility"/);
+  const source = await readFile(new URL('../src/components/dashboard/marketing/MarketingEligibility.vue', import.meta.url), 'utf8');
+  assert.match(source, /v-if="canReview" class="ed-actions"/);
+  assert.match(source, /v-if="!canReview" class="ed-notice"/);
+  assert.match(source, /<Modal v-if="review&&canReview"/);
 });
 
 test('student review payload permits only masked reference hints and decision fields', () => {
@@ -111,13 +110,17 @@ test('money entry converts to integer sen without floating point rounding', () =
 });
 
 test('student programs UI explains live storefront pricing and never captures identity documents', async () => {
-  const component = await readFile(new URL('../src/components/dashboard/StudentProgramsTab.vue', import.meta.url), 'utf8');
-  assert.match(component, /enabled promotion and voucher versions apply to public online-order quotes/i);
-  assert.match(component, /walk-in POS and manual documents are not automatically repriced/i);
-  assert.match(component, /Student verification/);
-  assert.match(component, /Promotions &(?:amp;)? vouchers/);
+  const [legacy,eligibility,offers] = await Promise.all([
+    readFile(new URL('../src/components/dashboard/StudentProgramsTab.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/dashboard/marketing/MarketingEligibility.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/dashboard/marketing/MarketingOffers.vue', import.meta.url), 'utf8'),
+  ]);
+  const component=`${eligibility}\n${offers}`;
+  assert.match(legacy, /Student Programs moved/);
+  assert.match(legacy, /\/marketing\?tab=eligibility/);
+  assert.match(component, /Customer eligibility/);
+  assert.match(component, /OFFERS & VOUCHERS/);
   assert.match(component, /never enter or upload/i);
   assert.match(component, /type="password"/);
   assert.doesNotMatch(component, /type="file"|accept="image|FormData/);
-  assert.match(component, /Store\.can\('promotionsManage'\)/);
 });

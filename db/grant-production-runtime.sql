@@ -49,6 +49,14 @@ GRANT SELECT,INSERT ON myfin.pricing_snapshots,myfin.pricing_snapshot_lines,
  myfin.promotion_redemptions TO myfin_prod_runtime;
 GRANT SELECT ON myfin.promotion_reservations,myfin.promotion_reservation_events TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.customer_order_recipe_reservations TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.marketing_audiences,myfin.marketing_campaigns TO myfin_prod_runtime;
+GRANT SELECT,INSERT ON myfin.marketing_audience_versions,myfin.marketing_campaign_versions,
+ myfin.marketing_campaign_version_promotions,myfin.marketing_campaign_version_audiences,
+ myfin.marketing_campaign_events TO myfin_prod_runtime;
+GRANT USAGE,SELECT ON SEQUENCE myfin.marketing_campaign_events_sequence_seq TO myfin_prod_runtime;
+GRANT SELECT,INSERT ON myfin.workspace_loyalty_setting_versions,myfin.loyalty_point_events,
+ myfin.loyalty_sale_award_batches,myfin.loyalty_point_reservation_events TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.loyalty_point_reservations TO myfin_prod_runtime;
 GRANT EXECUTE ON FUNCTION myfin.reserve_order_promotions(text,text,text,timestamptz),
  myfin.extend_order_promotion_reservations(text,text,timestamptz),
  myfin.release_order_promotion_reservations(text,text,text),

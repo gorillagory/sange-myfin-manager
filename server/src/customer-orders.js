@@ -8,6 +8,7 @@ import { redactExpiredOrderContacts } from './storefront-privacy.js';
 import { consumeOrderPromotionReservations, extendOrderPromotionReservations,
   releaseOrderPromotionReservations } from './pricing-engine.js';
 import { reserveRecipeStock } from './inventory-recipes.js';
+import { awardLoyaltyPointsForSale, saveMarketingLoyaltySettings } from './marketing-loyalty.js';
 import * as v from './validation.js';
 
 const activeStatuses = ['awaiting_acceptance','accepted','preparing','ready'];
@@ -188,35 +189,15 @@ async function canonicalTenderSale(c, order, lines, sale) {
 
 async function earnLoyalty(c, order, saleId, actorId) {
   if (!order.customer_id) return;
-  const company = (await c.query('SELECT workspace_id FROM myfin.companies WHERE id=$1', [order.company_id])).rows[0];
-  const config = (await c.query(
-    'SELECT * FROM myfin.workspace_loyalty_settings WHERE workspace_id=$1', [company.workspace_id],
-  )).rows[0] || { enabled: true, stamps_per_order: 1, minimum_spend: 0 };
-  if (!config.enabled || Number(order.total) < Number(config.minimum_spend)) return;
-  const prior = await c.query(
-    `SELECT 1 FROM myfin.customer_loyalty_events
-      WHERE workspace_id=$1 AND company_id=$2 AND source_sale_id=$3 AND kind='earn' FOR SHARE`,
-    [company.workspace_id, order.company_id, saleId],
-  );
-  if (prior.rowCount) return;
-  await c.query(
-    `INSERT INTO myfin.customer_loyalty_accounts(workspace_id,customer_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
-    [company.workspace_id, order.customer_id],
-  );
-  const account = (await c.query(
-    `SELECT stamp_balance FROM myfin.customer_loyalty_accounts
-      WHERE workspace_id=$1 AND customer_id=$2 FOR UPDATE`, [company.workspace_id, order.customer_id],
-  )).rows[0];
-  const next = Number(account.stamp_balance) + 1;
-  await c.query(
-    `UPDATE myfin.customer_loyalty_accounts SET stamp_balance=$3,version=version+1,updated_at=now()
-      WHERE workspace_id=$1 AND customer_id=$2`, [company.workspace_id, order.customer_id, next],
-  );
-  await c.query(
-    `INSERT INTO myfin.customer_loyalty_events(workspace_id,id,customer_id,company_id,kind,stamps,balance_after,source_sale_id,reason,actor_id)
-     VALUES($1,$2,$3,$4,'earn',1,$5,$6,'Eligible paid order',$7)`,
-    [company.workspace_id, randomUUID(), order.customer_id, order.company_id, next, saleId, actorId],
-  );
+  await awardLoyaltyPointsForSale(c, {
+    companyId: order.company_id,
+    customerId: order.customer_id,
+    saleId,
+    orderId: order.id,
+    totalSen: cents(Number(order.total)),
+    occurredAt: new Date().toISOString(),
+    actorId,
+  });
 }
 
 export function registerCustomerOrders(app, { scoped, audit, checkout }) {
@@ -411,15 +392,26 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     if (!owner(req.identity)) v.fail(403, 'workspace_owner_required');
     const input = v.parse(loyaltySchema, req.body);
     const company = (await c.query('SELECT workspace_id FROM myfin.companies WHERE id=$1', [companyId])).rows[0];
+    const current = (await c.query(
+      `SELECT * FROM myfin.workspace_loyalty_settings WHERE workspace_id=$1 FOR UPDATE`,
+      [company.workspace_id],
+    )).rows[0];
+    const settings = await saveMarketingLoyaltySettings(c, companyId, req.identity, {
+      expectedVersion: Number(current?.version || 0), enabled: input.enabled,
+      unitLabel: current?.unit_label || 'stamps', earnMode: current?.earn_mode || 'per_order',
+      pointsPerOrder: Number(current?.points_per_order || 1),
+      spendStepSen: Number(current?.spend_step_sen || 100),
+      pointsPerSpendStep: Number(current?.points_per_spend_step || 1),
+      minimumSpendSen: cents(input.minimumSpend),
+      redemptionThresholdPoints: input.stampsRequired,
+    });
     await c.query(
-      `INSERT INTO myfin.workspace_loyalty_settings(workspace_id,enabled,stamps_required,reward_label,minimum_spend,updated_by)
-       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id) DO UPDATE SET enabled=EXCLUDED.enabled,
-       stamps_required=EXCLUDED.stamps_required,reward_label=EXCLUDED.reward_label,
-       minimum_spend=EXCLUDED.minimum_spend,updated_by=EXCLUDED.updated_by,updated_at=now()`,
-      [company.workspace_id, input.enabled, input.stampsRequired, input.rewardLabel, input.minimumSpend, req.identity.id],
+      `UPDATE myfin.workspace_loyalty_settings SET reward_label=$2
+        WHERE workspace_id=$1`, [company.workspace_id, input.rewardLabel],
     );
     await audit(c, req.identity, companyId, 'Loyalty settings', input.enabled ? 'Enabled' : 'Disabled');
-    return { workspaceId: company.workspace_id, ...input, earnRule: 'one_stamp_per_eligible_paid_order' };
+    return { workspaceId: company.workspace_id, ...input, version: settings.version,
+      earnRule: settings.earnMode === 'per_order' ? 'one_stamp_per_eligible_paid_order' : 'points_per_spend_step' };
   }));
 
   app.get('/api/companies/:company/loyalty/events', req => scoped(req, async (c, companyId) => {

@@ -51,10 +51,15 @@ const promotionSchema = z.strictObject({
   redemptionMode: z.enum(['automatic', 'voucher']),
   validFrom: instant,
   validUntil: nullableInstant.default(null),
-  discountType: z.enum(['percentage', 'fixed']),
+  discountType: z.enum(['percentage', 'fixed', 'free_item']),
   discountBasisPoints: z.union([z.number().int().min(1).max(10_000), z.null()]).default(null),
   discountSen: z.union([z.number().int().min(1).max(MAX_SEN), z.null()]).default(null),
   maxDiscountSen: z.union([z.number().int().min(1).max(MAX_SEN), z.null()]).default(null),
+  rewardProductId: z.union([v.id, z.literal('')]).default(''),
+  rewardVariantId: z.union([v.id, z.literal('')]).default(''),
+  rewardQuantityMilli: z.union([
+    z.number().int().min(1).max(1_000_000_000), z.null(),
+  ]).default(null),
   minSubtotalSen: z.number().int().min(0).max(MAX_SEN).default(0),
   maxTotalRedemptions: nullablePositiveInteger.default(null),
   perCustomerLimit: nullablePerCustomerLimit.default(null),
@@ -72,6 +77,12 @@ const promotionSchema = z.strictObject({
     ctx.addIssue({ code: 'custom', message: 'invalid_promotion_discount' });
   if ((input.discountType === 'fixed') !== (input.discountSen !== null))
     ctx.addIssue({ code: 'custom', message: 'invalid_promotion_discount' });
+  const freeItem = input.discountType === 'free_item';
+  if (freeItem !== Boolean(input.rewardProductId)
+      || freeItem !== (input.rewardQuantityMilli !== null)
+      || (freeItem && input.maxDiscountSen !== null)
+      || (!freeItem && Boolean(input.rewardVariantId)))
+    ctx.addIssue({ code: 'custom', message: 'invalid_free_item_reward' });
   if (input.requiresStudent && !input.requiresCustomer)
     ctx.addIssue({ code: 'custom', message: 'student_promotion_requires_customer' });
   if (input.perCustomerLimit && input.maxTotalRedemptions
@@ -110,8 +121,8 @@ const numberOrNull = value => value === null || value === undefined ? null : Num
 
 export function studentProgramPolicy() {
   return Object.freeze({
-    pricingApplied: false,
-    checkoutIntegration: 'configured_not_active',
+    pricingApplied: true,
+    checkoutIntegration: 'customer_ordering_live',
     rawDocumentUpload: false,
     rawStudentIdentifierStorage: false,
     voucherCodesReturned: false,
@@ -167,6 +178,9 @@ export function promotionOutput(row, vouchers = []) {
     discountBasisPoints: numberOrNull(row.discount_basis_points),
     discountSen: numberOrNull(row.discount_sen),
     maxDiscountSen: numberOrNull(row.max_discount_sen),
+    rewardProductId: row.reward_product_id || '',
+    rewardVariantId: row.reward_variant_id || '',
+    rewardQuantityMilli: numberOrNull(row.reward_quantity_milli),
     minSubtotalSen: Number(row.min_subtotal_sen || 0),
     maxTotalRedemptions: numberOrNull(row.max_total_redemptions),
     perCustomerLimit: numberOrNull(row.per_customer_limit),
@@ -180,7 +194,7 @@ export function promotionOutput(row, vouchers = []) {
     redeemedCount: Number(row.redeemed_count || 0),
     updatedAt: row.updated_at || null,
     vouchers,
-    applicationState: 'configured_not_active',
+    applicationState: row.enabled ? 'active_pricing' : 'disabled',
   };
 }
 
@@ -250,6 +264,24 @@ async function validatePromotionTargets(c, workspaceId, companyId, input) {
     );
     if (invalid.rowCount) v.fail(400, 'promotion_product_outside_company');
   }
+  if (input.discountType === 'free_item') {
+    const reward = await c.query(
+      `SELECT p.id,
+              EXISTS(SELECT 1 FROM myfin.product_variants any_variant
+                WHERE any_variant.company_id=p.company_id AND any_variant.product_id=p.id) AS has_variants,
+              EXISTS(SELECT 1 FROM myfin.product_variants exact_variant
+                WHERE exact_variant.company_id=p.company_id AND exact_variant.product_id=p.id
+                  AND exact_variant.id=$3) AS reward_variant_exists
+         FROM myfin.products p
+        WHERE p.company_id=$1 AND p.id=$2`,
+      [companyId, input.rewardProductId, input.rewardVariantId],
+    );
+    if (!reward.rowCount) v.fail(400, 'promotion_reward_outside_company');
+    if (reward.rows[0].has_variants && !input.rewardVariantId)
+      v.fail(400, 'promotion_reward_variant_required');
+    if (input.rewardVariantId && !reward.rows[0].reward_variant_exists)
+      v.fail(400, 'promotion_reward_outside_company');
+  }
   for (const customerId of input.customerTargets) {
     if (!await customerBelongsToWorkspace(c, workspaceId, customerId))
       v.fail(400, 'promotion_customer_outside_workspace');
@@ -295,6 +327,7 @@ async function listPrograms(c, companyId, query, who) {
   const promotionRows = await c.query(
     `SELECT p.id,p.version,p.updated_at,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
             pv.currency_code,pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
+            pv.reward_product_id,pv.reward_variant_id,pv.reward_quantity_milli,
             pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,pv.requires_customer,
             pv.requires_student,pv.stackable,pv.priority,coalesce(usage.redemption_count,0) AS redeemed_count,
             coalesce((SELECT jsonb_agg(jsonb_build_object('productId',t.product_id,'variantId',coalesce(t.variant_id,''))
@@ -451,12 +484,14 @@ async function savePromotion(c, who, companyId, promotionId, rawInput, creating)
     `INSERT INTO myfin.promotion_versions(
        workspace_id,company_id,promotion_id,version,name,enabled,redemption_mode,valid_from,valid_until,
        currency_code,discount_type,discount_basis_points,discount_sen,max_discount_sen,min_subtotal_sen,
-       max_total_redemptions,per_customer_limit,requires_customer,requires_student,stackable,priority,
-       request_digest,created_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'MYR',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+       reward_product_id,reward_variant_id,reward_quantity_milli,max_total_redemptions,per_customer_limit,
+       requires_customer,requires_student,stackable,priority,request_digest,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'MYR',$10,$11,$12,$13,$14,nullif($15,''),nullif($16,''),$17,
+       $18,$19,$20,$21,$22,$23,$24,$25)`,
     [workspaceId, companyId, promotionId, version, input.name, input.enabled, input.redemptionMode,
       input.validFrom, input.validUntil, input.discountType, input.discountBasisPoints, input.discountSen,
-      input.maxDiscountSen, input.minSubtotalSen, input.maxTotalRedemptions, input.perCustomerLimit,
+      input.maxDiscountSen, input.minSubtotalSen, input.rewardProductId, input.rewardVariantId,
+      input.rewardQuantityMilli, input.maxTotalRedemptions, input.perCustomerLimit,
       input.requiresCustomer, input.requiresStudent, input.stackable, input.priority, digest, who.id],
   );
   if (input.productTargets.length) await c.query(
@@ -487,6 +522,8 @@ async function savePromotion(c, who, companyId, promotionId, rawInput, creating)
     valid_from: input.validFrom, valid_until: input.validUntil, currency_code: 'MYR',
     discount_type: input.discountType, discount_basis_points: input.discountBasisPoints,
     discount_sen: input.discountSen, max_discount_sen: input.maxDiscountSen,
+    reward_product_id: input.rewardProductId, reward_variant_id: input.rewardVariantId,
+    reward_quantity_milli: input.rewardQuantityMilli,
     min_subtotal_sen: input.minSubtotalSen, max_total_redemptions: input.maxTotalRedemptions,
     per_customer_limit: input.perCustomerLimit, requires_customer: input.requiresCustomer,
     requires_student: input.requiresStudent, stackable: input.stackable, priority: input.priority,
@@ -615,7 +652,7 @@ export function registerStudentPrograms(app, {
     const promotionId = randomUUID();
     const result = await savePromotion(c, req.identity, companyId, promotionId, req.body, true);
     await audit(c, req.identity, companyId, 'Promotion configured',
-      `${result.name} · version ${result.version} · configured only`);
+      `${result.name} · version ${result.version} · ${result.enabled ? 'pricing active' : 'disabled'}`);
     return result;
   }));
 
@@ -624,7 +661,7 @@ export function registerStudentPrograms(app, {
     const promotionId = v.parse(v.id, req.params.promotionId);
     const result = await savePromotion(c, req.identity, companyId, promotionId, req.body, false);
     await audit(c, req.identity, companyId, 'Promotion configured',
-      `${result.name} · version ${result.version} · configured only`);
+      `${result.name} · version ${result.version} · ${result.enabled ? 'pricing active' : 'disabled'}`);
     return result;
   }));
 

@@ -4,6 +4,7 @@ import {
   recordPromotionRedemption,
   voucherLookupDigest,
 } from './student-promotions.js';
+import { filterCampaignEligiblePromotions } from './marketing-loyalty.js';
 
 const MAX_SEN = 9_000_000_000_000_000;
 const MAX_LINES = 500;
@@ -161,6 +162,9 @@ function promotionFromRow(row) {
     discountBasisPoints: row.discount_basis_points === null ? null : Number(row.discount_basis_points),
     discountSen: row.discount_sen === null ? null : Number(row.discount_sen),
     maxDiscountSen: row.max_discount_sen === null ? null : Number(row.max_discount_sen),
+    rewardProductId: row.reward_product_id || '',
+    rewardVariantId: row.reward_variant_id || '',
+    rewardQuantityMilli: row.reward_quantity_milli == null ? null : Number(row.reward_quantity_milli),
     minSubtotalSen: Number(row.min_subtotal_sen),
     maxTotalRedemptions: row.max_total_redemptions === null ? null : Number(row.max_total_redemptions),
     perCustomerLimit: row.per_customer_limit === null ? null : Number(row.per_customer_limit),
@@ -173,6 +177,7 @@ function promotionFromRow(row) {
     customerTargets: [],
     usage: { total: Number(row.total_usage || 0), customer: Number(row.customer_usage || 0) },
     voucher: null,
+    campaignLinks: row.campaign_links || [],
   };
 }
 
@@ -229,8 +234,42 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
   const result = await c.query(
     `SELECT p.id,p.version,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
             pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
+            pv.reward_product_id,pv.reward_variant_id,pv.reward_quantity_milli,
             pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,
             pv.requires_customer,pv.requires_student,pv.priority,pv.stackable,
+            coalesce((SELECT jsonb_agg(jsonb_build_object(
+              'campaignId',link.campaign_id,'campaignVersion',link.campaign_version,
+              'currentVersion',campaign.version,'lifecycle',campaign.lifecycle,
+              'startsAt',campaign_version.starts_at,'endsAt',campaign_version.ends_at,
+              'channels',campaign_version.channels,
+              'audiences',coalesce((SELECT jsonb_agg(jsonb_build_object(
+                'scope',audience_version.scope,'companyId',audience_version.company_id,
+                'consent',audience_version.consent_criteria,
+                'eligibility',audience_version.eligibility_criteria,
+                'customer',audience_version.customer_criteria)
+                ORDER BY audience_link.audience_id,audience_link.audience_version)
+                FROM myfin.marketing_campaign_version_audiences audience_link
+                JOIN myfin.marketing_audience_versions audience_version
+                  ON audience_version.workspace_id=audience_link.workspace_id
+                 AND audience_version.audience_id=audience_link.audience_id
+                 AND audience_version.version=audience_link.audience_version
+               WHERE audience_link.workspace_id=link.workspace_id
+                 AND audience_link.company_id=link.company_id
+                 AND audience_link.campaign_id=link.campaign_id
+                 AND audience_link.campaign_version=link.campaign_version),'[]'::jsonb))
+              ORDER BY link.campaign_id,link.campaign_version)
+              FROM myfin.marketing_campaign_version_promotions link
+              JOIN myfin.marketing_campaigns campaign
+                ON campaign.workspace_id=link.workspace_id AND campaign.company_id=link.company_id
+               AND campaign.id=link.campaign_id
+              JOIN myfin.marketing_campaign_versions campaign_version
+                ON campaign_version.workspace_id=link.workspace_id
+               AND campaign_version.company_id=link.company_id
+               AND campaign_version.campaign_id=link.campaign_id
+               AND campaign_version.version=link.campaign_version
+             WHERE link.workspace_id=p.workspace_id AND link.company_id=p.company_id
+               AND link.promotion_id=p.id AND link.promotion_version=p.version),'[]'::jsonb)
+              AS campaign_links,
             coalesce(pu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations pr
               WHERE pr.workspace_id=p.workspace_id AND pr.company_id=p.company_id
                 AND pr.promotion_id=p.id AND pr.state='active' AND pr.expires_at>$5) AS total_usage,
@@ -254,7 +293,11 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
     [workspaceId, companyId, currencyCode, customerId || null, at, voucher?.promotionId || null],
   );
   if (result.rows.length > MAX_PROMOTIONS) fail(409, 'too_many_active_promotions');
-  const promotions = result.rows.map(promotionFromRow);
+  let promotions = result.rows.map(promotionFromRow);
+  if (!promotions.length) return [];
+  promotions = await filterCampaignEligiblePromotions(c, promotions, {
+    workspaceId, companyId, customerId, at,
+  });
   if (voucher && !promotions.some(item => item.id === voucher.promotionId)) fail(400, 'voucher_invalid_or_unavailable');
   if (!promotions.length) return [];
   const ids = promotions.map(item => item.id);
@@ -292,7 +335,7 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
       usage: voucher.usage,
     };
   }
-  return promotions;
+  return promotions.map(({ campaignLinks: _campaignLinks, ...promotion }) => promotion);
 }
 
 async function persistSnapshot(c, { workspaceId, companyId, id, expiresAt, requestDigest, priced }) {

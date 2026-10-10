@@ -36,13 +36,17 @@ const consentBusy = reactive({ email: false, sms: false, whatsapp: false });
 const authenticated = computed(() => Boolean(props.account?.authenticated));
 const customer = computed(() => props.account?.customer || {});
 const loyalty = computed(() => props.account?.loyalty || {});
+const loyaltyUnit = computed(() => loyalty.value.unitLabel || (loyalty.value.stampBalance != null ? 'stamps' : 'points'));
 const privacyReady = computed(() => Boolean(props.privacy?.controllerName && props.privacy?.controllerContact &&
   /^https:\/\//i.test(props.privacy?.noticeUrl || '') && props.privacy?.noticeEn && props.privacy?.noticeMs));
 const loyaltyProgress = computed(() => {
-  const required = Math.max(1, Number(loyalty.value.stampsRequired) || 10);
-  const balance = Math.max(0, Number(loyalty.value.stampBalance) || 0);
+  const required = Math.max(1, Number(loyalty.value.redemptionThresholdPoints ?? loyalty.value.stampsRequired) || 100);
+  const balance = Math.max(0, Number(loyalty.value.pointBalance ?? loyalty.value.balance ?? loyalty.value.stampBalance) || 0);
   return { required, balance, percent: Math.min(100, (balance / required) * 100) };
 });
+const loyaltyEarningCopy = computed(() => loyalty.value.earnMode === 'spend_step'
+  ? `Earn ${loyalty.value.pointsPerSpendStep || 1} ${loyaltyUnit.value} for each eligible spend step.`
+  : `Earn ${loyalty.value.pointsPerOrder || 1} ${loyaltyUnit.value} after each eligible paid order.`);
 
 function hydrateAccount() {
   const source = props.account || {};
@@ -216,9 +220,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
             <template v-if="section==='overview'">
               <section v-if="loyalty.enabled" class="loyalty-card">
                 <span class="account-kicker">THIS WORKSPACE</span>
-                <div><strong>{{ loyaltyProgress.balance }} <small>/ {{ loyaltyProgress.required }} stamps</small></strong><span>{{ loyalty.rewardLabel || 'Reward' }}</span></div>
+                <div><strong>{{ loyaltyProgress.balance }} <small>/ {{ loyaltyProgress.required }} {{ loyaltyUnit }}</small></strong><span>{{ loyalty.rewardLabel || 'Next reward' }}</span></div>
                 <div class="loyalty-track"><i :style="{width:`${loyaltyProgress.percent}%`}"></i></div>
-                <p>Earn one stamp after each eligible paid order here. Other workspaces keep their own balance.</p>
+                <p>{{ loyaltyEarningCopy }} Other workspaces keep their own balance.</p>
               </section>
               <section v-else class="loyalty-card disabled"><span class="account-kicker">THIS WORKSPACE</span><strong>Loyalty is not active here</strong><p>Your account still keeps your profile and order history for this shop.</p></section>
 

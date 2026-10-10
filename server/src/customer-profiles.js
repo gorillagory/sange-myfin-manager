@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { manager, owner } from './access.js';
+import { releaseExpiredLoyaltyReservations } from './marketing-loyalty.js';
 import * as v from './validation.js';
 
 const querySchema = z.strictObject({
@@ -25,6 +26,9 @@ function profileOutput(row) {
     firstOrderAt: row.first_order_at,
     lastOrderAt: row.last_order_at,
     loyaltyBalance: Number(row.stamp_balance || 0),
+    loyaltyReserved: Number(row.reserved_points || 0),
+    loyaltyAvailable: Number(row.stamp_balance || 0) - Number(row.reserved_points || 0),
+    loyaltyAccountVersion: Number(row.loyalty_account_version || 0),
     marketingConsent: Object.fromEntries(['email','sms','whatsapp'].map(channel => {
       const consent = row.consents?.[channel];
       return [channel, consent ? { granted: !!consent.granted, noticeVersion: consent.noticeVersion,
@@ -41,6 +45,9 @@ export function registerCustomerProfiles(app, { scoped }) {
       'SELECT workspace_id FROM myfin.companies WHERE id=$1', [companyId],
     )).rows[0];
     if (!company) v.fail(404, 'not_found');
+    await releaseExpiredLoyaltyReservations(c, {
+      workspaceId: company.workspace_id, companyId, limit: 500,
+    });
     const search = query.q ? `%${literalLike(query.q.toLowerCase())}%` : '';
     const result = await c.query(
       `WITH order_stats AS (
@@ -63,7 +70,8 @@ export function registerCustomerProfiles(app, { scoped }) {
        SELECT a.id,a.display_name AS account_name,a.primary_email,a.email_verified_at IS NOT NULL AS email_verified,
               a.disabled_at,p.display_name AS profile_name,p.phone AS profile_phone,
               s.order_count,s.paid_order_count,s.paid_spend,s.first_order_at,s.last_order_at,
-              coalesce(l.stamp_balance,0) AS stamp_balance,coalesce(cm.consents,'{}'::jsonb) AS consents
+              coalesce(l.stamp_balance,0) AS stamp_balance,coalesce(l.reserved_points,0) AS reserved_points,
+              coalesce(l.version,0) AS loyalty_account_version,coalesce(cm.consents,'{}'::jsonb) AS consents
          FROM order_stats s JOIN myfin.customer_accounts a ON a.id=s.customer_id
          LEFT JOIN myfin.customer_workspace_profiles p ON p.workspace_id=$2 AND p.customer_id=a.id
          LEFT JOIN myfin.customer_loyalty_accounts l ON l.workspace_id=$2 AND l.customer_id=a.id
@@ -78,14 +86,22 @@ export function registerCustomerProfiles(app, { scoped }) {
     );
     const visible = result.rows.slice(0, query.limit);
     const loyalty = (await c.query(
-      `SELECT enabled,stamps_required,reward_label,minimum_spend
+      `SELECT enabled,stamps_required,reward_label,minimum_spend,version,unit_label,earn_mode,
+              points_per_order,spend_step_sen,points_per_spend_step,minimum_spend_sen,
+              redemption_threshold_points
          FROM myfin.workspace_loyalty_settings WHERE workspace_id=$1`, [company.workspace_id],
     )).rows[0];
     return {
       workspaceId: company.workspace_id,
-      loyaltySettings: { enabled: loyalty?.enabled ?? true, stampsRequired: Number(loyalty?.stamps_required ?? 10),
+      loyaltySettings: { version: Number(loyalty?.version || 0), enabled: loyalty?.enabled ?? true,
+        unitLabel: loyalty?.unit_label || 'points', earnMode: loyalty?.earn_mode || 'per_order',
+        pointsPerOrder: Number(loyalty?.points_per_order ?? 1), spendStepSen: Number(loyalty?.spend_step_sen ?? 100),
+        pointsPerSpendStep: Number(loyalty?.points_per_spend_step ?? 1),
+        minimumSpendSen: Number(loyalty?.minimum_spend_sen ?? 0),
+        redemptionThresholdPoints: Number(loyalty?.redemption_threshold_points ?? loyalty?.stamps_required ?? 10),
+        stampsRequired: Number(loyalty?.stamps_required ?? 10),
         rewardLabel: loyalty?.reward_label || 'Reward', minimumSpend: Number(loyalty?.minimum_spend ?? 0),
-        earnRule: 'one_stamp_per_eligible_paid_order' },
+        earnRule: loyalty?.earn_mode === 'spend_step' ? 'points_per_spend_step' : 'one_stamp_per_eligible_paid_order' },
       rows: visible.map(profileOutput),
       next: result.rowCount > query.limit ? visible.at(-1).id : null,
     };

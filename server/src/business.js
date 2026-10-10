@@ -32,6 +32,8 @@ import { registerStorefrontAdmin } from "./storefront-admin.js";
 import { registerCustomerOrders } from "./customer-orders.js";
 import { registerCustomerProfiles } from "./customer-profiles.js";
 import { registerStudentPrograms } from "./student-programs.js";
+import { registerMarketingCampaigns } from "./marketing-campaigns.js";
+import { registerMarketingLoyalty } from "./marketing-loyalty.js";
 import { registerAdvancedAnalytics } from "./advanced-analytics.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
@@ -536,6 +538,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
   registerCustomerProfiles(app,{scoped});
   registerStudentPrograms(app,{scoped,audit,voucherPepper:authOptions.voucherHmacSecret});
+  registerMarketingCampaigns(app,{scoped,audit});
+  registerMarketingLoyalty(app,{scoped,audit});
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),...reportFilterShape,analysis:z.enum(["true"]).optional()}),req.query);

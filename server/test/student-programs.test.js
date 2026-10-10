@@ -44,7 +44,7 @@ test('safe outputs omit verification digests, voucher digests, raw identifiers a
   assert.equal(voucher.codeHint, '***SAVE');
   assert.doesNotMatch(JSON.stringify({ student, voucher }), /secret-digest|SAVE-SECRET/);
   assert.deepEqual(studentProgramPolicy(), {
-    pricingApplied: false, checkoutIntegration: 'configured_not_active', rawDocumentUpload: false,
+    pricingApplied: true, checkoutIntegration: 'customer_ordering_live', rawDocumentUpload: false,
     rawStudentIdentifierStorage: false, voucherCodesReturned: false, loyaltyScope: 'workspace',
   });
 });
@@ -73,8 +73,8 @@ test('manager list is workspace scoped and returns only safe configured-foundati
   const result = await handler(fixture.request());
   assert.equal(result.workspaceId, 'workspace-a');
   assert.equal(result.students[0].status, 'pending');
-  assert.equal(result.promotions[0].applicationState, 'configured_not_active');
-  assert.equal(result.policy.pricingApplied, false);
+  assert.equal(result.promotions[0].applicationState, 'disabled');
+  assert.equal(result.policy.pricingApplied, true);
   const sql = fixture.calls.map(call => call.sql).join('\n');
   assert.match(sql, /co\.workspace_id=\$1/);
   assert.match(sql, /\(\$6 OR o\.company_id=\$7\)/);
@@ -161,31 +161,39 @@ const promotionBody = (overrides = {}) => ({
   customerTargets: [], ...overrides,
 });
 
-test('owner creates an immutable promotion version and managers cannot mutate configuration', async () => {
-  const fixture = register({ query(sql) {
+test('owners and managers create immutable company offers while operators are denied before database access', async () => {
+  const query = sql => {
     if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
     if (sql.includes('SELECT version FROM myfin.promotions')) return { rows: [], rowCount: 0 };
     if (sql.includes('INSERT INTO myfin.promotions')) return { rows: [{ updated_at: '2026-10-09T00:00:00Z' }], rowCount: 1 };
     if (sql.includes('INSERT INTO myfin.promotion_versions')) return { rows: [], rowCount: 1 };
     if (sql.includes('INSERT INTO myfin.promotion_version_categories')) return { rows: [], rowCount: 1 };
     throw Error(`unexpected query: ${sql}`);
-  } });
+  };
+  const fixture = register({ query });
   const handler = fixture.routes.get('POST /api/companies/:company/student-promotions');
   const result = await handler(fixture.request(promotionBody()));
   assert.equal(result.version, 1);
   assert.deepEqual(result.categoryTargets, [{ category: 'beverages', subcategory: 'latte' }]);
-  assert.equal(result.applicationState, 'configured_not_active');
+  assert.equal(result.applicationState, 'disabled');
   assert.ok(fixture.calls.some(call => call.sql.includes('INSERT INTO myfin.promotion_versions')));
   assert.ok(!fixture.calls.some(call => /UPDATE myfin\.promotion_versions/.test(call.sql)));
   const versionWrite = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.promotion_versions'));
-  assert.match(versionWrite.params[20], /^[0-9a-f]{64}$/);
+  assert.match(versionWrite.params[23], /^[0-9a-f]{64}$/);
 
-  const manager = register({ role: 'manager' });
+  const manager = register({ role: 'manager', query });
+  const managerResult = await manager.routes.get('POST /api/companies/:company/student-promotions')(
+    manager.request(promotionBody({ name: 'Manager offer' })),
+  );
+  assert.equal(managerResult.version, 1);
+  assert.ok(manager.calls.some(call => call.sql.includes('INSERT INTO myfin.promotion_versions')));
+
+  const operator = register({ role: 'operator' });
   await assert.rejects(
-    manager.routes.get('POST /api/companies/:company/student-promotions')(manager.request(promotionBody())),
+    operator.routes.get('POST /api/companies/:company/student-promotions')(operator.request(promotionBody())),
     error => error.statusCode === 403 && error.message === 'access_denied',
   );
-  assert.equal(manager.calls.length, 0);
+  assert.equal(operator.calls.length, 0);
 });
 
 test('promotion validation rejects inconsistent money, duplicate targets and stale versions', async () => {
@@ -214,6 +222,42 @@ test('promotion validation rejects inconsistent money, duplicate targets and sta
   await assert.rejects(stale.routes.get('PUT /api/companies/:company/student-promotions/:promotionId')(
     stale.request(promotionBody({ expectedVersion: 3 }), { promotionId: 'promotion-a' })),
   error => error.statusCode === 409 && error.message === 'promotion_changed');
+});
+
+test('free-item offers require the exact existing variant when the reward product has variants', async () => {
+  const freeItem = promotionBody({
+    name: 'Free large latte', discountType: 'free_item', discountBasisPoints: null,
+    maxDiscountSen: null, rewardProductId: 'latte', rewardVariantId: '',
+    rewardQuantityMilli: 1000, categoryTargets: [],
+  });
+  const missingVariant = register({ query(sql) {
+    if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+    if (sql.includes('AS has_variants')) return {
+      rows: [{ id: 'latte', has_variants: true, reward_variant_exists: false }], rowCount: 1,
+    };
+    throw Error(`unexpected query: ${sql}`);
+  } });
+  const create = missingVariant.routes.get('POST /api/companies/:company/student-promotions');
+  await assert.rejects(create(missingVariant.request(freeItem)),
+    error => error.statusCode === 400 && error.message === 'promotion_reward_variant_required');
+  assert.equal(missingVariant.calls.some(call => call.sql.includes('INSERT INTO myfin.promotions')), false);
+
+  const exactVariant = register({ query(sql, params) {
+    if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+    if (sql.includes('AS has_variants')) {
+      assert.equal(params[2], 'large');
+      return { rows: [{ id: 'latte', has_variants: true, reward_variant_exists: true }], rowCount: 1 };
+    }
+    if (sql.includes('SELECT version FROM myfin.promotions')) return { rows: [], rowCount: 0 };
+    if (sql.includes('INSERT INTO myfin.promotions')) return { rows: [{ updated_at: '2026-10-09T00:00:00Z' }], rowCount: 1 };
+    if (sql.includes('INSERT INTO myfin.promotion_versions')) return { rows: [], rowCount: 1 };
+    throw Error(`unexpected query: ${sql}`);
+  } });
+  const saved = await exactVariant.routes.get('POST /api/companies/:company/student-promotions')(
+    exactVariant.request({ ...freeItem, rewardVariantId: 'large' }),
+  );
+  assert.equal(saved.rewardProductId, 'latte');
+  assert.equal(saved.rewardVariantId, 'large');
 });
 
 test('voucher creation stores HMAC lookup only and returns just a masked hint', async () => {

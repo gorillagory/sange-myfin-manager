@@ -10,6 +10,8 @@ const query = ref(''), rows = ref([]), settings = ref(null), next = ref(null);
 const loading = ref(false), loadingMore = ref(false), error = ref('');
 const company = computed(() => Store.state.selectedCompany || {});
 const currency = computed(() => company.value.preferences?.currency || 'RM');
+const loyaltyUnit = computed(() => settings.value?.unitLabel || (settings.value?.stampsRequired != null ? 'stamps' : 'points'));
+const loyaltyThreshold = computed(() => Number(settings.value?.redemptionThresholdPoints ?? settings.value?.stampsRequired ?? 0));
 
 const consentLabel = profile => {
   const active = Object.entries(profile.marketingConsent || {}).filter(([, value]) => value?.granted).map(([channel]) => channel);
@@ -47,7 +49,7 @@ onMounted(load);
       </form>
       <span class="ed-muted">{{ rows.length }} loaded</span>
     </div>
-    <div v-if="settings" class="ed-notice"><div><strong>Workspace loyalty</strong>{{ settings.enabled ? `One stamp per eligible paid order · ${settings.stampsRequired} stamps for ${settings.rewardLabel}` : 'Loyalty earning is paused.' }}</div></div>
+    <div v-if="settings" class="ed-notice"><div><strong>Workspace loyalty</strong>{{ settings.enabled ? `${settings.earnMode==='spend_step'?'Spend-based':'Order-based'} earning · ${loyaltyThreshold} ${loyaltyUnit} redemption threshold` : 'Loyalty earning is paused.' }}</div></div>
     <p v-if="error" class="ed-notice error" role="alert">{{ error }}</p>
     <div v-if="loading" class="ed-empty" role="status"><span class="spinner"></span><p>Loading registered customers…</p></div>
     <div v-else class="ed-table-wrap"><table class="ed-table">
@@ -56,7 +58,7 @@ onMounted(load);
         <tr v-for="profile in rows" :key="profile.customerId">
           <td><strong>{{ profile.displayName }}</strong><small>{{ profile.email || 'No account email' }} · {{ profile.emailVerified ? 'Email verified' : 'Email unverified' }}</small><small v-if="profile.phone">{{ profile.phone }}</small></td>
           <td><strong>{{ profile.paidOrderCount }} paid · {{ money(profile.paidSpend,currency) }}</strong><small>{{ profile.orderCount }} total request{{ profile.orderCount===1?'':'s' }} · last {{ date(profile.lastOrderAt) }}</small></td>
-          <td><strong>{{ profile.loyaltyBalance }} stamp{{ profile.loyaltyBalance===1?'':'s' }}</strong><small>{{ settings?.enabled ? `${Math.max(0,Number(settings.stampsRequired||0)-profile.loyaltyBalance)} until ${settings.rewardLabel}` : 'Earning paused' }}</small></td>
+          <td><strong>{{ profile.loyaltyBalance }} {{ loyaltyUnit }}</strong><small>{{ settings?.enabled ? `${Math.max(0,loyaltyThreshold-profile.loyaltyBalance)} until threshold` : 'Earning paused' }}</small></td>
           <td><strong>{{ consentLabel(profile) }}</strong><small>Separate workspace consent · {{ profile.active ? 'active account' : 'account suspended' }}</small></td>
         </tr>
         <tr v-if="!rows.length"><td colspan="4" class="ed-empty">No registered customer has ordered from this company yet.</td></tr>
