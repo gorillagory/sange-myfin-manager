@@ -1,14 +1,14 @@
 # MyFin platform expansion release readiness
 
-**Status:** development deployed and operationally verified at exact application
-source `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`; authenticated browser
-acceptance pending
+**Status:** development and production deployed and operationally verified at
+exact application source `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`;
+interactive browser acceptance remains pending
 
 **Development application:** `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`,
 migrations through `0028`
 
-**Production application:** `6e08462ddbe3a8f2668e9325946ac69b0a53b3bf`,
-migrations through `0019`
+**Production application:** `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`,
+migrations through `0028`
 
 **Development/promotion source:** `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`
 on `develop`
@@ -130,21 +130,27 @@ and preserve existing live settings.
       and image IDs.
 - [ ] The same SHA passes staging smoke/acceptance; no rebuild from different
       source is substituted.
-- [ ] A distinct production voucher HMAC secret exists outside Git with
+- [x] A distinct production voucher HMAC secret exists outside Git with
       owner-only permissions.
-- [ ] Take a fresh production backup, store an off-host checksum and prove an
+- [x] Take a fresh production backup, store an off-host checksum and prove an
       isolated restore before migration.
-- [ ] Record current image IDs, container configuration, migration ledger,
+- [x] Record current image IDs, container configuration, migration ledger,
       Cloudflare routes and rollback commands.
-- [ ] Apply additive migrations and grants, then deploy API/report worker/web in
+- [x] Apply additive migrations and grants, then deploy API/report worker/web in
       the documented order with health checks between steps.
-- [ ] Reconcile production row counts and selected exact-sen totals before and
+- [x] Reconcile production row counts and selected exact-sen totals before and
       after migration. Migration must not create sales, stock, payment or
       promotion effects.
-- [ ] Run authenticated production smoke with non-destructive checks, followed
+- [x] Run authenticated production smoke with non-destructive checks, followed
       by DNS/TLS/tenant-host verification.
-- [ ] Promote the exact accepted SHA through `staging` to `main`; record release
+- [x] Promote the exact accepted SHA through `staging` to `main`; record release
       commit, image IDs, backup receipt and acceptance owner.
+
+The owner explicitly requested the production deployment on 10 October 2026
+before interactive browser sign-off. The exact development-tested source was
+promoted to both `staging` and `main`, but no separate staging runtime exists;
+the two unchecked gates remain recorded rather than being presented as tests
+that did not occur.
 
 ## Topology and recovery risks
 
@@ -236,12 +242,60 @@ and preserve existing live settings.
   also render correctly in Chrome. Authenticated browser workflow acceptance is
   still pending.
 
+### Production deployment receipt
+
+- Deployed at `2026-10-10T10:56:57Z` from application source
+  `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`. The exact source is now the head
+  of both `staging` and `main`.
+- Immutable source snapshot:
+  `/srv/docker/releases/sange-myfin-manager/4b3095f`; active production source
+  link: `/srv/docker/apps/sange-myfin-manager-prod`.
+- Protected runtime: `/srv/docker/secrets/myfin-prod/runtime.env`; versioned
+  runtime: `/srv/docker/secrets/myfin-prod/runtime-platform-4b3095f.env`;
+  previous runtime: `/srv/docker/secrets/myfin-prod/runtime-before-platform-4b3095f.env`.
+- API and report worker: `myfin-api:prod-platform-4b3095f`, immutable image ID
+  `sha256:ea1383ee36ddf6e0180e98808fbd5f4b524acb4d3413a5eec703c46088a5aa59`.
+- Web: `myfin-web:prod-platform-4b3095f`, immutable image ID
+  `sha256:c91780777b1f1f2ea6822f20ca2f51ff8f3a74c06184441834bab9461a6262b6`.
+- Previous application snapshot and images remain available at
+  `/srv/docker/releases/sange-myfin-manager/6e08462` with runtime
+  `runtime-before-platform-4b3095f.env`.
+- Quiescent pre-migration backup:
+  `/srv/docker/backups/myfin-prod/pre-platform-4b3095f-20261010T104911Z`;
+  checksum-verified off-host copy:
+  `/root/myfin-recovery/prod-20261010/pre-platform-4b3095f-20261010T104911Z`
+  on `nexus-pbund`.
+- Backup checksums: database
+  `f7d7e5ed215387071a562bc619d5b1b3a9390bc29ac34484e54150f0dbe3c565`;
+  uploads
+  `cfda6993d5b6450f323cddd58207056ad69860903da3ebc44f6fe5e649f18e1f`.
+  The previous runtime, candidate runtime and distinct production voucher secret
+  are included under the protected `config` subdirectory and verified by the
+  same manifest.
+- Isolated restore rehearsal reproduced `19` migrations, `2` companies, `46`
+  products, `152` transactions and `3` expenses. Its mirrored durable receipt
+  checksum is
+  `e6d536a5628a306a66ac9c8d42f5f3a03d5f8760dda0fc19238884fbd0fc71f8`.
+- The production ledger reports `28` migrations through
+  `0028_recipe_order_integrity.sql`, with `0028` present exactly once. A repeat
+  migration applied `0` migrations and re-applied only explicit grants.
+- Pre-existing business counts remained `2` companies, `46` products, `152`
+  transactions, `3` expenses, `113` orders and `113` legacy stock movements.
+- API and web are healthy, the report worker is running, all three containers
+  have zero restarts, and worker queue checks found no expired lease or
+  claimable failed run. Redacted startup/worker logs contain no failure marker.
+- LAN and public HTTPS smoke, authenticated SuperAdmin inventory/operations
+  smoke, Orders/report/consolidation/document reconciliation and the protected
+  Snidect accounting reconciliation all passed. Snidect totals remained sales
+  `149782.86`, tax `1380.76`, expenses `22852.00`, cash in `78228.75`, cash out
+  `16352.00` and cash flow `61876.75`.
+
 | Stage | SHA / image IDs | Database | Evidence | Result / owner |
 | --- | --- | --- | --- | --- |
 | Source candidate | `4b3095f38f27f71c5dd1e950474efbf660bcfcc3` | Disposable PG16 `0001`-`0028` | Server 201/201; frontend 66/66; offline 11/11; management 7/7; recipe adversarial 8/8; production build | Source-tested |
 | Development | `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`; API/worker `myfin-api:platform-4b3095f` / `sha256:53475ac0...`; web `myfin-web:platform-4b3095f` / `sha256:4fe57246...` | `myfin_dev`; 28 migrations through `0028`; repeat applied zero | Checksum-verified local/off-host backup; isolated restore; LAN/public/authenticated smokes; browser login and POS-code surfaces | Deployed and automated checks passed `2026-10-09T09:28:37Z`; authenticated browser acceptance pending |
 | Staging | _pending_ | _pending_ | Exact-image smoke and reconciliation | Not started |
-| Production | Live `6e08462` | Live through `0019` | Existing health baseline only | Expansion not deployed |
+| Production | `4b3095f38f27f71c5dd1e950474efbf660bcfcc3`; API/worker `sha256:ea1383ee...`; web `sha256:c9178077...` | `myfin_prod`; 28 migrations through `0028`; repeat applied zero | Fresh local/off-host backup, isolated restore, row reconciliation, LAN/public/authenticated feature and Snidect accounting smokes | Deployed and automated checks passed 10 October 2026; interactive browser acceptance pending |
 
 No row above should be changed to accepted without the referenced command,
 receipt or human browser decision. This document is the release checklist; it

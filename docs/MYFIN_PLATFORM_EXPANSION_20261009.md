@@ -1,7 +1,7 @@
 # MyFin platform expansion
 
-**Status:** development deployed and operationally verified; authenticated
-browser acceptance and production promotion are pending
+**Status:** development and production deployed and operationally verified;
+interactive browser acceptance remains pending
 
 **Recorded:** 9 October 2026
 
@@ -10,15 +10,15 @@ browser acceptance and production promotion are pending
 `0028`
 
 **Production baseline:** commit
-`6e08462ddbe3a8f2668e9325946ac69b0a53b3bf`, database migrations through
-`0019`
+`4b3095f38f27f71c5dd1e950474efbf660bcfcc3`, database migrations through
+`0028`
 
 **Development/promotion source:**
 `4b3095f38f27f71c5dd1e950474efbf660bcfcc3` on `develop`
 
-The expansion is running in development from immutable images built from the
-recorded source. Production remains on `6e08462`. The detailed backup, image,
-migration, smoke and rollback receipt is in
+The expansion is running in development and production from separate immutable
+images built from the recorded source. The detailed backup, image, migration,
+smoke and rollback receipts are in
 `PLATFORM_EXPANSION_RELEASE_20261009.md`.
 
 ## Product and accounting decisions
@@ -218,7 +218,7 @@ It was not a load test.
 | `nexus-pbund` | Source/controller and sole Cloudflare tunnel process; 8 GiB RAM with about 7.8 GiB available; 40 GiB root with about 23 GiB available |
 | `nexus-docker` | App runtimes and shared PostgreSQL; about 11.6 GiB RAM with 10 GiB available; `/srv/docker` had about 278 GiB available |
 | MyFin development | Healthy API/web and running report worker on exact source `4b3095f`; database migrations through `0028`; automated public/authenticated smoke passed |
-| MyFin production | Healthy API/web on `6e08462`; database migrations through `0019`; expansion is not deployed |
+| MyFin production | Healthy API/web and running report worker on exact source `4b3095f`; database migrations through `0028`; public/authenticated reconciliation passed |
 | PostgreSQL | `max_connections=100`; `archive_mode=off`; no continuous WAL archive/PITR observed |
 | Backups | Manual checkpoints existed, but no MyFin backup timer was observed |
 | Ingress | One `cloudflared` origin path; no second replica observed |
@@ -248,10 +248,10 @@ and [Cloudflare Tunnel high availability](https://developers.cloudflare.com/tunn
 | Pricing | Promotions, vouchers, student rules and reservation lifecycle implemented for the storefront | Validate live policy/data; manual POS/documents do not automatically apply storefront rules |
 | Inventory | Recipes, ingredient reservations, procurement, identifiers, cost and low-stock workflow implemented | Reconcile opening counts/recipes and approve each opt-in recipe before enabling it |
 | Analytics | Dynamic operational, customer, student, inventory and finance views deployed; API totals reconcile in development | Complete authenticated chart/drill-down browser acceptance and performance-test large periods |
-| Reporting | In-app schedules, worker and advisory forecasts deployed in development | Exercise scheduled-report UI; configure production worker later; email delivery remains future work |
+| Reporting | In-app schedules, worker and advisory forecasts deployed in development and production | Exercise scheduled-report UI; email delivery remains future work |
 | Payments | Evidence/reconciliation and operations view implemented | Select contracted acquirer; add hosted intents, signed callbacks, refunds and settlement reconciliation |
 | Gokoo | Disabled metadata/mapper foundation implemented | Confirm vendor identity and contract, then sandbox read-only shadow reconciliation before any write path |
-| Recovery | Development backup, off-host checksum and isolated restore drill completed | Repeat for production promotion; add PITR and a second tunnel replica |
+| Recovery | Development and production backups, off-host checksums and isolated restore drills completed | Automate the cycle; add PITR and a second tunnel replica |
 
 Every promotion follows `develop -> staging -> main`, uses additive migrations,
 backs up before migration, deploys exact image IDs and retains the prior images.
@@ -276,5 +276,5 @@ and acceptance record are in `PLATFORM_EXPANSION_RELEASE_20261009.md`.
 - Student and delivery records have explicit purpose, retention and redaction
   behaviour.
 - Backups have fresh checksums and a successful isolated restore receipt.
-- Production promotion uses the exact reviewed/tested SHA and image IDs only
-  after development and staging acceptance.
+- Future production promotion uses the exact reviewed/tested SHA and image IDs
+  with recorded development, staging or explicitly authorized expedited gates.
