@@ -26,6 +26,7 @@ let initialized = false,
   syncing = false,
   dataRefreshTask = null,
   workspaceRefreshTask = null,
+  reviewRefreshTask = null,
   lastDataRefreshAt = 0;
 export const DATA_REFRESH_STALE_MS = 2 * 60 * 1000;
 async function confirmSale(sale) {
@@ -497,11 +498,26 @@ export const Store = reactive({
   },
   async refreshReceiptReviews() {
     const uid = state.currentUser?.uid, role = state.currentUser?.role,
-      co = state.selectedCompany?.id, generation = companyEpoch, request = ++reviewEpoch;
-    if (!uid || !co || !state.online || !this.can("checkout")) return;
-    const rows = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews");
-    if (generation !== companyEpoch || request !== reviewEpoch || state.currentUser?.uid !== uid || state.currentUser?.role !== role) return;
-    state.receiptReviews = rows;
+      co = state.selectedCompany?.id, generation = companyEpoch;
+    if (!uid || !co || !state.online || !this.can("checkout"))
+      return { status: "unavailable", refreshed: false };
+    const key = [session, generation, uid, co, role].join(":");
+    if (reviewRefreshTask?.key === key) return reviewRefreshTask.promise;
+    const request = ++reviewEpoch, task = { key };
+    task.promise = (async () => {
+      try {
+        const rows = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews");
+        if (generation !== companyEpoch || request !== reviewEpoch || state.currentUser?.uid !== uid ||
+            state.currentUser?.role !== role || state.selectedCompany?.id !== co)
+          return { status: "stale", refreshed: false };
+        state.receiptReviews = rows;
+        return { status: "refreshed", refreshed: true, count: rows.length };
+      } finally {
+        if (reviewRefreshTask === task) reviewRefreshTask = null;
+      }
+    })();
+    reviewRefreshTask = task;
+    return task.promise;
   },
   async requestReceiptReview(sale) {
     if (!state.online || !this.can("checkout") || sale.cashierId !== state.currentUser?.uid || sale.company_id !== state.selectedCompany?.id)

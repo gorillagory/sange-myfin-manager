@@ -116,4 +116,15 @@ try{
   assert.match(source,/e\.message === 'receipt_review_required_recipe_timing'/);
   assert.match(source,/selected\.value = \{ \.\.\.selected\.value, recipeTimingRequired: true \}/);
  });
+ await test('payment reviews refresh across devices and expose server pending reviews in navigation',async()=>{
+  const [reviews,shell]=await Promise.all([
+   readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8'),
+   readFile(new URL('../src/components/EditionShell.vue',import.meta.url),'utf8'),
+  ]);
+  assert.match(reviews,/addEventListener\('focus', refreshVisible\)/);
+  assert.match(reviews,/setInterval\(refreshVisible, 10000\)/);
+  assert.match(reviews,/Choose a company to review payments/);
+  assert.match(shell,/serverReviewCount/);
+  assert.match(shell,/pending payment reviews/);
+ });
 }finally{Store.clearSession();await vite.close();}

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onMounted, watch } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { Store } from '../../store';
 import { needsReceiptReview } from '../../domain/offlinePolicy';
 import { money } from '../../domain/pos';
@@ -17,6 +17,7 @@ const ownNeedsReview = computed(() => unlistedSales.value.filter(sale => needsRe
 const ownCanRequestDismissal = computed(() => unlistedSales.value.filter(sale => sale.syncError && !needsReceiptReview(sale.syncError)));
 const ownNeedsSync = computed(() => unlistedSales.value.filter(sale => !sale.syncError));
 const canResolve = computed(() => Store.can('receiptReviewsResolve'));
+const companySelected = computed(() => Boolean(Store.state.selectedCompany?.id));
 const status = computed(() => Store.state.online
   ? 'Saved payments stay on the original cashier’s device until the server confirms they were posted or dismissed. Reconcile that device after a manager decision.'
   : 'Reconnect to request or resolve a review. Paid receipts remain saved on the original device.');
@@ -55,10 +56,15 @@ function recipeResolutionText(resolution) {
   })[resolution] || '';
 }
 
-async function refresh() {
-  error.value = '';
-  try { await Store.refreshActor(); await Store.refreshReceiptReviews(); }
-  catch (e) { error.value = e.message; }
+async function refresh({ verifyActor = true, quiet = false } = {}) {
+  if (!companySelected.value) return;
+  if (!quiet) error.value = '';
+  try {
+    if (verifyActor) await Store.refreshActor();
+    await Store.refreshReceiptReviews();
+  } catch (e) {
+    if (!quiet) error.value = e.message;
+  }
 }
 async function request(sale) {
   if (busy.value) return;
@@ -123,7 +129,23 @@ async function resolve(decision) {
   finally { busy.value = false; }
 }
 
-onMounted(refresh);
+let pollTimer;
+const refreshVisible = () => {
+  if (document.visibilityState === 'visible' && Store.state.online && companySelected.value)
+    refresh({ verifyActor: false, quiet: true });
+};
+const visibilityChanged = () => refreshVisible();
+onMounted(() => {
+  refresh();
+  window.addEventListener('focus', refreshVisible);
+  document.addEventListener('visibilitychange', visibilityChanged);
+  pollTimer = window.setInterval(refreshVisible, 10000);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshVisible);
+  document.removeEventListener('visibilitychange', visibilityChanged);
+  window.clearInterval(pollTimer);
+});
 watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refresh(); });
 </script>
 
@@ -135,10 +157,15 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
         <h1>Resolve recorded payments.</h1>
         <p>{{ canResolve ? 'Check the original payment before approving or dismissing it.' : 'Track saved paid receipts that need a manager decision.' }}</p>
       </div>
-      <button class="ed-btn" :disabled="busy || !Store.state.online" @click="refresh">Refresh reviews</button>
+      <button class="ed-btn" :disabled="busy || !Store.state.online || !companySelected" @click="refresh()">Refresh reviews</button>
     </header>
-    <div class="ed-notice warning">{{ status }}</div>
-    <p v-if="error" class="ed-alert" role="alert">{{ error }}</p>
+    <div v-if="!companySelected" class="ed-empty">
+      <h3>Choose a company to review payments.</h3>
+      <p>Open the company switcher and select the workspace whose recorded payments you want to review.</p>
+    </div>
+    <template v-else>
+      <div class="ed-notice warning">{{ status }}</div>
+      <p v-if="error" class="ed-alert" role="alert">{{ error }}</p>
 
     <section v-if="ownNeedsReview.length">
       <h2>Ready to request review</h2>
@@ -226,5 +253,6 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
         <button class="ed-btn primary" :disabled="approvalBlocked" @click="resolve('approve')">{{ busy ? 'Confirming…' : 'Approve original payment' }}</button>
       </template>
     </Modal>
+    </template>
   </div>
 </template>

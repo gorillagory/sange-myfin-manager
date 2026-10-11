@@ -139,3 +139,33 @@ test('recipe shortage stays pending until replenished, then approves and replays
  assert.equal(replay.status,'approved');assert.equal(updates,1);assert.equal(posts,1);
  assert.equal(checkoutCalls,6);
 });
+
+test('managers, workspace owners and super admins list reviews from another cashier',async()=>{
+ const companyId='company-shared-review',cashierId='cashier-on-another-device';
+ const review={id:'shared-review',company_id:companyId,actor_id:cashierId,status:'pending',payload:{
+  id:'shared-review',company_id:companyId,cashierId,items:[],total:10,
+ },request_digest:'digest',reason_code:'cashier_requested_dismissal',created_at:new Date().toISOString()};
+ const filters=[];
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-shared'}]};
+  if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews')){
+   filters.push({allCompanyReviews:args[1],actorId:args[2]});
+   return {rowCount:1,rows:[review]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(`POST ${path}`,handler),
+  get:(path,handler)=>routes.set(`GET ${path}`,handler)};
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},checkout:async()=>{},audit:async()=>{}});
+ const list=routes.get('GET /api/companies/:company/receipt-reviews');
+ for(const role of ['manager','workspace_owner','super_admin']){
+  const identity={id:`${role}-viewer`,role};
+  const rows=await list({params:{company:companyId},identity,authLevel:'password',authSessionId:'session-shared'});
+  assert.equal(rows[0].id,review.id);
+  assert.deepEqual(filters.at(-1),{allCompanyReviews:true,actorId:identity.id});
+ }
+ const operatorIdentity={id:'operator-viewer',role:'operator'};
+ await list({params:{company:companyId},identity:operatorIdentity,authLevel:'password',authSessionId:'session-shared'});
+ assert.deepEqual(filters.at(-1),{allCompanyReviews:false,actorId:operatorIdentity.id});
+});

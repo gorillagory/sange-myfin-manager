@@ -77,6 +77,22 @@ try{
     assert.equal(Store.state.dataLoading,false);
   });
 
+  await test('concurrent payment-review refreshes share one server request',async()=>{
+    session();Store.state.fromCache=false;
+    const reviews=[{id:'review-from-another-device',status:'pending'}];
+    const requested=[];let release;
+    const gate=new Promise(resolve=>{release=resolve;});
+    globalThis.fetch=async path=>{requested.push(path);await gate;return response(reviews);};
+    const first=Store.refreshReceiptReviews();
+    const second=Store.refreshReceiptReviews();
+    await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(requested.filter(path=>path.endsWith('/receipt-reviews')).length,1);
+    release();
+    const [a,b]=await Promise.all([first,second]);
+    assert.equal(a.status,'refreshed');assert.equal(b.status,'refreshed');
+    assert.deepEqual(Store.state.receiptReviews,reviews);
+  });
+
   await test('posted checkout refreshes stock and changed customers without fetching history',async()=>{
     session();Store.state.fromCache=false;
     Store.state.transactions=[{id:'older',company_id:company.id,type:'Invoice',source:'pos'}];
