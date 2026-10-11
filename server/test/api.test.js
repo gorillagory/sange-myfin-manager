@@ -69,7 +69,7 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   const events = [];
   class FakePool extends EventEmitter {
     constructor(options) { super(); this.options = options; pool = this; }
-    async query(sql) { assert.match(sql, /myfin.schema_migrations/); return { rows:[{ ready:true }] }; }
+    async query(sql) { assert.match(sql, /0031_stock_internal_codes\.sql/); return { rows:[{ ready:true }] }; }
     async end() { closes++; }
   }
   const config = loadConfig(env).database;

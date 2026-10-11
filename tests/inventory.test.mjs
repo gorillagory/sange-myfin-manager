@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {parseCsv,importProductsCsv,exportProductsCsv,templateCsv,validateProduct,validEmail,filterInventoryProducts,inventoryFacets,categoryPath} from '../src/domain/inventoryCsv.js';
 import {createSale,cartItem} from '../src/domain/pos.js';
 import {receiptMailto,receiptLines,receiptPrintJob} from '../src/domain/receipt.js';
+import {duplicateProductDraft,generateUniqueSKU} from '../src/composables/useProductLogic.js';
 test('template imports simple products and stable variant identities',()=>{
  const products=importProductsCsv(templateCsv());assert.equal(products.length,2);assert.equal(products[1].variants.length,2);assert.equal(products[1].variants[0].sku,'BEV-EXAMPLE-ICED');assert.equal(new Set(products[1].variants.map(v=>v.id)).size,2);
  assert.equal(importProductsCsv(exportProductsCsv(products))[1].variants[1].price,8);
@@ -37,6 +38,15 @@ test('inventory category and subcategory filters return sorted catalog groups',(
  assert.deepEqual(inventoryFacets(rows,'Menu'),{categories:['Menu','Retail'],subcategories:['Beverages','Pastry']});
  assert.deepEqual(filterInventoryProducts(rows,{category:'Menu',subcategory:'Beverages'}).map(row=>row.name),['Americano','Latte']);
  assert.deepEqual(filterInventoryProducts(rows,{query:'pastry'}).map(row=>row.name),['Scone']);
+});
+test('generated and duplicated product codes avoid the current catalog and reset physical stock',()=>{
+ const ids=['AAAAAAAA','BBBBBBBB'];
+ assert.equal(generateUniqueSKU('Retail',['RET-AAAAAAAA'],()=>ids.shift()),'RET-BBBBBBBB');
+ const product={id:'latte',company_id:'company',version:4,name:'Latte',sku:'BEV-LATTE',barcode:'955000',category:'Menu',subcategory:'Coffee',trackStock:true,stock:20,price:9,cost:3,imageUrl:'https://example.test/latte.png',variants:[{id:'hot',name:'Hot',sku:'BEV-LATTE-HOT',barcode:'955001',stock:9,price:9,cost:3}]};
+ const copy=duplicateProductDraft(product,[product],()=> 'CCCCCCCC');
+ assert.equal(copy.name,'Latte copy');assert.equal(copy.sku,'MEN-CCCCCCCC');assert.equal(copy.stock,0);assert.equal(copy.barcode,'');
+ assert.equal(copy.variants[0].stock,0);assert.equal(copy.variants[0].barcode,'');assert.notEqual(copy.variants[0].id,'hot');assert.notEqual(copy.variants[0].sku,'BEV-LATTE-HOT');
+ assert.equal(copy.imageUrl,product.imageUrl);assert.equal(copy.id,undefined);assert.equal(copy.version,undefined);
 });
 test('email receipt snapshots and encoded drafts preserve receipt totals',()=>{
  const s=createSale({id:'email-test',company:{id:'store',name:'Test Store'},user:{uid:'cashier',email:'cashier@example.test'},items:[cartItem({id:'tea',name:'Tea & cake',sku:'TEA',price:3.5})],method:'Cash',received:5,customer:{name:'Test Customer',email:' customer@example.test '}});

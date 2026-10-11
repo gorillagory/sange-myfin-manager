@@ -34,7 +34,7 @@ export function presentReceipt(sale, company = {}, customer = {}) {
   const raw={...sale,type:'Receipt',documentState:'issued',companySnapshot:{...merchant,qrCode:merchant.qrCode||merchant.qrCodeUrl||''},clientSnapshot:sale.clientSnapshot||{name:sale.customerName||customer.name||'Walk-in customer',email:sale.customerEmail||customer.email||'',phone:customer.phone||'',address:customer.address||''},templateSnapshot:settings,footer:sale.storeSnapshot?.footer||sale.footer||settings.footer};
   const view=presentDocument(raw,{},raw.clientSnapshot,{settings});
   const hasRounding=sale.totalBeforeRounding!==undefined&&sale.rounding!==undefined;
-  return {...view,isDraft:false,pending:sale.syncStatus==='pending'||sale.pending===true,displayDate:new Date(sale.date).toLocaleString('en-MY',{timeZone:'Asia/Kuala_Lumpur'}),cashierName:sale.cashierName||sale.history?.[0]?.user||'—',paymentMethod:sale.paymentMethod||'Recorded payment',received:sale.received,change:sale.change,promotionDiscounts:sale.promotionDiscounts||[],
+  return {...view,isDraft:false,pending:sale.syncStatus==='pending'||sale.pending===true,reviewPending:sale.syncStatus==='review'||sale.reviewPending===true,displayDate:new Date(sale.date).toLocaleString('en-MY',{timeZone:'Asia/Kuala_Lumpur'}),cashierName:sale.cashierName||sale.history?.[0]?.user||'—',paymentMethod:sale.paymentMethod||'Recorded payment',received:sale.received,change:sale.change,promotionDiscounts:sale.promotionDiscounts||[],
     subtotal:sale.subtotal??view.subtotal,discountAmount:sale.discountAmount??view.discountAmount,tax:sale.tax??view.tax,...(sale.deliveryFee!==undefined?{deliveryFee:sale.deliveryFee}:{}),...(hasRounding?{totalBeforeRounding:sale.totalBeforeRounding,rounding:sale.rounding}:{}),total:sale.total??view.total};
 }
 export function documentDiscountLabel(doc = {}) {
@@ -46,7 +46,7 @@ export function documentTextLines(doc) {
   const amount=value=>money(value||0,doc.currency||'RM'),signedAmount=value=>{const number=Number(value)||0;return `${number>0?'+':number<0?'-':''}${amount(Math.abs(number))}`;}, settings=doc.settings;
   const discountLabel=documentDiscountLabel(doc);
   return [
-    doc.pending?'Payment recorded on this device · Awaiting server sync':null,
+    doc.pending?'Payment recorded on this device · Awaiting server sync':doc.reviewPending?'Payment secured on server · Awaiting manager review':null,
     doc.isDraft?'DRAFT · Not issued':null,
     doc.company.name,doc.company.registration&&'Registration: '+doc.company.registration,doc.company.address,doc.company.phone,doc.company.email,'',
     settings.labels.title,doc.number||'Assigned when issued',doc.isPaid?'PAID':doc.status,doc.displayDate||doc.date,doc.dueDate&&'Payment due: '+doc.dueDate,doc.validUntil&&'Quote valid until: '+doc.validUntil,doc.project&&'Project: '+doc.project,doc.cashierName&&'Cashier: '+doc.cashierName,'',

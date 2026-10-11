@@ -25,6 +25,16 @@ export function normalizeRecipeDraft(input={}){
   return draft;
 }
 
+export function validateRecipeStockUnits(draft,stockItems=[]){
+  const items=new Map(stockItems.map(item=>[clean(item.id),item]));
+  for(const component of draft.components||[]){
+    const item=items.get(clean(component.stockItemId));
+    if((item?.trackingMode||item?.tracking_mode)==='count'&&!Number.isInteger(Number(component.quantityPerUnit)))
+      throw new Error('Counted recipe components must use whole base units.');
+  }
+  return draft;
+}
+
 export function recipeAvailability(components=[],stockItems=[]){
   if(!components.length)return {units:0,limitingStockItemId:'',complete:false};
   const items=new Map(stockItems.map(item=>[item.id,item]));

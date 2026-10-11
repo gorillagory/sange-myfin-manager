@@ -94,6 +94,29 @@ test('recipe enablement rejects inferred catalog tracking before writing history
   assert.equal(writes.length,0);
 });
 
+test('counted recipe fractions are rejected when the recipe is saved',async()=>{
+  const writes=[];
+  const db={async query(sql){
+    if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
+    if(sql.includes('FROM myfin.products')&&sql.includes('FOR UPDATE'))return {rows:[{id:'latte',data:{name:'Latte',trackStock:false,variants:[]}}],rowCount:1};
+    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'pump',active:true,tracking_mode:'count'}],rowCount:1};
+    if(/^\s*(INSERT|UPDATE)/.test(sql)){writes.push(sql);return {rows:[],rowCount:1};}
+    throw Error(`Unexpected SQL: ${sql}`);
+  }};
+  await assert.rejects(()=>saveRecipe(db,{id:'manager'},'company',{
+    productId:'latte',variantId:'',version:0,enabled:true,components:[{stockItemId:'pump',quantityPerUnit:.5}],
+  },async()=>{}),error=>error.statusCode===400&&error.message==='recipe_count_requires_whole_units');
+  assert.equal(writes.length,0);
+});
+
+test('recipe planning converts four coffees into one litre of milk and four syrup pumps',()=>{
+  const plan=planRecipeConsumption([{productId:'latte',qty:4}],[{id:'latte-recipe',productId:'latte',variantId:'',version:1,components:[
+    {stockItemId:'milk',quantityPerUnit:'250',quantityPerUnitMicro:250000000n},
+    {stockItemId:'syrup',quantityPerUnit:'1',quantityPerUnitMicro:1000000n},
+  ]}]);
+  assert.deepEqual(plan.consumptions.map(row=>[row.stockItemId,row.quantityMicro]),[['milk',1000000000n],['syrup',4000000n]]);
+});
+
 test('recipe projections expose quantities and availability without confidential costs',async()=>{
   const db={async query(sql){
     if(sql.includes('FROM myfin.inventory_recipes r JOIN myfin.products'))return {rows:[{id:'r',product_id:'latte',variant_id:null,

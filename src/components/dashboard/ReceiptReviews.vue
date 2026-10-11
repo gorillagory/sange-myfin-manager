@@ -19,7 +19,7 @@ const ownNeedsSync = computed(() => unlistedSales.value.filter(sale => !sale.syn
 const canResolve = computed(() => Store.can('receiptReviewsResolve'));
 const companySelected = computed(() => Boolean(Store.state.selectedCompany?.id));
 const status = computed(() => Store.state.online
-  ? 'Saved payments stay on the original cashier’s device until the server confirms they were posted or dismissed. Reconcile that device after a manager decision.'
+  ? 'A confirmed review handoff moves the full paid record to the server and clears the original device queue. Managers and workspace owners can then approve or dismiss it.'
   : 'Reconnect to request or resolve a review. Paid receipts remain saved on the original device.');
 const isPosted = row => ['posted', 'approved'].includes(row.status);
 const isDismissed = row => row.status === 'dismissed';
@@ -40,6 +40,7 @@ function reasonText(code) {
     receipt_review_required_product_changed: 'The original product option changed; reconcile the catalog before approval',
     receipt_review_required_recipe_timing: 'The inventory recipe changed after this offline sale was captured',
     receipt_review_required_recipe_stock: 'Recipe ingredients are below the amount required by this paid sale',
+    receipt_review_required_record_conflict: 'The server found a conflicting financial or inventory record',
     stock_unavailable: 'Stock needs review',
     price_changed: 'Catalog price changed',
     tax_changed: 'Tax policy changed',
@@ -74,7 +75,7 @@ async function request(sale) {
     const result = await Store.requestReceiptReview(sale);
     if (result.status === 'posted') Store.notify('The server confirmed this receipt was recorded.' + queueConfirmation(sale));
     else if (result.status === 'dismissed') Store.notify('The server confirmed this receipt was dismissed.' + queueConfirmation(sale));
-    else Store.notify('Payment review requested. Keep the original receipt queued until the server confirms its outcome.');
+    else Store.notify('Payment secured on the server and awaiting manager review. The original device queue is clear.');
   } catch {
     error.value = 'Review could not be confirmed. The original payment is still queued; retry safely when connected.';
   } finally { busy.value = false; }
@@ -110,10 +111,10 @@ async function resolve(decision) {
   try {
     if (decision === 'approve') {
       await Store.approveReceiptReview(selected.value.id, explanation, inventoryRecipeResolution.value);
-      Store.notify('Original payment approved and posted. The cashier can now reconcile the device queue.');
+      Store.notify('Original payment approved and posted.');
     } else {
       await Store.dismissReceiptReview(selected.value.id, explanation);
-      Store.notify('Payment reviewed and not recorded. The original cashier can now reconcile the device queue.');
+      Store.notify('Payment reviewed and not recorded.');
     }
     selected.value = null;
   } catch (e) {

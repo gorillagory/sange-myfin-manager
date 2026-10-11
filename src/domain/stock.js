@@ -1,5 +1,5 @@
 export const STOCK_MODES = Object.freeze([
-  { value:'count', label:'Counted items', examples:'cups, pastries, cake slices', units:['pcs','cup','slice','box','pack'] },
+  { value:'count', label:'Counted items', examples:'cups, pastries, pumps, shots and portions', units:['pcs','cup','slice','pump','shot','portion','bottle','box','pack','tray'] },
   { value:'weight', label:'Measured by weight', examples:'coffee beans, sugar, flour', units:['g','kg'] },
   { value:'volume', label:'Measured by volume', examples:'milk, syrup, oil', units:['ml','L'] },
 ]);
@@ -15,6 +15,7 @@ export function normalizeStockItem(input={}) {
     ...(input.id?{id:input.id}:{}),
     ...(input.company_id?{company_id:input.company_id}:{}),
     ...(input.version?{version:Number(input.version)}:{}),
+    ...(clean(input.internalCode)?{internalCode:clean(input.internalCode)}:{}),
     name:clean(input.name),category:clean(input.category)||'General',trackingMode:mode,
     baseUnit:clean(input.baseUnit)||defaultStockUnit(mode),barcode:clean(input.barcode),
     onHand:amount(input.onHand||0),reorderLevel:amount(input.reorderLevel||0),
@@ -39,7 +40,9 @@ export function validateStockItem(input, existing=[]) {
     if(!label||labels.has(label)||!Number.isFinite(pack.quantityInBase)||pack.quantityInBase<=0)throw new Error('Each packaging needs a unique label and a quantity greater than zero.');
     labels.add(label);
   }
-  const used=new Set(existing.filter(other=>other.id!==item.id).flatMap(other=>[other.barcode,...(other.packagings||[]).map(pack=>pack.barcode)]).filter(Boolean).map(code=>String(code).toLocaleUpperCase()));
+  if(item.trackingMode==='count'&&(!Number.isInteger(item.onHand)||!Number.isInteger(item.reorderLevel)||item.packagings.some(pack=>!Number.isInteger(pack.quantityInBase))))
+    throw new Error('Counted stock and its package conversions must use whole base units.');
+  const used=new Set(existing.filter(other=>other.id!==item.id).flatMap(other=>[other.internalCode,other.barcode,...(other.packagings||[]).map(pack=>pack.barcode)]).filter(Boolean).map(code=>String(code).toLocaleUpperCase()));
   if(codes.some(code=>used.has(code)))throw new Error('A barcode is already assigned to another stock item.');
   return item;
 }
@@ -49,11 +52,29 @@ export function findStockCode(items, code) {
   if(!target)return null;
   for(const item of items){
     if(item.active===false)continue;
+    if(clean(item.internalCode).toLocaleUpperCase()===target)return {item,packaging:null,quantity:1};
     if(clean(item.barcode).toLocaleUpperCase()===target)return {item,packaging:null,quantity:1};
     const packaging=(item.packagings||[]).find(pack=>clean(pack.barcode).toLocaleUpperCase()===target);
     if(packaging)return {item,packaging,quantity:Number(packaging.quantityInBase)};
   }
   return null;
+}
+
+export function stockConversionText(packaging,baseUnit){
+  const label=clean(packaging?.label),unit=clean(baseUnit)||'unit',value=amount(packaging?.quantityInBase);
+  if(!label||!Number.isFinite(value)||value<=0)return '';
+  return `${label} = ${value.toLocaleString(undefined,{maximumFractionDigits:6})} ${unit}`;
+}
+
+// A duplicate keeps operating settings but never copies balances, immutable
+// server-issued codes or physical scan codes.
+export function duplicateStockItem(input={}){
+  const item=normalizeStockItem(input);
+  return {
+    name:`${item.name} copy`,category:item.category,trackingMode:item.trackingMode,baseUnit:item.baseUnit,
+    barcode:'',onHand:0,reorderLevel:item.reorderLevel,preferredSupplierId:item.preferredSupplierId,
+    active:true,notes:item.notes,packagings:item.packagings.map(pack=>({label:pack.label,barcode:'',quantityInBase:pack.quantityInBase})),
+  };
 }
 
 export function stockMovement(input, current) {

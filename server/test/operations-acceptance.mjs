@@ -137,6 +137,7 @@ try {
       cookie: cookieA, method: 'POST', body: itemPayload(`beans-${tag}`),
     });
     assert.equal(beans.onHand, 0);
+    assert.match(beans.internalCode, /^STK-\d{6,}$/);
     assert.equal(beans.packagings.length, 1);
     const twin = await ok(hostB, url(companyB, '/stock_items'), {
       cookie: cookieB, method: 'POST', body: itemPayload(beans.id, {
@@ -146,6 +147,7 @@ try {
       }),
     });
     assert.equal(twin.id, beans.id);
+    assert.match(twin.internalCode, /^STK-\d{6,}$/);
     assert.deepEqual((await listed(companyA, hostA, cookieA, '/stock_items')).map(row => row.name), ['Arabica beans']);
     assert.deepEqual((await listed(companyB, hostB, cookieB, '/stock_items')).map(row => row.name), ['Brand B beans']);
     await reject(hostA, url(companyA, '/stock_items'), {
@@ -153,6 +155,14 @@ try {
         barcode: `OTHER-${tag}`, preferredSupplierId: supplierB.id, packagings: [],
       }),
     }, 409, 'supplier_not_found');
+
+    const concurrent = await Promise.all(['one','two'].map(label => ok(hostA, url(companyA, '/stock_items'), {
+      cookie:cookieA,method:'POST',body:itemPayload(`concurrent-${label}-${tag}`,{
+        name:`Concurrent ${label}`,barcode:'',preferredSupplierId:'',packagings:[],
+      }),
+    })));
+    assert.equal(new Set(concurrent.map(row=>row.internalCode)).size,2);
+    assert.ok(concurrent.every(row=>/^STK-\d{6,}$/.test(row.internalCode)));
 
     cups = await ok(hostA, url(companyA, '/stock_items'), {
       cookie: cookieA, method: 'POST', body: itemPayload(`cups-${tag}`, {

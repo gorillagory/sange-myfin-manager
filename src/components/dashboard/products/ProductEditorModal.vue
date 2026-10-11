@@ -3,9 +3,9 @@ import { ref, watch } from 'vue';
 import { stripConfidential } from '../../../domain/permissions';
 import Modal from '../../ui/EditionModal.vue';
 import { useProductLogic } from '../../../composables/useProductLogic';
-const props = defineProps({show:Boolean,busy:Boolean,product:Object,categories:Array,subcategories:Array,currency:String,showCosts:Boolean});
+const props = defineProps({show:Boolean,busy:Boolean,product:Object,existingProducts:{type:Array,default:()=>[]},categories:Array,subcategories:Array,currency:String,showCosts:Boolean});
 const emit = defineEmits(['close','save']);
-const {generateSKU} = useProductLogic();
+const {generateSKU} = useProductLogic(()=>props.existingProducts);
 const form=ref({}), imageFile=ref(null), preview=ref(''), fileError=ref('');
 watch(()=>props.show, visible=>{
   if (!visible) { if(preview.value) URL.revokeObjectURL(preview.value); preview.value=''; return; }
@@ -22,7 +22,7 @@ function chooseImage(event){
   if(preview.value)URL.revokeObjectURL(preview.value);imageFile.value=file;preview.value=URL.createObjectURL(file);
 }
 function removeImage(){if(preview.value)URL.revokeObjectURL(preview.value);preview.value='';imageFile.value=null;form.value.imageUrl='';form.value.imagePath='';}
-function addVariant(){form.value.variants.push({id:crypto.randomUUID(),name:'',sku:'',barcode:'',price:0,...(props.showCosts?{cost:0}:{}),stock:0});}
+function addVariant(){form.value.variants.push({id:crypto.randomUUID(),name:'',sku:generateSKU(form.value.category),barcode:'',price:0,...(props.showCosts?{cost:0}:{}),stock:0});}
 function save(){if(!props.busy)emit('save',{...form.value,variants:form.value.hasVariants?form.value.variants:[]},imageFile.value);}
 </script>
 <template>
@@ -50,7 +50,7 @@ function save(){if(!props.busy)emit('save',{...form.value,variants:form.value.ha
           <div class="ed-section-head"><strong>Option {{ i+1 }}</strong><button class="ed-btn danger" type="button" :aria-label="`Remove variant ${v.name||i+1}`" @click="form.variants.splice(i,1)">Remove</button></div>
           <div class="ed-form-grid ed-three-fields">
             <label class="ed-field"><span>Variant name *</span><input v-model="v.name" required maxlength="100" placeholder="e.g. Iced"></label>
-            <label class="ed-field"><span>Variant SKU</span><input v-model.trim="v.sku" maxlength="64" placeholder="BEV-LATTE-ICED"></label>
+            <label class="ed-field"><span>Variant SKU</span><div class="ed-actions ed-sku-input"><input v-model.trim="v.sku" maxlength="64" placeholder="BEV-LATTE-ICED"><button type="button" class="ed-btn" :aria-label="`Generate SKU for option ${i+1}`" @click="v.sku=generateSKU(form.category)">Generate</button></div></label>
             <label class="ed-field"><span>Barcode value</span><input v-model.trim="v.barcode" maxlength="64" placeholder="Optional scanner code"></label>
             <label class="ed-field"><span>Price ({{ currency }})</span><input v-model.number="v.price" required type="number" min="0" step="0.01" inputmode="decimal"></label>
             <label v-if="showCosts" class="ed-field"><span>Cost ({{ currency }})</span><input v-model.number="v.cost" required type="number" min="0" step="0.01" inputmode="decimal"></label>

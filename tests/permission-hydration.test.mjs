@@ -11,8 +11,8 @@ const staff={uid:'cashier',id:'cashier',role:'company_user',company_id:'a'};
 const owner={...staff,role:'super',company_id:''};
 const response=(value,status=200)=>({ok:status<400,status,json:async()=>value});
 let actor=staff,requested=[],reviewRows=[],checkoutMode='conflict',reviewFails=false,reviewMode='pending';
-function installFetch(){globalThis.fetch=async(path,options={})=>{requested.push({path,options});if(path==='/api/me')return response(actor);if(path.endsWith('/receipt-reviews')){if(options.method==='POST'){if(reviewFails)return response({error:'internal_error'},500);const sale=JSON.parse(options.body).sale;if(reviewMode==='posted')return response({id:sale.id,status:'posted',receipt:sale});reviewRows=[{id:'original-paid',status:'pending',sale}];return response({id:'original-paid',status:'pending'});}return response(reviewRows);}
- if(path.endsWith('/checkout'))return checkoutMode==='posted'?response(JSON.parse(options.body)):response({error:'receipt_review_required_pricing_policy'},409);
+function installFetch(){globalThis.fetch=async(path,options={})=>{requested.push({path,options});if(path==='/api/me')return response(actor);if(path.endsWith('/receipt-reviews')){if(options.method==='POST'){if(reviewFails)return response({error:'internal_error'},500);const sale=JSON.parse(options.body).sale;if(reviewMode==='posted')return response({id:sale.id,status:'posted',receipt:sale});if(reviewMode==='wrong-ack')return response({id:'different-sale',status:'pending'});reviewRows=[{id:sale.id,status:'pending',sale}];return response({id:sale.id,status:'pending'});}return response(reviewRows);}
+ if(path.endsWith('/checkout'))return checkoutMode==='posted'?response(JSON.parse(options.body)):response({error:checkoutMode==='record_conflict'?'record_conflict':'receipt_review_required_pricing_policy'},409);
  if(options.method==='PUT'||options.method==='POST')return response(JSON.parse(options.body));
  return response({rows:[{id:'fresh',price:10,cost:5,variants:[{id:'v',cost:2,price:10}],type:'Customer'}],next:null});};}
 function reset(user=staff){Store.clearSession();Store.state.currentUser={...user};Store.state.selectedCompany={id:'a',name:'A'};Store.state.companies=[Store.state.selectedCompany];Store.state.online=true;Store.state.fromCache=false;actor={...user};requested=[];reviewRows=[];checkoutMode='conflict';reviewFails=false;reviewMode='pending';installFetch();}
@@ -28,17 +28,58 @@ try{
   reset(owner);const held=[];globalThis.fetch=async path=>path==='/api/me'?response(staff):new Promise(resolve=>held.push(()=>resolve(response({rows:[{id:'late-owner',cost:88}],next:null}))));
   const earlier=Store.refreshData();await new Promise(r=>setTimeout(r,5));assert.equal(held.length,hydrationCollections(owner).length);await Store.refreshActor();held.forEach(resolve=>resolve());await earlier;assert.deepEqual(Store.state.products,[]);assert.deepEqual(Store.state.expenses,[]);
  });
- await test('paid conflict requests review without changing original amounts; failed request stays queued; approved retry clears only same cashier receipt',async()=>{
+ await test('paid conflict preserves original amounts; failed handoff stays local and confirmed handoff clears only the same cashier receipt',async()=>{
   reset();checkoutMode='conflict';reviewFails=true;
   const original={id:'original-paid',schemaVersion:2,cashierId:'cashier',company_id:'a',number:'POS-ORIGINAL',total:20.14,received:50,change:29.86,items:[{productId:'p',price:10,qty:2,cost:7}],storeSnapshot:{name:'Original'},templateSnapshot:{accent:'blue'},companySnapshot:{name:'Original'},receiptTemplateId:'t',receiptTemplateVersion:3};
   const accepted=await Store.completeSale(original,'cashier:a:till',{cart:[]});assert.equal(accepted.syncStatus,'pending');assert.equal((await localPos.sales('cashier','a')).length,1);assert.equal(requested.filter(r=>r.path.endsWith('/receipt-reviews')&&r.options.method==='POST').length,1);
-  reviewFails=false;requested=[];const reviewSummary=await Store.syncSales({feedback:false});assert.equal(reviewSummary.status,'review_required');assert.deepEqual({attempted:reviewSummary.attempted,synced:reviewSummary.synced,failed:reviewSummary.failed,reviewRequired:reviewSummary.reviewRequired,pending:reviewSummary.pending},{attempted:1,synced:0,failed:1,reviewRequired:1,pending:1});assert.equal(requested[0].path,'/api/me');const review=requested.find(r=>r.path.endsWith('/receipt-reviews')&&r.options.method==='POST');const body=JSON.parse(review.options.body).sale;
+  reviewFails=false;requested=[];const reviewSummary=await Store.syncSales({feedback:false});assert.equal(reviewSummary.status,'review_required');assert.deepEqual({attempted:reviewSummary.attempted,synced:reviewSummary.synced,failed:reviewSummary.failed,reviewRequired:reviewSummary.reviewRequired,queuedForReview:reviewSummary.queuedForReview,pending:reviewSummary.pending},{attempted:1,synced:0,failed:0,reviewRequired:1,queuedForReview:1,pending:0});assert.equal(requested[0].path,'/api/me');const review=requested.find(r=>r.path.endsWith('/receipt-reviews')&&r.options.method==='POST');const body=JSON.parse(review.options.body).sale;
   assert.equal(body.id,original.id);assert.equal(body.total,original.total);assert.equal(body.received,50);assert.equal(body.change,29.86);assert.equal(body.items[0].cost,undefined);assert.equal(body.templateSnapshot,undefined);assert.equal(body.companySnapshot,undefined);assert.equal(body.syncError,undefined);assert.deepEqual(body,checkoutPayload(original));
-  assert.equal((await localPos.sales('cashier','a')).length,1);assert.equal(Store.state.receiptReviews[0].status,'pending');
-  await localPos.putSale({...original,id:'another-cashier',cashierId:'another'});checkoutMode='posted';const postedSummary=await Store.syncSales({feedback:false});assert.deepEqual({status:postedSummary.status,attempted:postedSummary.attempted,synced:postedSummary.synced,pending:postedSummary.pending},{status:'synced',attempted:1,synced:1,pending:0});assert.equal((await localPos.sales('cashier','a')).length,0);assert.equal((await localPos.sales('another','a')).length,1);
+  assert.equal((await localPos.sales('cashier','a')).length,0);assert.equal(Store.state.receiptReviews[0].status,'pending');
+  await localPos.putSale({...original,id:'posted-own'});await localPos.putSale({...original,id:'another-cashier',cashierId:'another'});checkoutMode='posted';const postedSummary=await Store.syncSales({feedback:false});assert.deepEqual({status:postedSummary.status,attempted:postedSummary.attempted,synced:postedSummary.synced,pending:postedSummary.pending},{status:'synced',attempted:1,synced:1,pending:0});assert.equal((await localPos.sales('cashier','a')).length,0);assert.equal((await localPos.sales('another','a')).length,1);
  });
  await test('fresh actor moved to another company cannot post an old workspace queue',async()=>{
-  reset();await localPos.putSale({id:'old-workspace',cashierId:'cashier',company_id:'a',total:10});actor={...staff,company_id:'b'};await Store.syncSales();assert.ok(!requested.some(r=>r.path.endsWith('/checkout')));assert.equal((await localPos.sales('cashier','a')).length,1);assert.equal(Store.state.selectedCompany,null);
+  reset();await localPos.putSale({id:'old-workspace',cashierId:'cashier',company_id:'a',total:10});actor={...staff,company_id:'b'};await Store.syncSales();assert.ok(!requested.some(r=>r.path.endsWith('/checkout')));assert.equal((await localPos.sales('cashier','a')).length,1);assert.equal(Store.state.selectedCompany,null);await localPos.removeSale('old-workspace');
+ });
+ await test('a generic checkout record conflict is handed to the durable review queue automatically',async()=>{
+  reset();checkoutMode='record_conflict';
+  const sale={id:'generic-record-conflict',schemaVersion:3,cashierId:'cashier',company_id:'a',number:'POS-GENERIC-RECORD-CONFLICT',total:15,received:20,change:5,items:[{productId:'p',price:15,qty:1}],storeSnapshot:{name:'Original'}};
+  const accepted=await Store.completeSale(sale,'cashier:a:till',{cart:[]});
+  assert.equal(accepted.syncStatus,'review');
+  const request=requested.find(row=>row.path.endsWith('/receipt-reviews')&&row.options.method==='POST');
+  assert.ok(request,'the paid intent must be submitted to the server review queue');
+  const body=JSON.parse(request.options.body);
+  assert.equal(body.conflictCode,undefined,'the client cannot manufacture a server conflict reason');
+  assert.deepEqual(body.sale,checkoutPayload(sale));
+  assert.ok(!(await localPos.sales('cashier','a')).some(row=>row.id===sale.id),'the server acknowledgement clears the device-only queue');
+  assert.ok(Store.state.receiptReviews.some(row=>row.id===sale.id&&row.status==='pending'));
+ });
+ await test('an unreachable server keeps the paid intent on the device and does not invent a review handoff',async()=>{
+  reset();
+  globalThis.fetch=async(path,options={})=>{requested.push({path,options});if(path.endsWith('/checkout'))throw Error('connection lost');return response([]);};
+  const sale={id:'network-only-paid',schemaVersion:3,cashierId:'cashier',company_id:'a',number:'POS-NETWORK-ONLY-PAID',total:15,received:20,change:5,items:[{productId:'p',price:15,qty:1}],storeSnapshot:{name:'Original'}};
+  const accepted=await Store.completeSale(sale,'cashier:a:till',{cart:[]});
+  assert.equal(accepted.syncStatus,'pending');
+  assert.ok((await localPos.sales('cashier','a')).some(row=>row.id===sale.id));
+  assert.ok(!requested.some(row=>row.path.endsWith('/receipt-reviews')));
+  await localPos.removeSale(sale.id);installFetch();
+ });
+ await test('a mismatched review acknowledgement is ambiguous and leaves the paid intent on the device',async()=>{
+  reset();checkoutMode='record_conflict';reviewMode='wrong-ack';
+  const sale={id:'mismatched-review-ack',schemaVersion:3,cashierId:'cashier',company_id:'a',number:'POS-MISMATCHED-REVIEW-ACK',total:15,received:20,change:5,items:[{productId:'p',price:15,qty:1}],storeSnapshot:{name:'Original'}};
+  const accepted=await Store.completeSale(sale,'cashier:a:till',{cart:[]});
+  assert.equal(accepted.syncStatus,'pending');
+  assert.ok((await localPos.sales('cashier','a')).some(row=>row.id===sale.id));
+  await localPos.removeSale(sale.id);
+ });
+ await test('resync hands off every reviewable paid intent and continues through the whole device queue',async()=>{
+  reset();checkoutMode='record_conflict';
+  const base={schemaVersion:3,cashierId:'cashier',company_id:'a',total:15,received:20,change:5,items:[{productId:'p',price:15,qty:1}],storeSnapshot:{name:'Original'}};
+  for(const id of ['review-batch-one','review-batch-two'])await localPos.putSale({...base,id,number:`POS-${id.toUpperCase()}`});
+  const summary=await Store.syncSales({feedback:false});
+  assert.deepEqual({status:summary.status,attempted:summary.attempted,failed:summary.failed,reviewRequired:summary.reviewRequired,queuedForReview:summary.queuedForReview,pending:summary.pending},
+   {status:'review_required',attempted:2,failed:0,reviewRequired:2,queuedForReview:2,pending:0});
+  assert.equal(requested.filter(row=>row.path.endsWith('/receipt-reviews')&&row.options.method==='POST').length,2);
+  assert.equal((await localPos.sales('cashier','a')).length,0);
  });
  await test('a review probe that posts the receipt immediately acknowledges the durable queue',async()=>{
   reset();checkoutMode='conflict';reviewMode='posted';

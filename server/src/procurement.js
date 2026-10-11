@@ -378,7 +378,14 @@ export function registerProcurement(app,{scoped,audit}) {
       FROM myfin.stock_identifiers i JOIN myfin.stock_items s
         ON s.company_id=i.company_id AND s.id=i.stock_item_id
       WHERE i.company_id=$1 AND i.normalized_value=$2 AND i.active`,[companyId,normalized]);
-    if(!result.rowCount)v.fail(404,'stock_identifier_not_found');
+    if(!result.rowCount){
+      const internal=(await c.query(`SELECT id,name,base_unit,on_hand,active,internal_code FROM myfin.stock_items
+        WHERE company_id=$1 AND upper(internal_code)=$2`,[companyId,normalized])).rows[0];
+      if(!internal)v.fail(404,'stock_identifier_not_found');
+      return {identifier:{id:`internal:${internal.id}`,stockItemId:internal.id,type:'internal_sku',value:internal.internal_code,
+        normalizedValue:internal.internal_code,supplierId:'',packagingId:'',active:internal.active,version:1},
+      stockItem:{id:internal.id,name:internal.name,baseUnit:internal.base_unit,onHand:number(internal.on_hand),active:internal.active}};
+    }
     const row=result.rows[0];
     return {identifier:identifierOutput(row),stockItem:{id:row.stock_item_id,name:row.name,baseUnit:row.base_unit,
       onHand:number(row.on_hand),active:row.stock_active}};
@@ -394,7 +401,8 @@ export function registerProcurement(app,{scoped,audit}) {
       WHERE company_id=$1 AND item_id=$2 AND id=$3 FOR KEY SHARE`,[companyId,data.stockItemId,data.packagingId]);
       if(!pack.rowCount)v.fail(404,'stock_packaging_not_found');}
     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,34))',[`${companyId}:identifier:${normalized.normalized}`]);
-    const legacy=await c.query(`SELECT id FROM myfin.stock_items WHERE company_id=$1 AND upper(btrim(barcode))=$2
+    const legacy=await c.query(`SELECT id FROM myfin.stock_items WHERE company_id=$1 AND
+        (upper(btrim(barcode))=$2 OR upper(internal_code)=$2)
       UNION ALL SELECT item_id FROM myfin.stock_packagings WHERE company_id=$1 AND upper(btrim(barcode))=$2 LIMIT 1`,
     [companyId,normalized.normalized]);if(legacy.rowCount)v.fail(409,'identifier_conflicts_with_legacy_barcode');
     const id=randomUUID(),inserted=(await c.query(`INSERT INTO myfin.stock_identifiers(company_id,id,stock_item_id,

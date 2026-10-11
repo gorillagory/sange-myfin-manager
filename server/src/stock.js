@@ -10,6 +10,7 @@ const quantity=z.number().finite().min(-1e12).max(1e12).refine(value=>Math.abs(v
 const packaging=z.strictObject({id:v.id.optional(),label:z.string().trim().min(1).max(120),barcode:z.string().trim().max(128).default(''),quantityInBase:quantity.positive()});
 const item=z.strictObject({
   id:v.id.optional(),company_id:v.id.optional(),version:z.number().int().positive().optional(),
+  internalCode:z.string().trim().max(64).optional(),
   name:z.string().trim().min(1).max(120),category:z.string().trim().max(120).default('General'),
   trackingMode:z.enum(['count','weight','volume']),baseUnit:z.string().trim().min(1).max(32),
   barcode:z.string().trim().max(128).default(''),onHand:quantity.nonnegative().default(0),reorderLevel:quantity.nonnegative().default(0),
@@ -38,18 +39,35 @@ async function packagings(c,companyId,itemIds){
   for(const row of rows)map.get(row.item_id)?.push({id:row.id,label:row.label,barcode:row.barcode,quantityInBase:number(row.quantity_in_base)});
   return map;
 }
-const output=(row,packs=[])=>({id:row.id,company_id:row.company_id,name:row.name,category:row.category,trackingMode:row.tracking_mode,baseUnit:row.base_unit,barcode:row.barcode,onHand:number(row.on_hand),reorderLevel:number(row.reorder_level),preferredSupplierId:row.preferred_supplier_id||'',active:row.active,notes:row.notes,version:Number(row.version),packagings:packs});
+const output=(row,packs=[])=>({id:row.id,company_id:row.company_id,internalCode:row.internal_code,name:row.name,category:row.category,trackingMode:row.tracking_mode,baseUnit:row.base_unit,barcode:row.barcode,onHand:number(row.on_hand),reorderLevel:number(row.reorder_level),preferredSupplierId:row.preferred_supplier_id||'',active:row.active,notes:row.notes,version:Number(row.version),packagings:packs});
 const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
 
 async function ensureCodes(c,companyId,itemId,codes){
   const normalized=codes.filter(Boolean).map(key);
   if(new Set(normalized).size!==normalized.length)v.fail(409,'duplicate_stock_barcode');
   if(!normalized.length)return;
-  const conflicts=await c.query(`SELECT barcode FROM myfin.stock_items WHERE company_id=$1 AND id<>$2 AND upper(barcode)=ANY($3::text[])
+  const conflicts=await c.query(`SELECT barcode AS code FROM myfin.stock_items WHERE company_id=$1 AND id<>$2 AND upper(barcode)=ANY($3::text[])
+    UNION ALL SELECT internal_code FROM myfin.stock_items WHERE company_id=$1 AND id<>$2 AND upper(internal_code)=ANY($3::text[])
     UNION ALL SELECT barcode FROM myfin.stock_packagings WHERE company_id=$1 AND item_id<>$2 AND upper(barcode)=ANY($3::text[])
     UNION ALL SELECT normalized_value FROM myfin.stock_identifiers
       WHERE company_id=$1 AND active AND normalized_value=ANY($3::text[])`,[companyId,itemId,normalized]);
   if(conflicts.rowCount)v.fail(409,'duplicate_stock_barcode');
+}
+export async function nextInternalCode(c,companyId){
+  const result=await c.query(`SELECT coalesce(max(substring(internal_code FROM 5)::bigint)
+    FILTER (WHERE internal_code ~ '^STK-[0-9]{6,18}$'),0)+1 AS next
+    FROM myfin.stock_items WHERE company_id=$1`,[companyId]);
+  let value=BigInt(result.rows[0]?.next||1);
+  for(let attempt=0;attempt<1000;attempt++,value++){
+    const candidate=`STK-${value.toString().padStart(6,'0')}`;
+    const conflict=await c.query(`SELECT 1 FROM myfin.stock_items
+        WHERE company_id=$1 AND (upper(barcode)=$2 OR upper(internal_code)=$2)
+      UNION ALL SELECT 1 FROM myfin.stock_packagings WHERE company_id=$1 AND upper(barcode)=$2
+      UNION ALL SELECT 1 FROM myfin.stock_identifiers
+        WHERE company_id=$1 AND active AND normalized_value=$2 LIMIT 1`,[companyId,candidate]);
+    if(!conflict.rowCount)return candidate;
+  }
+  v.fail(409,'stock_internal_code_exhausted');
 }
 async function reconcilePackagings(c,companyId,itemId,requested){
   const prior=(await c.query('SELECT * FROM myfin.stock_packagings WHERE company_id=$1 AND item_id=$2 ORDER BY id FOR UPDATE',[companyId,itemId])).rows;
@@ -98,18 +116,20 @@ export function registerStock(app,{scoped,audit}){
     const current=update?(await c.query('SELECT * FROM myfin.stock_items WHERE company_id=$1 AND id=$2 FOR UPDATE',[companyId,id])).rows[0]:null;
     if(update&&!current)v.fail(404,'not_found');
     if(update&&data.version!==Number(current.version))v.fail(409,'stock_item_changed');
+    if(update&&data.internalCode&&key(data.internalCode)!==key(current.internal_code))v.fail(409,'stock_internal_code_immutable');
     if(update&&data.onHand!==number(current.on_hand))v.fail(409,'use_stock_movement');
     if(update&&(data.trackingMode!==current.tracking_mode||data.baseUnit!==current.base_unit)){
       const used=await c.query('SELECT 1 FROM myfin.stock_ledger WHERE company_id=$1 AND item_id=$2 LIMIT 1',[companyId,id]);
       if(used.rowCount)v.fail(409,'stock_unit_immutable_after_movements');
     }
     if(data.trackingMode==='count'&&(!Number.isInteger(data.onHand)||!Number.isInteger(data.reorderLevel)||data.packagings.some(pack=>!Number.isInteger(pack.quantityInBase))))v.fail(400,'counted_stock_requires_whole_units');
+    const internalCode=update?current.internal_code:await nextInternalCode(c,companyId);
     await supplier(c,companyId,data.preferredSupplierId);
-    await ensureCodes(c,companyId,id,[data.barcode,...data.packagings.map(row=>row.barcode)]);
+    await ensureCodes(c,companyId,id,[internalCode,data.barcode,...data.packagings.map(row=>row.barcode)]);
     if(update)await c.query(`UPDATE myfin.stock_items SET name=$3,category=$4,tracking_mode=$5,base_unit=$6,barcode=$7,reorder_level=$8,
       preferred_supplier_id=$9,active=$10,notes=$11,version=version+1,updated_at=now() WHERE company_id=$1 AND id=$2`,[companyId,id,data.name,data.category,data.trackingMode,data.baseUnit,data.barcode,data.reorderLevel,data.preferredSupplierId||null,data.active,data.notes]);
-    else await c.query(`INSERT INTO myfin.stock_items(company_id,id,name,category,tracking_mode,base_unit,barcode,on_hand,reorder_level,preferred_supplier_id,active,notes)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,[companyId,id,data.name,data.category,data.trackingMode,data.baseUnit,data.barcode,data.onHand,data.reorderLevel,data.preferredSupplierId||null,data.active,data.notes]);
+    else await c.query(`INSERT INTO myfin.stock_items(company_id,id,internal_code,name,category,tracking_mode,base_unit,barcode,on_hand,reorder_level,preferred_supplier_id,active,notes)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,[companyId,id,internalCode,data.name,data.category,data.trackingMode,data.baseUnit,data.barcode,data.onHand,data.reorderLevel,data.preferredSupplierId||null,data.active,data.notes]);
     await reconcilePackagings(c,companyId,id,data.packagings);
     if(!update&&data.onHand>0){
       const openingId=randomUUID(),openingDigest=createHash('sha256').update(JSON.stringify(canonical({kind:'opening',itemId:id,actorId:req.identity.id,quantity:data.onHand}))).digest('hex');

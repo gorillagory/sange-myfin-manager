@@ -117,14 +117,20 @@ try{
   assert.match(source,/selected\.value = \{ \.\.\.selected\.value, recipeTimingRequired: true \}/);
  });
  await test('payment reviews refresh across devices and expose server pending reviews in navigation',async()=>{
-  const [reviews,shell]=await Promise.all([
+  const [reviews,shell,pos,preview]=await Promise.all([
    readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8'),
    readFile(new URL('../src/components/EditionShell.vue',import.meta.url),'utf8'),
+   readFile(new URL('../src/components/dashboard/EditionPos.vue',import.meta.url),'utf8'),
+   readFile(new URL('../src/components/dashboard/docdesign/DocumentPreview.vue',import.meta.url),'utf8'),
   ]);
   assert.match(reviews,/addEventListener\('focus', refreshVisible\)/);
   assert.match(reviews,/setInterval\(refreshVisible, 10000\)/);
   assert.match(reviews,/Choose a company to review payments/);
   assert.match(shell,/serverReviewCount/);
   assert.match(shell,/pending payment reviews/);
+  assert.match(pos,/syncStatus==='review'/);
+  assert.match(pos,/Payment secured on the server\. Manager review pending\./);
+  assert.match(pos,/The full payment record is secured on the server and is awaiting a manager or workspace owner/);
+  assert.match(preview,/Payment secured on server · Awaiting manager review/);
  });
 }finally{Store.clearSession();await vite.close();}

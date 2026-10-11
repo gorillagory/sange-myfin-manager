@@ -30,6 +30,88 @@ test('a posted transaction takes precedence over an earlier pending dismissal re
  assert.equal(transactionChecks,2,'changed paid facts must fail before the posted lookup');
 });
 
+test('a generic record conflict is durably queued and the requesting manager can approve it exactly once',async()=>{
+ const manager={id:'manager-self-review',role:'manager',username:'Manager'},company={id:'company-self-review',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};
+ const sale=stripConfidential(createSale({id:'generic-record-conflict',items:[cartItem({id:'product-a',name:'Item',price:10,stock:2})],company,user:{uid:manager.id,username:manager.username},method:'Cash',received:20}));
+ let review=null,inserts=0,audits=0,updates=0,posts=0;
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-manager'}]};
+  if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:review?1:0,rows:review?[review]:[]};
+  if(/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))return {rowCount:0,rows:[]};
+  if(sql.includes('INSERT INTO myfin.receipt_reviews')){
+   inserts++;review={id:sale.id,company_id:company.id,actor_id:manager.id,payload:sale,request_digest:args[4],
+    reason_code:args[5],status:'pending',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
+   return {rowCount:1,rows:[]};
+  }
+  if(sql.includes('FROM myfin.app_identities'))return {rowCount:1,rows:[{id:manager.id,username:manager.username}]};
+  if(sql.includes('UPDATE myfin.receipt_reviews')){
+   updates++;Object.assign(review,{status:'approved',approved_by:manager.id,approval_reason:args[3],approved_at:new Date().toISOString()});
+   return {rowCount:1,rows:[]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(`POST ${path}`,handler),get:(path,handler)=>routes.set(`GET ${path}`,handler)};
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},audit:async()=>{audits++;},
+  checkout:async(_client,actor,co,payload,approval)=>{
+   if(!approval)throw Object.assign(Error('private unique constraint detail'),{code:'23505'});
+   assert.deepEqual(actor,{id:manager.id,username:manager.username,role:'operator',company_id:company.id});
+   assert.equal(co,company.id);assert.deepEqual(payload,sale);assert.equal(approval.who,manager);
+   if(!review.posted){review.posted=true;posts++;}return sale;
+  }});
+ const submit=routes.get('POST /api/companies/:company/receipt-reviews'),context={
+  params:{company:company.id},identity:manager,authLevel:'password',authSessionId:'session-manager',
+ };
+ const pending=await submit({...context,body:{sale}});
+ assert.deepEqual(pending,{id:sale.id,status:'pending',reasonCode:'receipt_review_required_record_conflict'});
+ assert.equal(inserts,1);assert.equal(audits,1);assert.equal(posts,0);
+ const retry=await submit({...context,body:{sale}});
+ assert.equal(retry.status,'pending');assert.equal(inserts,1);assert.equal(audits,1);
+ await assert.rejects(submit({...context,body:{sale:{...sale,customerName:'Changed paid intent'}}}),
+  error=>error.statusCode===409&&error.message==='receipt_payload_changed');
+ const approve=routes.get('POST /api/companies/:company/receipt-reviews/:id/approve'),approval={...context,
+  params:{company:company.id,id:sale.id},body:{reason:'Manager verified the recorded payment'},
+ };
+ const approved=await approve(approval);assert.equal(approved.status,'approved');assert.equal(posts,1);assert.equal(updates,1);
+ const replay=await approve(approval);assert.equal(replay.status,'approved');assert.equal(posts,1);assert.equal(updates,1);
+});
+
+test('only validated paid intents and whitelisted constraint failures enter automatic review',async()=>{
+ const actor={id:'cashier-safe-conflict',role:'operator',username:'Cashier'},company={id:'company-safe-conflict',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};
+ const make=id=>stripConfidential(createSale({id,items:[cartItem({id:'product-a',name:'Item',price:10,stock:2})],company,user:{uid:actor.id,username:actor.username},method:'Cash',received:20}));
+ const reviews=new Map();let inserts=0;
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-safe-conflict'}]};
+  if(sql.includes('pg_advisory_xact_lock')||/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))return {rowCount:0,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews')){const row=reviews.get(args[1]);return {rowCount:row?1:0,rows:row?[row]:[]};}
+  if(sql.includes('INSERT INTO myfin.receipt_reviews')){
+   inserts++;reviews.set(args[1],{id:args[1],company_id:args[0],actor_id:args[2],payload:args[3],request_digest:args[4],reason_code:args[5],status:'pending',created_at:new Date().toISOString()});
+   return {rowCount:1,rows:[]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(path,handler),get:()=>{}};
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async(_client,identity)=>{
+   if(identity.id==='denied-cashier')throw Object.assign(Error('access_denied'),{statusCode:403});
+  },audit:async()=>{},
+  checkout:async(_client,_actor,_co,sale)=>{
+   if(sale.id==='safe-constraint')throw Object.assign(Error('private constraint detail'),{code:'23505'});
+   throw Object.assign(Error('database unavailable'),{code:'57P01'});
+  }});
+ const submit=routes.get('/api/companies/:company/receipt-reviews'),request=(sale,extra={})=>submit({
+  params:{company:company.id},identity:actor,authLevel:'password',authSessionId:'session-safe-conflict',body:{sale,...extra},
+ });
+ const pending=await request(make('safe-constraint'));
+ assert.equal(pending.reasonCode,'receipt_review_required_record_conflict');assert.equal(inserts,1);
+ await assert.rejects(request(make('internal-failure')),error=>error.code==='57P01');assert.equal(inserts,1);
+ await assert.rejects(request(make('invalid-conflict-code'),{conflictCode:'internal_error'}),error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,1);
+ await assert.rejects(request({...make('wrong-actor'),cashierId:'somebody-else'}),error=>error.statusCode===403&&error.message==='invalid_sale_actor');assert.equal(inserts,1);
+ await assert.rejects(submit({params:{company:company.id},identity:{...actor,id:'denied-cashier'},authLevel:'password',authSessionId:'session-safe-conflict',body:{sale:{...make('denied-sale'),cashierId:'denied-cashier'}}}),
+  error=>error.statusCode===403&&error.message==='access_denied');assert.equal(inserts,1);
+ await assert.rejects(submit({params:{company:company.id},identity:actor,authLevel:'password',authSessionId:'session-safe-conflict',body:{sale:{}}}),
+  error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,1);
+});
+
 test('recipe timing approval requires, applies, persists and exposes an inventory recipe resolution',async()=>{
  const manager={id:'manager-a',role:'manager'},cashier={id:'cashier-a',username:'Cashier'},companyId='company-a';
  const review={id:'recipe-timing-sale',company_id:companyId,actor_id:cashier.id,status:'pending',

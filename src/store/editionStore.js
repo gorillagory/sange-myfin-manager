@@ -525,12 +525,17 @@ export const Store = reactive({
     const result = await api("/companies/" + encodeURIComponent(sale.company_id) + "/receipt-reviews", {
       method:"POST", body:{sale:checkoutPayload(sale)},
     });
-    if(result.status==="posted"||result.status==="dismissed"){
+    const acknowledged=["posted","dismissed","pending"].includes(result?.status);
+    if(acknowledged&&result.id!==sale.id)throw new Error("invalid_review_acknowledgement");
+    if(acknowledged){
       await localPos.removeSale(sale.id);
-      await this.refreshPending();
-      if(result.status==="posted")await this.refreshPostedSales([result.receipt || result.sale || sale]);
+      await this.refreshPending().catch(()=>{});
+      if(result.status==="posted")await this.refreshPostedSales([result.receipt || result.sale || sale]).catch(()=>{});
     }
-    await this.refreshReceiptReviews();
+    // The POST acknowledgement is the durable handoff. A later list refresh can
+    // fail independently and must not put an already accepted payment back into
+    // the device-only state.
+    await this.refreshReceiptReviews().catch(()=>{});
     return result;
   },
   async requestReceiptDismissal(sale) {
@@ -560,15 +565,15 @@ export const Store = reactive({
       return {resolved:false,status:"review_required",reviewRequested:false};
     }
     if (error.status === 409 && needsReceiptReview(error)) {
-      // The queue remains the recovery authority until checkout confirms this ID.
-      // Review submission may itself fail after committing; retry is idempotent.
+      // A confirmed review response transfers recovery authority to the server.
+      // If submission fails or is ambiguous, the device copy remains retryable.
       try {
         const review = await this.requestReceiptReview(sale);
         if (review.status === "posted" || review.status === "dismissed") {
           await localPos.removeSale(sale.id);
           return { resolved: true, status: review.status, receipt: review.receipt };
         }
-        return { resolved: false, status: "review_required", reviewRequested: true };
+        return { resolved: true, status: "review_required", reviewRequested: true };
       } catch {
         return { resolved: false, status: "review_required", reviewRequested: false };
       }
@@ -629,6 +634,7 @@ export const Store = reactive({
       dismissed: 0,
       failed: 0,
       reviewRequired: 0,
+      queuedForReview: 0,
       pending: state.pendingSales.length,
       failures: [],
     });
@@ -644,6 +650,7 @@ export const Store = reactive({
       dismissed: 0,
       failed: 0,
       reviewRequired: 0,
+      queuedForReview: 0,
       pending: state.pendingSales.length,
       failures: [],
     };
@@ -672,6 +679,10 @@ export const Store = reactive({
           if (result.resolved) {
             if(result.status==="posted")summary.synced++;
             if(result.status==="dismissed")summary.dismissed++;
+            if(result.status==="review_required"){
+              summary.reviewRequired++;
+              summary.queuedForReview++;
+            }
           }
           else {
             summary.failed++;
@@ -682,12 +693,14 @@ export const Store = reactive({
       }
       await this.refreshPending();
       summary.pending = state.pendingSales.length;
-      summary.status = !summary.attempted ? "empty" : !summary.pending ? summary.dismissed&& !summary.synced ? "dismissed" : "synced" : summary.reviewRequired ? "review_required" : "pending";
+      summary.status = !summary.attempted ? "empty" : summary.reviewRequired ? "review_required" : !summary.pending ? summary.dismissed&& !summary.synced ? "dismissed" : "synced" : "pending";
       if (refresh && postedReceipts.length) await this.refreshPostedSales(postedReceipts);
       if (feedback) {
         if (summary.status === "empty") this.notify("No receipts are waiting to sync.");
         else if (summary.status === "synced") this.notify(`${summary.synced} ${summary.synced === 1 ? "receipt" : "receipts"} synced successfully.`);
         else if (summary.status === "dismissed") this.notify(`${summary.dismissed} reviewed ${summary.dismissed===1?"payment was":"payments were"} confirmed as not recorded. The original device queue is now clear.`,"warning");
+        else if (summary.queuedForReview)
+          this.notify(`${summary.queuedForReview} recorded ${summary.queuedForReview === 1 ? "payment was" : "payments were"} accepted by the server and ${summary.queuedForReview === 1 ? "is" : "are"} awaiting manager review. ${summary.pending} ${summary.pending === 1 ? "receipt remains" : "receipts remain"} on this device.`, "warning");
         else if (summary.reviewRequired)
           this.notify(`${summary.reviewRequired} recorded ${summary.reviewRequired === 1 ? "payment needs" : "payments need"} manager review. ${summary.pending} ${summary.pending === 1 ? "receipt remains" : "receipts remain"} safely saved on this device.`, "warning");
         else
@@ -722,7 +735,7 @@ export const Store = reactive({
         const resolution = await this.preserveUnconfirmedSale(sale, error);
         await this.refreshPending();
         if (resolution.resolved) {
-          return { ...(resolution.receipt || sale), syncStatus: resolution.status === "dismissed" ? "dismissed" : "synced" };
+          return { ...(resolution.receipt || sale), syncStatus: resolution.status === "dismissed" ? "dismissed" : resolution.status === "review_required" ? "review" : "synced", ...(resolution.status === "review_required" ? {syncError:error.message} : {}) };
         }
         return { ...sale, syncStatus: "pending", syncError: error.message };
       }

@@ -13,6 +13,7 @@ const date = value => value ? String(value).slice(0,10) : '—';
 <template>
   <article class="mf-document" :class="['mf-document--'+doc.format,'mf-document--'+doc.settings.layout,{compact}]" :style="{'--document-accent':doc.settings.primaryColor,fontFamily:doc.settings.fontFamily==='serif'?'Georgia, serif':'Arial, sans-serif',width:doc.format==='receipt'?(doc.settings.paperWidth==='58'?'58mm':'80mm'):'100%',maxWidth:doc.format==='receipt'?'100%':undefined}" aria-label="Document preview">
     <div v-if="doc.pending" class="mf-document-notice">Payment recorded on this device · Awaiting server sync</div>
+    <div v-else-if="doc.reviewPending" class="mf-document-notice">Payment secured on server · Awaiting manager review</div>
     <div v-if="doc.invalid" class="mf-document-notice" role="status">{{ doc.previewError }}</div>
     <div v-if="doc.isDraft" class="mf-document-notice">DRAFT · Not issued</div>
     <header class="mf-document-header">

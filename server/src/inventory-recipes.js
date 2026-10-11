@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonical, normalizeProduct } from '../../src/domain/pos.js';
-import { normalizeRecipeDraft, recipeAvailability } from '../../src/domain/inventoryRecipes.js';
+import { normalizeRecipeDraft, recipeAvailability, validateRecipeStockUnits } from '../../src/domain/inventoryRecipes.js';
 import { requireCapability } from './access.js';
 import * as v from './validation.js';
 
@@ -298,9 +298,10 @@ async function saveRecipe(c,who,companyId,input,audit){
   }
   const componentIds=[...new Set(data.components.map(row=>row.stockItemId))].sort();
   if(componentIds.length!==data.components.length)v.fail(400,'duplicate_recipe_stock_item');
-  const stock=componentIds.length?(await c.query('SELECT id,active FROM myfin.stock_items WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE',[companyId,componentIds])).rows:[];
+  const stock=componentIds.length?(await c.query('SELECT id,active,tracking_mode FROM myfin.stock_items WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE',[companyId,componentIds])).rows:[];
   if(stock.length!==componentIds.length)v.fail(404,'stock_item_not_found');
   if(stock.some(row=>!row.active))v.fail(409,'stock_item_archived');
+  try{validateRecipeStockUnits(data,stock);}catch{v.fail(400,'recipe_count_requires_whole_units');}
   if(data.enabled&&!data.components.length)v.fail(400,'recipe_components_required');
   if(data.enabled&&catalogTracksStock(product.data))v.fail(409,'recipe_requires_catalog_stock_disabled');
 

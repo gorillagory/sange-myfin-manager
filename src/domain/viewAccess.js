@@ -1,6 +1,6 @@
 import { permissionsFor } from './permissions.js';
 export const ROUTE_CAPABILITIES = {
-  '/overview':'checkout', '/pos':'checkout', '/orders':'checkout', '/sales':'documentsRead', '/documents':'documentsRead',
+  '/overview':'checkout', '/pos':'checkout', '/orders':'checkout', '/kitchen':'checkout', '/sales':'documentsRead', '/documents':'documentsRead',
   '/receipt-reviews':'checkout', '/products':'inventoryRead', '/stock':'inventoryRead', '/procurement':'inventoryRead', '/contacts':'clientsRead', '/profile':'active',
   '/analytics':'financialReports', '/consolidation':'financialReports', '/finance-sales':'financialReports', '/payment-operations':'financialReports', '/cashbook':'financialReports', '/expenses':'expensesRead',
   '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead', '/marketing':'marketingRead', '/student-programs':'studentProgramsRead',

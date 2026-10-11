@@ -5,6 +5,14 @@ import { canonical,saleTotalsFor,cents,businessDate } from "../../src/domain/pos
 import { stripConfidential } from "../../src/domain/permissions.js";
 import { requireCapability,publicTransaction,operator } from "./access.js";
 import { managementLock,managementSession } from "./management.js";
+const reviewableConstraintCodes=new Set(["23503","23505","23514"]);
+const conflictReviewReason="receipt_review_required_record_conflict";
+function automaticReviewReason(error){
+ const message=typeof error?.message==="string"?error.message:"";
+ if(/^receipt_review_required_|^manager_override_reason_required$|^stock_unavailable$/.test(message))return message;
+ if(reviewableConstraintCodes.has(error?.code))return conflictReviewReason;
+ return "";
+}
 export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
  const scope=(req,fn)=>db.transaction(async c=>{await managementLock(c);await managementSession(c,req);const co=v.parse(v.id,req.params.company);await authorize(c,req.identity,co);return fn(c,co,req.identity);});
  const lockSale=(c,co,id)=>c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7))",[co+":sale:"+id]);
@@ -25,7 +33,10 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   if(existing){if(existing.actor_id!==who.id||existing.request_digest!==digest)v.fail(409,"receipt_payload_changed");return {...output(existing,who),status:existing.status==="approved"?"posted":existing.status};}
   await c.query("SAVEPOINT paid_review_probe");let reason;
   try{const receipt=await checkout(c,who,co,sale);await c.query("RELEASE SAVEPOINT paid_review_probe");return {id:sale.id,status:"posted",receipt};}
-  catch(error){await c.query("ROLLBACK TO SAVEPOINT paid_review_probe");await c.query("RELEASE SAVEPOINT paid_review_probe");if(!/^receipt_review_required_|^manager_override_reason_required$|^stock_unavailable$/.test(error.message))throw error;reason=error.message;}
+  catch(error){
+   await c.query("ROLLBACK TO SAVEPOINT paid_review_probe");await c.query("RELEASE SAVEPOINT paid_review_probe");
+   reason=automaticReviewReason(error);if(!reason)throw error;
+  }
   await c.query("INSERT INTO myfin.receipt_reviews(company_id,id,actor_id,payload,request_digest,reason_code) VALUES($1,$2,$3,$4,$5,$6)",[co,sale.id,who.id,sale,digest,reason]);
   await audit(c,who,co,"Request paid receipt review",sale.id);return {id:sale.id,status:"pending",reasonCode:reason};
  }));

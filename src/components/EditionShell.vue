@@ -14,7 +14,7 @@ const company = computed(() => Store.state.selectedCompany || {});
 const user = computed(() => Store.state.currentUser || {});
 const serverReviewCount = computed(() => (Store.state.receiptReviews || []).filter(row => row.status === 'pending').length);
 const navSections = computed(() => [
-  { label:'Workspace', items:[['/pos','Checkout / POS','bag'],['/orders','Sales Orders','clock']] },
+  { label:'Workspace', items:[['/pos','Checkout / POS','bag'],['/orders','Sales Orders','clock'],['/kitchen','Kitchen Display','printer']] },
   { label:'Inventory', items:[['/products','Inventory','box'],['/stock','Stock Record','truck'],['/procurement','Purchasing & Alerts','receipt']] },
   { label:'Finance', items:[['/finance-sales','Sales & Receivables','receipt'],['/payment-operations','Payment Operations','wallet'],['/documents','Quotes & Invoices','edit'],['/cashbook','Cash Book','wallet'],['/expenses','Expenses','wallet'],['/receipt-reviews','Payment reviews','clock']] },
   { label:'Analytics & Growth', items:[['/analytics','Financial Analysis','chart'],['/consolidation','Consolidation','grid'],['/marketing','Sales & Marketing','spark']] },
@@ -70,7 +70,7 @@ onBeforeUnmount(() => {
       <main id="workspace-main" class="ed-main" tabindex="-1">
         <div v-if="Store.state.dataError" class="ed-notice error" role="alert"><Icon name="alert" /><div><strong>Some data could not be loaded</strong>{{ Store.state.dataError }} <button class="ed-link" @click="Store.selectCompany(null)">Return to store selection</button></div></div>
         <div v-if="Store.state.dataLoading" class="ed-notice" role="status">Loading your store records…</div>
-        <router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="company.id+user.role" :class="{'ed-legacy':!['/overview','/pos','/orders','/finance-sales','/payment-operations','/consolidation','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view>
+        <router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="company.id+user.role" :class="{'ed-legacy':!['/overview','/pos','/orders','/kitchen','/finance-sales','/payment-operations','/consolidation','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view>
         <footer class="ed-footer"><span>MYFIN / EDITION<span v-if="Store.state.offlineStatus"> · {{ Store.state.offlineStatus }}</span></span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
       </main>
     </div>
