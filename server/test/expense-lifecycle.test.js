@@ -104,6 +104,16 @@ test('stock ledger projection carries linked expense lifecycle and void evidence
     paidOn:projected.expensePaidOn,voided:projected.expenseVoided},
   {status:'pending',effective:'overdue',due:'2020-01-01',paidOn:'',voided:false});
   assert.equal(ledgerOutput({...raw,expense_voided_at:'2026-10-03T00:00:00Z'}).expenseEffectiveStatus,'voided');
+  const dateObjects=ledgerOutput({...raw,expense_due_date:new Date('2020-01-01T00:00:00.000Z'),
+    expense_paid_on:new Date('2026-10-02T00:00:00.000Z')});
+  assert.deepEqual([dateObjects.expenseDueDate,dateObjects.expensePaidOn,dateObjects.expenseEffectiveStatus],
+    ['2020-01-01','2026-10-02','overdue']);
+});
+
+test('stock expense lifecycle query casts calendar dates to text', async () => {
+  const source=await readFile(new URL('../src/stock.js',import.meta.url),'utf8');
+  assert.match(source,/credit_due_date::text AS expense_due_date/);
+  assert.match(source,/paid_on::text AS expense_paid_on/);
 });
 
 test('expense activity detail records status, payer, due and settlement transitions', () => {

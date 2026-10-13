@@ -21,6 +21,7 @@ const item=z.strictObject({
 const movement=z.strictObject({kind:z.enum(['receive','count','adjust','consume','waste']),quantity,packagingId:z.union([v.id,z.literal('')]).optional(),supplierId:z.union([v.id,z.literal('')]).optional(),expenseId:z.union([v.id,z.literal('')]).optional(),reason:z.string().trim().min(3).max(1000),idempotencyKey:z.string().min(8).max(128)});
 const key=value=>String(value||'').trim().toLocaleUpperCase();
 const number=value=>Number(value);
+const dateOnly=value=>value instanceof Date?value.toISOString().slice(0,10):String(value||'').slice(0,10);
 
 async function supplier(c,companyId,id){
   if(!id)return null;
@@ -43,9 +44,9 @@ async function packagings(c,companyId,itemIds){
 const output=(row,packs=[])=>({id:row.id,company_id:row.company_id,internalCode:row.internal_code,name:row.name,category:row.category,trackingMode:row.tracking_mode,baseUnit:row.base_unit,barcode:row.barcode,onHand:number(row.on_hand),reorderLevel:number(row.reorder_level),preferredSupplierId:row.preferred_supplier_id||'',active:row.active,notes:row.notes,version:Number(row.version),packagings:packs});
 export const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',
   ...(row.expense_id?{expenseDescription:row.expense_description||'',expenseStatus:row.expense_status||'',
-    expenseDueDate:String(row.expense_due_date||'').slice(0,10),expensePaidOn:String(row.expense_paid_on||'').slice(0,10),
+    expenseDueDate:dateOnly(row.expense_due_date),expensePaidOn:dateOnly(row.expense_paid_on),
     expenseVoided:Boolean(row.expense_voided_at),expenseEffectiveStatus:row.expense_voided_at?'voided':effectiveExpenseStatus({
-      status:row.expense_status,creditDueDate:String(row.expense_due_date||'').slice(0,10)},businessDate())}:{}),
+      status:row.expense_status,creditDueDate:dateOnly(row.expense_due_date)},businessDate())}:{}),
   reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
 
 async function ensureCodes(c,companyId,itemId,codes){
@@ -111,7 +112,7 @@ export function registerStock(app,{scoped,audit}){
     requireCapability(req.identity,'stockHistoryRead');
     const query=v.parse(z.strictObject({after:v.id.optional(),limit:z.coerce.number().int().min(1).max(500).default(500)}),req.query);
     const result=await c.query(`SELECT sl.*,e.data->>'description' AS expense_description,e.status AS expense_status,
-      e.credit_due_date AS expense_due_date,e.paid_on AS expense_paid_on,e.voided_at AS expense_voided_at
+      e.credit_due_date::text AS expense_due_date,e.paid_on::text AS expense_paid_on,e.voided_at AS expense_voided_at
       FROM myfin.stock_ledger sl LEFT JOIN myfin.expenses e
         ON e.company_id=sl.company_id AND e.id=sl.expense_id
       WHERE sl.company_id=$1 AND sl.id>$2 ORDER BY sl.id LIMIT $3`,[companyId,query.after||'',query.limit+1]);

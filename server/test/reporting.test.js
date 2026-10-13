@@ -118,6 +118,18 @@ test('credit settlement posts cash out in its own period without repeating accru
     cashIn: 0, cashOut: 42.05, cashFlow: -42.05 });
 });
 
+test('PostgreSQL date objects preserve the paid expense cash date', () => {
+  const rows = { expenses: [{ id: 'database-date', company_id: 'co', amount_sen: 1420000, status: 'paid',
+    paid_by_type: 'legacy_unspecified', paid_on: new Date('2026-01-03T00:00:00.000Z'),
+    credit_due_date: new Date('2026-01-31T00:00:00.000Z'),
+    data: { amount: 14200, date: '2026-01-03', description: 'Migrated paid expense' } }] };
+  const report = companyReport(rows, '2025-12-26', '2026-10-03');
+  assert.equal(report.totals.cashOut, 14200);
+  assert.equal(report.totals.cashFlow, -14200);
+  assert.deepEqual(report.expenses.map(row => [row.date, row.cashDate, row.cashImpact]),
+    [['2026-01-03', '2026-01-03', true]]);
+});
+
 test('migrated invoices derive tax and expose only strict quote provenance', () => {
   const report = companyReport({ transactions: [
     { id: 'legacy-from-quote', company_id: 'co', source: 'manual', document_state: 'legacy', total: 3686.04,
@@ -168,6 +180,7 @@ test('report queries bound each ordinary date source before materializing record
   assert.equal(expenseBranches.length, 3);
   for (const branch of expenseBranches) {
     assert.match(branch, /WHERE company_id=ANY\(\$1::text\[\]\) AND voided_at IS NULL AND \([\s\S]+\)$/);
+    assert.match(branch, /credit_due_date::text AS credit_due_date,paid_on::text AS paid_on/);
   }
   assert.match(expenseBranches[2], /paid_on BETWEEN \$4 AND \$5/);
   assert.match(calls[2].sql, /paid_at >=.*paid_at </s);

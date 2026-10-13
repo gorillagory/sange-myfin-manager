@@ -28,10 +28,13 @@ function range(query, schema = reportQuerySchema) {
   return value;
 }
 
+const dateOnly = value => value instanceof Date
+  ? value.toISOString().slice(0, 10)
+  : String(value || '').slice(0, 10);
 const asRecord = row => ({ ...row.data, id: row.id, company_id: row.company_id,
   ...(row.status ? { status:row.status } : {}),
-  ...(row.credit_due_date ? { creditDueDate:String(row.credit_due_date).slice(0,10) } : {}),
-  ...(row.paid_on ? { paidOn:String(row.paid_on).slice(0,10) } : {}),
+  ...(row.credit_due_date ? { creditDueDate:dateOnly(row.credit_due_date) } : {}),
+  ...(row.paid_on ? { paidOn:dateOnly(row.paid_on) } : {}),
   ...(row.paid_by_type ? { paidByType:row.paid_by_type } : {}),
   ...(row.amount_sen != null ? { amount:Number(row.amount_sen)/100 } : {}),
 });
@@ -424,7 +427,8 @@ export async function companyRows(c, companyIds, from, to) {
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND ${standardPrefix} AND ${datePrefix} BETWEEN $4 AND $5`),
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND (data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`),
   ].join(' UNION ALL ');
-  const expenseBranch = condition => `SELECT company_id,id,data,amount_sen,status,paid_by_type,credit_due_date,paid_on FROM myfin.expenses
+  const expenseBranch = condition => `SELECT company_id,id,data,amount_sen,status,paid_by_type,
+      credit_due_date::text AS credit_due_date,paid_on::text AS paid_on FROM myfin.expenses
     WHERE company_id=ANY($1::text[]) AND voided_at IS NULL AND (${condition})`;
   const expenseQuery = [
     expenseBranch(`${standardPrefix} AND ${datePrefix} BETWEEN $2 AND $3`),
