@@ -175,6 +175,21 @@ export const expense = z.strictObject({
   receiptPath: opt(z.string().max(500)),
   attachmentUrl: opt(z.string().max(500)),
   attachmentPath: opt(z.string().max(500)),
+  status: z.enum(["pending", "paid"]).default("paid"),
+  paidByType: z.enum(["legacy_unspecified", "app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
+  paidByUserId: z.union([id, z.literal("")]).default(""),
+  paidByName: z.string().trim().max(500).default(""),
+  creditTermsDays: z.union([z.number().int().min(1).max(3650), z.null()]).optional(),
+  creditDueDate: z.string().max(10).default(""),
+  paidOn: z.string().max(10).default(""),
+  links: z.array(z.strictObject({
+    type: z.enum(["stock_item", "stock_movement", "purchase_order", "goods_receipt"]),
+    id,
+  })).max(100).default([]),
+  version: z.number().int().positive().optional(),
+});
+export const expenseCreate = expense.extend({
+  paidByType: z.enum(["app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
 });
 export const sale = z.strictObject({
   id,

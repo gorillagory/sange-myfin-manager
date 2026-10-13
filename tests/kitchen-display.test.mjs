@@ -62,13 +62,15 @@ test('every active staff role can open the dedicated kitchen route from a second
   for (const role of ['operator','manager','workspace_owner','super_admin'])
     assert.equal(canVisit({ role },'/kitchen'),true);
   assert.equal(canVisit({ role:'suspended' },'/kitchen'),false);
-  const [router,shell,display] = await Promise.all([
+  const [router,shell,display,modules] = await Promise.all([
     readFile(new URL('../src/router/index.js',import.meta.url),'utf8'),
     readFile(new URL('../src/components/EditionShell.vue',import.meta.url),'utf8'),
     readFile(new URL('../src/components/dashboard/KitchenDisplay.vue',import.meta.url),'utf8'),
+    readFile(new URL('../src/domain/workspaceModules.js',import.meta.url),'utf8'),
   ]);
   assert.match(router,/path: '\/kitchen'[\s\S]*KitchenDisplay\.vue/);
-  assert.match(shell,/\['\/kitchen','Kitchen Display','printer'\]/);
+  assert.match(shell,/WORKSPACE_MODULES/);
+  assert.match(modules,/path: '\/kitchen', title: 'Kitchen Display'/);
   assert.match(display,/await import\('@zxing\/browser'\)/);
   assert.match(display,/facingMode:\{ ideal:'environment' \}/);
   assert.match(display,/scanControls\?\.stop\(\)/);

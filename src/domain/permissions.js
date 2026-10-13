@@ -4,6 +4,7 @@ export function permissionsFor(user) {
     owner=superAdmin||workspaceOwner, manager=["manager","company_admin"].includes(role), operator=["operator","company_user"].includes(role), staff=operator, active=owner||manager||operator;
   return {role,superAdmin,workspaceOwner,owner,manager,operator,staff,active,checkout:active,documentsRead:active,documentsDraft:active,
     documentsIssue:owner||manager,documentsConvert:owner||manager,documentsPayment:owner||manager,
+    manualSalesCreate:owner||manager,
     documentsCorrect:owner||manager,inventoryRead:active,inventoryWrite:owner||manager,
     inventoryTransact:active,costsRead:owner,costsWrite:owner,expensesRead:active,expensesCreate:active,
     expensesWrite:owner||manager,expensesVoid:owner||manager,financialReports:owner||manager,

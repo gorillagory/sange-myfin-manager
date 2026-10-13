@@ -25,10 +25,12 @@ test('Integration Center presents an unconfirmed candidate and no credential for
   assert.doesNotMatch(component, /<input|<textarea|Connect now|Activate integration|method:\s*['"]PUT/);
 });
 
-test('router and navigation expose Integration Center without changing existing defaults', async () => {
+test('router and module navigation expose Integrations without changing existing defaults', async () => {
   const router = await readFile(new URL('../src/router/index.js', import.meta.url), 'utf8');
   const shell = await readFile(new URL('../src/components/EditionShell.vue', import.meta.url), 'utf8');
+  const modules = await readFile(new URL('../src/domain/workspaceModules.js', import.meta.url), 'utf8');
   assert.match(router, /path: '\/integrations'.*IntegrationsTab\.vue/);
-  assert.match(shell, /\['\/integrations','Integration Center','grid'\]/);
+  assert.match(shell, /WORKSPACE_MODULES/);
+  assert.match(modules, /path: '\/integrations', title: 'Integrations'/);
   assert.match(router, /path: '\/', redirect: \(\) => isStorefrontHostname\(location\.hostname\) \? '\/shop' : '\/overview'/);
 });

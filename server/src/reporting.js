@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as v from './validation.js';
 import { requireCapability } from './access.js';
 import { businessDate, cents, expenseRecords } from '../../src/domain/pos.js';
+import { expenseHasCashImpact } from '../../src/domain/expenseLifecycle.js';
 
 const dateShape = {
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -9,7 +10,7 @@ const dateShape = {
 };
 const filterText = z.string().trim().min(1).max(120).optional();
 export const reportFilterShape = Object.freeze({
-  channel: z.enum(['pos', 'invoice']).optional(),
+  channel: z.enum(['pos', 'manual', 'invoice']).optional(),
   paymentMethod: filterText,
   category: filterText,
   subcategory: filterText,
@@ -27,7 +28,13 @@ function range(query, schema = reportQuerySchema) {
   return value;
 }
 
-const asRecord = row => ({ ...row.data, id: row.id, company_id: row.company_id });
+const asRecord = row => ({ ...row.data, id: row.id, company_id: row.company_id,
+  ...(row.status ? { status:row.status } : {}),
+  ...(row.credit_due_date ? { creditDueDate:String(row.credit_due_date).slice(0,10) } : {}),
+  ...(row.paid_on ? { paidOn:String(row.paid_on).slice(0,10) } : {}),
+  ...(row.paid_by_type ? { paidByType:row.paid_by_type } : {}),
+  ...(row.amount_sen != null ? { amount:Number(row.amount_sen)/100 } : {}),
+});
 const inRange = (date, from, to) => /^\d{4}-\d{2}-\d{2}$/.test(date)
   && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date
   && date >= from && date <= to;
@@ -41,7 +48,7 @@ const CATEGORY_FALLBACK = 'Uncategorized';
 const SUBCATEGORY_FALLBACK = 'No subcategory';
 const PAYMENT_FALLBACK = 'Unspecified';
 const INVOICE_PAYMENT = 'On account';
-const CHANNEL_LABELS = Object.freeze({ pos: 'POS', invoice: 'Invoice' });
+const CHANNEL_LABELS = Object.freeze({ pos: 'POS', manual: 'Recorded later', invoice: 'Invoice' });
 
 const finiteNumber = value => {
   if (value === null || value === undefined || String(value).trim() === '') return null;
@@ -107,7 +114,7 @@ const productKey = (companyId, productId) => `${companyId}\u0000${productId}`;
 
 export function normalizeReportFilters(value = {}) {
   return {
-    channel: ['pos', 'invoice'].includes(value.channel) ? value.channel : '',
+    channel: ['pos', 'manual', 'invoice'].includes(value.channel) ? value.channel : '',
     paymentMethod: String(value.paymentMethod || '').trim().slice(0, 120),
     category: String(value.category || '').trim().slice(0, 120),
     subcategory: String(value.subcategory || '').trim().slice(0, 120),
@@ -221,7 +228,7 @@ function filterOptions(sales, receipts, quotes) {
   }
   const options = values => [...values].sort((left, right) => left.label.localeCompare(right.label, 'en'));
   return {
-    channels: ['pos', 'invoice'].filter(value => channels.has(value))
+    channels: ['pos', 'manual', 'invoice'].filter(value => channels.has(value))
       .map(value => ({ value, label: channels.get(value) })),
     paymentMethods: options([...payments.values()].map(value => ({ value, label: value }))),
     categories: options([...categories.values()].map(value => ({ value, label: value }))),
@@ -276,7 +283,7 @@ function classificationBreakdown(sales, receipts, field) {
     || cents(right.cashIn) - cents(left.cashIn) || left.label.localeCompare(right.label, 'en'));
 }
 
-const reportBasis = 'Sales and tax use POS business dates or issued invoice dates. Open quotes remain pipeline; converted quote value is reported separately and only its issued invoice becomes sales. Cash in uses POS receipts and invoice payments; cash out uses paid expenses and payment vouchers.';
+const reportBasis = 'Sales and tax use POS business dates, the occurrence date of manager-recorded sales, or issued invoice dates. Open quotes remain pipeline; converted quote value is reported separately and only its issued invoice becomes sales. Cash in uses paid POS and recorded-sale receipts plus invoice payments. Every active expense is recognized on its expense date; cash out uses its paid or settlement date. Paid payment vouchers use their voucher date.';
 
 // Keep this classification aligned with /reports/summary in business.js. The
 // detail endpoint uses the same dates and amount rules as the approved report.
@@ -288,15 +295,17 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
     const date = data.businessDate || businessDate(row.issued_at || data.date);
     if (!inRange(date, from, to)) continue;
     const groups = classificationGroups(row.company_id, rowItems(row, data), productsById);
-    if (row.source === 'pos') {
+    if (row.source === 'pos' || row.source === 'manual_sale') {
       const paymentMethod = safeDimension(data.paymentMethod, PAYMENT_FALLBACK);
-      sales.push({ id: row.id, date, kind: 'POS receipt', channel: 'pos', paymentMethod,
+      const manuallyRecorded = row.source === 'manual_sale', channel = manuallyRecorded ? 'manual' : 'pos';
+      sales.push({ id: row.id, date, kind: manuallyRecorded ? 'Recorded sale' : 'POS receipt', channel, paymentMethod,
         number: safeText(data.number), customer: safeText(data.customerName || 'Walk-in customer'),
         total: Number(row.total), tax: Number(data.tax || 0), fromQuote: false,
         _segments: classifiedSegments(groups, { total: Number(row.total), tax: Number(data.tax || 0) }) });
-      receipts.push({ id: row.id, date, kind: 'POS receipt', channel: 'pos', paymentMethod,
-        number: safeText(data.number), amount: Number(row.total),
-        _segments: classifiedSegments(groups, { amount: Number(row.total) }) });
+      if (!manuallyRecorded || data.paymentStatus === 'Paid')
+        receipts.push({ id: row.id, date, kind: manuallyRecorded ? 'Recorded sale payment' : 'POS receipt', channel, paymentMethod,
+          number: safeText(data.number), amount: Number(row.total),
+          _segments: classifiedSegments(groups, { amount: Number(row.total) }) });
     } else if (row.document_state === 'issued' && data.type === 'Invoice') {
       const fromQuote = Boolean(row.quote_id || data.quoteId);
       const tax = Number(row.issued_snapshot?.tax ?? data.tax ?? 0);
@@ -329,10 +338,15 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
   const allExpenses = expenseRecords({ expenses: expenses.map(asRecord), transactions: legacyExpenses });
   for (const expense of allExpenses) {
     const date = businessDate(expense.date);
-    if (inRange(date, from, to)) {
-      const voucher = expense.type === 'Payment Voucher';
-      expenseLines.push({ id: expense.id, date, description: safeText(expense.description), category: safeText(expense.category || 'Uncategorized'), payee: safeText(expense.payee), number: safeText(expense.number), kind: voucher ? 'Payment voucher' : 'Expense', status: safeText(expense.status), amount: Number(expense.amount || 0), cashImpact: !voucher || CASH_STATUSES.has(expense.status) });
-    }
+    const voucher = expense.type === 'Payment Voucher';
+    const cashDate = voucher ? date : businessDate(expense.paidOn || expense.date);
+    const accrualImpact = inRange(date, from, to);
+    const cashImpact = (voucher ? CASH_STATUSES.has(expense.status) : expenseHasCashImpact(expense))
+      && inRange(cashDate, from, to);
+    if (accrualImpact || cashImpact) expenseLines.push({ id: expense.id, date, cashDate,
+      description: safeText(expense.description), category: safeText(expense.category || 'Uncategorized'),
+      payee: safeText(expense.payee), number: safeText(expense.number), kind: voucher ? 'Payment voucher' : 'Expense',
+      status: safeText(expense.status || 'paid'), amount: Number(expense.amount || 0), accrualImpact, cashImpact });
   }
   for (const payment of payments) {
     const date = businessDate(payment.paid_at);
@@ -350,8 +364,9 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
   const selectedQuotes = quotes.map(row => filteredRecord(row, filters, ['total'])).filter(Boolean);
   const byDate = (a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id);
   selectedSales.sort(byDate); expenseLines.sort(byDate); selectedReceipts.sort(byDate); selectedQuotes.sort(byDate);
+  const accruedExpenses = expenseLines.filter(row => row.accrualImpact);
   const cashExpenses = expenseLines.filter(row => row.cashImpact);
-  const totals = { sales: sum(selectedSales, 'total'), tax: sum(selectedSales, 'tax'), expenses: sum(expenseLines, 'amount'), cashIn: sum(selectedReceipts, 'amount'), cashOut: sum(cashExpenses, 'amount'), cashFlow: (selectedReceipts.reduce((amount, row) => amount + cents(row.amount), 0) - cashExpenses.reduce((amount, row) => amount + cents(row.amount), 0)) / 100, quoted: sum(selectedQuotes.filter(row => !row.converted), 'total'), convertedQuoted: sum(selectedQuotes.filter(row => row.converted), 'total') };
+  const totals = { sales: sum(selectedSales, 'total'), tax: sum(selectedSales, 'tax'), expenses: sum(accruedExpenses, 'amount'), cashIn: sum(selectedReceipts, 'amount'), cashOut: sum(cashExpenses, 'amount'), cashFlow: (selectedReceipts.reduce((amount, row) => amount + cents(row.amount), 0) - cashExpenses.reduce((amount, row) => amount + cents(row.amount), 0)) / 100, quoted: sum(selectedQuotes.filter(row => !row.converted), 'total'), convertedQuoted: sum(selectedQuotes.filter(row => row.converted), 'total') };
   const days = new Map();
   for (let stamp = Date.parse(from); stamp <= Date.parse(to); stamp += 86400000) {
     const date = new Date(stamp).toISOString().slice(0, 10);
@@ -359,9 +374,9 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
   }
   const add = (date, key, amount) => { if (days.has(date)) days.get(date)[key] += cents(amount); };
   for (const row of selectedSales) { add(row.date, 'sales', row.total); add(row.date, 'tax', row.tax); }
-  for (const row of expenseLines) add(row.date, 'expenses', row.amount);
+  for (const row of accruedExpenses) add(row.date, 'expenses', row.amount);
   for (const row of selectedReceipts) add(row.date, 'cashIn', row.amount);
-  for (const row of cashExpenses) add(row.date, 'cashOut', row.amount);
+  for (const row of cashExpenses) add(row.cashDate, 'cashOut', row.amount);
   const daily = [...days.values()].map(row => ({ date: row.date, sales: row.sales / 100, tax: row.tax / 100, expenses: row.expenses / 100, cashIn: row.cashIn / 100, cashOut: row.cashOut / 100, cashFlow: (row.cashIn - row.cashOut) / 100 }));
   return { totals, daily, sales: selectedSales.map(publicReportRow), expenses: expenseLines,
     receipts: selectedReceipts.map(publicReportRow), quotes: selectedQuotes.map(publicReportRow), basis: reportBasis,
@@ -395,7 +410,7 @@ export async function companyRows(c, companyIds, from, to) {
   const args = [companyIds, from, to, fromPad, toPad, toExclusive];
   const transactionColumns = 'company_id,id,data,total,source,document_state,issued_at,issued_snapshot,quote_id,converted_to';
   const transactionsTable = 'myfin.transactions';
-  const relevant = `(source='pos' OR (document_state='issued' AND data->>'type' IN ('Invoice','Quote'))
+  const relevant = `(source IN ('pos','manual_sale') OR (document_state='issued' AND data->>'type' IN ('Invoice','Quote'))
     OR (document_state='legacy' AND data->>'type' IN ('Invoice','Quote','Expense','Payment Voucher')))`;
   const missingBusinessDate = `(coalesce(data->>'businessDate','')='' OR data->'businessDate' IN ('0'::jsonb,'false'::jsonb))`;
   const datePrefix = `left(data->>'date',10)`;
@@ -409,14 +424,15 @@ export async function companyRows(c, companyIds, from, to) {
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND ${standardPrefix} AND ${datePrefix} BETWEEN $4 AND $5`),
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND (data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`),
   ].join(' UNION ALL ');
-  const expenseBranch = condition => `SELECT company_id,id,data FROM myfin.expenses
-    WHERE company_id=ANY($1::text[]) AND voided_at IS NULL AND ${condition}`;
+  const expenseBranch = condition => `SELECT company_id,id,data,amount_sen,status,paid_by_type,credit_due_date,paid_on FROM myfin.expenses
+    WHERE company_id=ANY($1::text[]) AND voided_at IS NULL AND (${condition})`;
   const expenseQuery = [
     expenseBranch(`${standardPrefix} AND ${datePrefix} BETWEEN $2 AND $3`),
     expenseBranch(`data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`),
+    expenseBranch(`status='paid' AND paid_on BETWEEN $4 AND $5 AND ${standardPrefix} AND ${datePrefix} NOT BETWEEN $2 AND $3`),
   ].join(' UNION ALL ');
   const transactions = await c.query(transactionQuery, args);
-  const expenses = await c.query(expenseQuery, [companyIds, fromPad, toPad]);
+  const expenses = await c.query(expenseQuery, [companyIds, fromPad, toPad, from, to]);
   const payments = await c.query(`SELECT p.company_id,p.id,p.document_id,p.amount,p.method,p.paid_at,
       t.data->>'number' AS number,t.data,t.source,t.document_state,t.issued_snapshot
       FROM myfin.document_payments p LEFT JOIN myfin.transactions t ON t.company_id=p.company_id AND t.id=p.document_id

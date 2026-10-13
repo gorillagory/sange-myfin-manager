@@ -117,3 +117,26 @@ html:has(.ed-modal[open]){overflow:hidden}
   body.ed-print-kitchen .ed-modal-body,body.ed-print-kitchen .mf-kitchen-print{display:block!important;padding:0;margin:0;background:#fff;overflow:visible}
   body.ed-print-kitchen .mf-kitchen-label{border:0;margin:0}
 }
+
+/* Modules collapse to keep the workspace navigation short and task-focused. */
+.ed-nav-heading{padding:0 12px 7px;color:var(--ed-muted);font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+.ed-nav-section{border-top:1px solid var(--ed-line);margin:0!important;padding:5px 0!important}
+.ed-nav-section:last-child{border-bottom:1px solid var(--ed-line)}
+.ed-nav-module{display:flex;align-items:center;width:100%;min-height:38px;gap:8px;padding:8px 10px;border:0;border-radius:4px;background:transparent;color:var(--ed-muted);font-size:11px;font-weight:650;letter-spacing:.08em;text-align:left;text-transform:uppercase}
+.ed-nav-module:hover,.ed-nav-module.active{background:var(--ed-tint);color:var(--ed-accent)}
+.ed-nav-module>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ed-nav-current{margin-left:auto;border:1px solid currentColor;border-radius:99px;padding:1px 5px;font-size:7px;letter-spacing:.08em;line-height:1.5}
+.ed-nav-module-icon{width:14px;height:14px;margin-left:auto;transition:transform .16s ease}
+.ed-nav-current+.ed-nav-module-icon{margin-left:0}
+.ed-nav-module[aria-expanded=true] .ed-nav-module-icon{transform:rotate(180deg)}
+.ed-nav-pages{display:grid;gap:2px;padding:2px 0 5px}
+.ed-nav-pages a{padding-left:15px}
+
+/* The shell owns one concise page identity; routed pages retain their actions and detailed in-page guidance. */
+.ed-module-page-head{margin:0 0 22px;max-width:780px}
+.ed-module-page-head h1{margin:5px 0 2px}
+.ed-module-page-head p{margin:0;color:var(--ed-muted);font-size:12px;line-height:1.5}
+.ed-route-view>.ed-page>.ed-page-head{align-items:center;justify-content:flex-end;min-height:0;margin:0 0 24px}
+.ed-route-view>.ed-page>.ed-page-head>div:has(>h1){display:none}
+.ed-route-view>.ed-page>.ed-page-head:not(:has(>button,>a,>.ed-actions)){display:none}
+@media(max-width:720px){.ed-module-page-head{margin-bottom:18px}.ed-module-page-head h1{font-size:32px}.ed-route-view>.ed-page>.ed-page-head{justify-content:flex-start;margin-bottom:20px}.ed-route-view>.ed-page>.ed-page-head>.ed-actions{width:100%}}

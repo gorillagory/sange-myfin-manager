@@ -22,6 +22,7 @@ import { registerWorkspaces } from "./workspaces.js";
 import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
+import { expenseAuditDetail,expenseLinkOptions,expenseOutput,prepareExpense,recordExpenseEvent,replaceExpenseLinks } from "./expense-lifecycle.js";
 import { registerStock } from "./stock.js";
 import { consumeRecipeStock, offlineRecipeBoundary, recipeAvailabilityForProducts } from "./inventory-recipes.js";
 import { registerProcurement } from "./procurement.js";
@@ -35,6 +36,7 @@ import { registerStudentPrograms } from "./student-programs.js";
 import { registerMarketingCampaigns } from "./marketing-campaigns.js";
 import { registerMarketingLoyalty } from "./marketing-loyalty.js";
 import { registerAdvancedAnalytics } from "./advanced-analytics.js";
+import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
 export async function identity(db, subject, tenant=null) {
@@ -534,12 +536,28 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerReportAutomation(app,{scoped,audit});
   registerAdvancedAnalytics(app,{scoped});
   registerOrders(app,{scoped,audit});
+  registerManualSales(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
   registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
   registerCustomerProfiles(app,{scoped});
   registerStudentPrograms(app,{scoped,audit,voucherPepper:authOptions.voucherHmacSecret});
   registerMarketingCampaigns(app,{scoped,audit});
   registerMarketingLoyalty(app,{scoped,audit});
+  app.get("/api/companies/:company/expense-link-options",req=>scoped(req,async(c,co)=>{
+    requireCapability(req.identity,"expensesRead");
+    return expenseLinkOptions(c,co,req.identity);
+  }));
+  app.get("/api/companies/:company/expenses/:id/events",req=>scoped(req,async(c,co)=>{
+    requireCapability(req.identity,"expensesWrite");
+    const id=v.parse(v.id,req.params.id);
+    const exists=await c.query("SELECT id FROM myfin.expenses WHERE company_id=$1 AND id=$2",[co,id]);
+    if(!exists.rowCount)v.fail(404,"not_found");
+    const rows=(await c.query(`SELECT id,expense_version,action,from_lifecycle,to_lifecycle,reason,actor_id,created_at
+      FROM myfin.expense_events WHERE company_id=$1 AND expense_id=$2
+      ORDER BY expense_version,created_at,id`,[co,id])).rows;
+    return {rows:rows.map(row=>({id:row.id,expenseVersion:Number(row.expense_version),action:row.action,
+      from:row.from_lifecycle,to:row.to_lifecycle,reason:row.reason,actorId:row.actor_id,createdAt:row.created_at}))};
+  }));
   app.get("/api/companies/:company/reports/summary",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"financialReports");
     const dates=v.parse(z.strictObject({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),...reportFilterShape,analysis:z.enum(["true"]).optional()}),req.query);
@@ -605,12 +623,13 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         if(!permissionsFor(req.identity).suppliersRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
           if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
-          else predicates.push("(source='pos' OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared')))");
+          else predicates.push("(source IN ('pos','manual_sale') OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared')))");
         }
         args.push(q.limit+1);
         const select=name==="transactions"?"t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount":"*";
         const r=await c.query(`SELECT ${select} FROM myfin.${name} t WHERE ${predicates.join(" AND ")} ORDER BY id LIMIT $${args.length}${name==="products"?" FOR SHARE OF t":""}`,args);
         let page=r.rows.slice(0,q.limit);
+        if(name==="expenses")page=await expenseOutput(c,co,page,req.identity);
         if(name==="products"&&page.length){
           const availability=await recipeAvailabilityForProducts(c,co,page),key=(productId,variantId='')=>`${productId}\u0000${variantId}`;
           page=page.map(row=>{
@@ -621,13 +640,15 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
               ...(!recipe&&variants.some(variant=>variant.recipeTracked)?{recipeTracked:true}:{})};
           });
         }
-        return {rows:page.map(row=>name==="products"?publicProduct(row.data?asRecord(row):row,req.identity):name==="clients"?publicClient(asRecord(row),req.identity):name==="transactions"?recordOutput(row,req.identity):name==="stock_movements"?publicStockMovement(asRecord(row),req.identity):asRecord(row)),next:r.rows.length>q.limit?r.rows[q.limit-1].id:null};
+        return {rows:page.map(row=>name==="expenses"?row:name==="products"?publicProduct(row.data?asRecord(row):row,req.identity):name==="clients"?publicClient(asRecord(row),req.identity):name==="transactions"?recordOutput(row,req.identity):name==="stock_movements"?publicStockMovement(asRecord(row),req.identity):asRecord(row)),next:r.rows.length>q.limit?r.rows[q.limit-1].id:null};
       }),
     );
     if (!schemas[name]) continue;
     const save = (req, update) =>
       scoped(req, async (c, co) => {
         let input=req.body;
+        let expenseAuditDetails="";
+        let savedExpense=null;
         if(name==="products"){
           requireCapability(req.identity,"inventoryWrite");
           await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,8))",[co]);
@@ -648,8 +669,9 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
           if(!owner(req.identity)&&input?.type==="Supplier")v.fail(403,"supplier_restricted");
           if(update){const prior=(await c.query("SELECT data FROM myfin.clients WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,v.parse(v.id,req.params.id)])).rows[0];if(!owner(req.identity)&&prior?.data.type==="Supplier")v.fail(403,"supplier_restricted");}
         }
-        const data = v.parse(schemas[name], input),
-          id = update ? v.parse(v.id, req.params.id) : data.id || randomUUID();
+        let data = v.parse(name==="expenses"&&!update?v.expenseCreate:schemas[name], input);
+        const id =
+          update ? v.parse(v.id, req.params.id) : data.id || randomUUID();
         if (
           (data.company_id && data.company_id !== co) ||
           (data.id && data.id !== id)
@@ -690,8 +712,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
             `SELECT * FROM myfin.${name} WHERE company_id=$1 AND id=$2 FOR UPDATE`,
             [co, id],
           );
-          if (old.rows[0]?.source === "pos")
-            v.fail(409, "posted_pos_immutable");
+          if (["pos","manual_sale"].includes(old.rows[0]?.source))
+            v.fail(409, "posted_sale_immutable");
           if (update && !old.rowCount) v.fail(404, "not_found");
           if (!update && old.rowCount) v.fail(409, "already_exists");
           if (name === "transactions") {
@@ -741,17 +763,37 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
                 [co, id, req.identity.id, data.total, data],
               );
           } else if (name === "expenses") {
-            data.amount = cents(data.amount) / 100;
+            if(update&&old.rows[0].voided_at)v.fail(409,"expense_voided");
+            const prepared=await prepareExpense(c,co,req.identity,data,
+              {allowLegacy:update&&old.rows[0].paid_by_type==="legacy_unspecified",defaultPaidOn:update?'':data.date});
+            if(update&&prepared.version===undefined)v.fail(409,"expense_version_required");
+            if(update&&prepared.version!==Number(old.rows[0].version))v.fail(409,"expense_changed");
+            data=prepared.data;
+            data.amount=prepared.amountSen/100;
+            expenseAuditDetails=expenseAuditDetail(id,update?old.rows[0]:null,prepared);
             if (update)
               await c.query(
-                "UPDATE myfin.expenses SET data=$3,amount=$4,supplier_id=$5 WHERE company_id=$1 AND id=$2",
-                [co, id, data, data.amount, data.supplier_id || null],
+                `UPDATE myfin.expenses SET data=$3,amount=$4,amount_sen=$5,supplier_id=$6,status=$7,
+                  paid_by_type=$8,paid_by_identity_id=$9,paid_by_name=$10,credit_terms_days=$11,credit_due_date=$12,paid_on=$13
+                 WHERE company_id=$1 AND id=$2`,
+                [co,id,data,data.amount,prepared.amountSen,data.supplier_id||null,prepared.status,
+                  prepared.paidByType,prepared.paidByUserId||null,prepared.paidByName||null,
+                  prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null],
               );
             else
               await c.query(
-                "INSERT INTO myfin.expenses(company_id,id,data,amount,created_by,supplier_id) VALUES($1,$2,$3,$4,$5,$6)",
-                [co, id, data, data.amount,req.identity.id,data.supplier_id || null],
+                `INSERT INTO myfin.expenses(company_id,id,data,amount,amount_sen,created_by,supplier_id,status,
+                  paid_by_type,paid_by_identity_id,paid_by_name,credit_terms_days,credit_due_date,paid_on)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                [co,id,data,data.amount,prepared.amountSen,req.identity.id,data.supplier_id||null,prepared.status,
+                  prepared.paidByType,prepared.paidByUserId||null,prepared.paidByName||null,
+                  prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null],
               );
+            await replaceExpenseLinks(c,co,id,prepared.links,req.identity);
+            savedExpense=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1 AND id=$2",[co,id])).rows[0];
+            const eventAction=!update?"created":old.rows[0].status==="pending"&&prepared.status==="paid"?"settled":"updated";
+            await recordExpenseEvent(c,co,req.identity,{expenseId:id,expenseVersion:Number(savedExpense.version),
+              action:eventAction,from:update?old.rows[0]:null,to:savedExpense});
           } else if (update)
             await c.query(
               "UPDATE myfin.clients SET data=$3 WHERE company_id=$1 AND id=$2",
@@ -770,8 +812,11 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
           `${update ? "Update" : "Create"} ${name}`,
           name === "products"
             ? `${data.name} · Stock ${data.stock}${data.variants.length ? " · " + data.variants.map((x) => x.name + ": " + x.stock).join(", ") : ""}`
-            : id,
+            : name === "expenses" ? expenseAuditDetails : id,
         );
+        if(name==="expenses"){
+          return (await expenseOutput(c,co,[savedExpense],req.identity))[0];
+        }
         return name==="products"?publicProduct(data,req.identity):name==="clients"?publicClient(data,req.identity):data;
       });
     app.post(`/api/companies/:company/${name}`, (req) => save(req, false));
@@ -787,19 +832,22 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
           );
           if (!old.rowCount) v.fail(404, "not_found");
           if(name==="expenses"){
-            const approval=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000).optional(),managerCode:z.string().regex(/^\d{6}$/).optional()}),req.body||{});
+            if(old.rows[0].voided_at)v.fail(409,"expense_already_voided");
+            const approval=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000),managerCode:z.string().regex(/^\d{6}$/).optional()}),req.body||{});
             if(operator(req.identity)){
               if(!authOptions.pos||!approval.managerCode)v.fail(403,"manager_approval_required");
               const approver=await verifyManagerCode(c,authOptions.pos,co,approval.managerCode);
-              await c.query("INSERT INTO myfin.action_approvals(id,company_id,actor_id,approver_id,action,subject_type,subject_id,reason) VALUES($1,$2,$3,$4,'void','expense',$5,$6)",[randomUUID(),co,req.identity.id,approver,id,approval.reason||"Manager-approved expense void"]);
+              await c.query("INSERT INTO myfin.action_approvals(id,company_id,actor_id,approver_id,action,subject_type,subject_id,reason) VALUES($1,$2,$3,$4,'void','expense',$5,$6)",[randomUUID(),co,req.identity.id,approver,id,approval.reason]);
             }else requireCapability(req.identity,"expensesVoid");
-            await c.query("UPDATE myfin.expenses SET voided_at=coalesce(voided_at,now()),voided_by=coalesce(voided_by,$3),void_reason=coalesce(void_reason,$4) WHERE company_id=$1 AND id=$2",[co,id,req.identity.id,approval.reason||"Expense voided"]);
-            await audit(c,req.identity,co,"Void expense",id);return {ok:true};
+            const voided=(await c.query("UPDATE myfin.expenses SET voided_at=now(),voided_by=$3,void_reason=$4 WHERE company_id=$1 AND id=$2 RETURNING *",[co,id,req.identity.id,approval.reason])).rows[0];
+            await recordExpenseEvent(c,co,req.identity,{expenseId:id,expenseVersion:Number(voided.version),action:"voided",
+              from:old.rows[0],to:voided,reason:approval.reason});
+            await audit(c,req.identity,co,"Void expense",`${expenseAuditDetail(id,old.rows[0],voided,{voided:true})} · prior version ${old.rows[0].version} · reason ${approval.reason}`);return {ok:true};
           }
           if(name==="transactions")v.fail(409,"financial_history_immutable");
           if(name==="transactions"&&old.rows[0].document_state!=="legacy")v.fail(409,"use_document_workflow");
           if(name==="clients"&&!owner(req.identity)&&old.rows[0].data.type==="Supplier")v.fail(403,"supplier_restricted");
-          if (old.rows[0].source === "pos") v.fail(409, "posted_pos_immutable");
+          if (["pos","manual_sale"].includes(old.rows[0].source)) v.fail(409, "posted_sale_immutable");
           await c.query(
             `DELETE FROM myfin.${name} WHERE company_id=$1 AND id=$2`,
             [co, id],
@@ -877,7 +925,7 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
         r.rowCount !== new Set(data.ids).size
       )
         v.fail(409, "invalid_project_documents");
-      if(r.rows.some(row=>row.source==="pos"||!recordVisible(row,req.identity)||row.document_state==="issued"||row.document_state==="voided"||row.document_state==="corrected"))v.fail(409,"issued_document_immutable");
+      if(r.rows.some(row=>["pos","manual_sale"].includes(row.source)||!recordVisible(row,req.identity)||row.document_state==="issued"||row.document_state==="voided"||row.document_state==="corrected"))v.fail(409,"issued_document_immutable");
       for (const x of r.rows)
         await c.query(
           "UPDATE myfin.transactions SET data=$3 WHERE company_id=$1 AND id=$2",

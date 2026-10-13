@@ -217,13 +217,15 @@ test('marketing hub and all panels compile and expose the renamed navigation', a
     for(const style of parsed.descriptor.styles){const result=compileStyle({source:style.content,filename:url.pathname,
       id:`marketing-${file}`,scoped:style.scoped});assert.deepEqual(result.errors,[],file);}
   }
-  const [shell,router]=await Promise.all([
+  const [shell,router,modules]=await Promise.all([
     readFile(new URL('../src/components/EditionShell.vue',import.meta.url),'utf8'),
     readFile(new URL('../src/router/index.js',import.meta.url),'utf8'),
+    readFile(new URL('../src/domain/workspaceModules.js',import.meta.url),'utf8'),
   ]);
-  assert.match(shell,/Analytics & Growth/);
-  assert.match(shell,/Sales & Marketing/);
-  assert.doesNotMatch(shell,/\['\/student-programs','Student Programs'/);
+  assert.match(shell,/WORKSPACE_MODULES/);
+  assert.match(modules,/label: 'Analytics'/);
+  assert.match(modules,/path: '\/marketing', title: 'Marketing'/);
+  assert.doesNotMatch(modules,/path: '\/student-programs'/);
   assert.match(router,/path: '\/marketing'/);
   assert.match(router,/path: '\/student-programs'.*path:'\/marketing'.*tab:'eligibility'/s);
   const wizard=await readFile(new URL('../src/components/dashboard/marketing/CampaignWizard.vue',import.meta.url),'utf8');

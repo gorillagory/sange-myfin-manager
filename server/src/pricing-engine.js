@@ -597,7 +597,7 @@ async function boundSource(c, { companyId, sourceType, sourceId, snapshotId }) {
   if (!row || row.pricing_snapshot_id !== snapshotId) fail(409, 'pricing_source_not_bound');
   const data = dataObject(row.data);
   if (sourceType === 'pos_sale' && row.source !== 'pos') fail(409, 'pricing_source_type_mismatch');
-  if (sourceType === 'invoice' && (row.source === 'pos' || data.type !== 'Invoice'))
+  if (sourceType === 'invoice' && (['pos','manual_sale'].includes(row.source) || data.type !== 'Invoice'))
     fail(409, 'pricing_source_type_mismatch');
   return row;
 }

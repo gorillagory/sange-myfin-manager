@@ -2,7 +2,8 @@ import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import * as v from './validation.js';
 import { requireCapability } from './access.js';
-import { cents,canonical } from '../../src/domain/pos.js';
+import { canonical } from '../../src/domain/pos.js';
+import { prepareExpense,recordExpenseEvent,replaceExpenseLinks } from './expense-lifecycle.js';
 
 const realDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value;
 
@@ -13,6 +14,14 @@ const expenseRow=z.strictObject({
   amount:z.number().finite().positive().max(1e9),
   supplier_id:z.union([v.id,z.literal('')]).optional(),
   payee:z.string().trim().max(500).optional(),
+  status:z.enum(['pending','paid']).default('paid'),
+  paidByType:z.enum(['app_user','non_user','petty_cash','other','credit']).default('other'),
+  paidByUserId:z.union([v.id,z.literal('')]).default(''),
+  paidByName:z.string().trim().max(500).default(''),
+  creditTermsDays:z.union([z.number().int().min(1).max(3650),z.null()]).optional(),
+  creditDueDate:z.string().max(10).default(''),
+  paidOn:z.string().max(10).default(''),
+  links:z.array(z.strictObject({type:z.enum(['stock_item','stock_movement','purchase_order','goods_receipt']),id:v.id})).max(100).default([]),
 });
 
 async function suppliers(c,companyId,ids){
@@ -37,11 +46,21 @@ export function registerExpenseImport(app,{scoped,audit}){
     const ids=[...new Set(rows.map(row=>row.supplier_id).filter(Boolean))];
     const supplierMap=await suppliers(c,companyId,ids);
     for(const row of rows){
-      const amount=cents(row.amount)/100;
-      if(amount<=0||amount!==row.amount)v.fail(400,'invalid_expense_amount');
       const id=randomUUID(),supplierId=row.supplier_id||null,supplier=supplierMap.get(supplierId);
-      const data={...row,id,company_id:companyId,amount,supplier_id:supplierId||'',payee:row.payee||supplier?.name||''};
-      await c.query('INSERT INTO myfin.expenses(company_id,id,data,amount,created_by,supplier_id) VALUES($1,$2,$3,$4,$5,$6)',[companyId,id,data,amount,req.identity.id,supplierId]);
+      const input={...row,id,company_id:companyId,supplier_id:supplierId||'',payee:row.payee||supplier?.name||'',
+        paidByName:row.paidByName||(row.paidByType==='other'?'Imported / unspecified':''),
+        paidOn:row.paidOn||(row.status==='paid'?row.date:'')};
+      const prepared=await prepareExpense(c,companyId,req.identity,input),amount=prepared.amountSen/100;
+      const data={...prepared.data,id,company_id:companyId,amount};
+      await c.query(`INSERT INTO myfin.expenses(company_id,id,data,amount,amount_sen,created_by,supplier_id,status,
+        paid_by_type,paid_by_identity_id,paid_by_name,credit_terms_days,credit_due_date,paid_on)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[companyId,id,data,amount,prepared.amountSen,
+        req.identity.id,supplierId,prepared.status,prepared.paidByType,prepared.paidByUserId||null,
+        prepared.paidByName||null,prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null]);
+      await replaceExpenseLinks(c,companyId,id,prepared.links,req.identity);
+      const saved=(await c.query('SELECT * FROM myfin.expenses WHERE company_id=$1 AND id=$2',[companyId,id])).rows[0];
+      await recordExpenseEvent(c,companyId,req.identity,{expenseId:id,expenseVersion:Number(saved.version),
+        action:'imported',to:saved,reason:`Imported in batch ${batchId}`});
     }
     await audit(c,req.identity,companyId,'Import expenses',String(rows.length));
     return {count:rows.length,alreadyImported:false};

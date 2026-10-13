@@ -12,7 +12,9 @@ let generation = 0;
 const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 const entries = computed(() => {
   const receipts = (report.value?.receipts || []).map(row => ({ ...row, direction: 'in', label: row.kind, description: row.number || row.id, cashImpact: true }));
-  const expenses = (report.value?.expenses || []).map(row => ({ ...row, direction: row.cashImpact ? 'out' : 'pending', label: row.kind, description: row.description || row.number || row.id }));
+  const expenses = (report.value?.expenses || []).map(row => ({ ...row,
+    date:row.cashImpact?(row.cashDate||row.date):row.date,
+    direction: row.cashImpact ? 'out' : 'pending', label: row.kind, description: row.description || row.number || row.id }));
   return [...receipts, ...expenses].sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)));
 });
 const shown = computed(() => {

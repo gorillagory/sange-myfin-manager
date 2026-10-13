@@ -1,4 +1,5 @@
 import { api, companyPath, writeRecord, removeRecord } from "../services/api";
+import {expenseCommittedRefreshError} from "../domain/expenseLifecycle.js";
 export const financeModule = {
   addTransaction: (s, t) => writeRecord(s, "transactions", t),
   updateTransaction: (s, t) => writeRecord(s, "transactions", t, true),
@@ -18,7 +19,24 @@ export const financeModule = {
     });
     await s.refreshData();
   },
-  addExpense(s,e) { if(e.id?!s.can("expensesWrite"):!s.can("expensesCreate")) throw new Error(e.id?"Ask a manager to edit an existing expense.":"You cannot record expenses in this company."); return writeRecord(s,"expenses",e,!!e.id); },
+  async addExpense(s,e) {
+    const update=Boolean(e.id);
+    if(update?!s.can("expensesWrite"):!s.can("expensesCreate"))
+      throw new Error(update?"Ask a manager to edit an existing expense.":"You cannot record expenses in this company.");
+    const result=await api(companyPath(s,"/expenses"+(update?"/"+encodeURIComponent(e.id):"")),{
+      method:update?"PUT":"POST",body:e,
+    });
+    let refreshResult;
+    try { refreshResult=await s.refreshData(); }
+    catch(cause) {
+      // The mutation has already committed. Preserve receipt evidence and let
+      // the caller explain that only the local projection failed to refresh.
+      throw Object.assign(cause,{mutationCommitted:true,mutationResult:result});
+    }
+    const refreshError=expenseCommittedRefreshError(refreshResult,result);
+    if(refreshError) throw refreshError;
+    return result;
+  },
   async deleteExpense(s,id,approval={}) { if(!s.can("expensesVoid")&&!s.permissions().operator) throw new Error("You cannot void this expense.");await api(companyPath(s,"/expenses/"+encodeURIComponent(id)),{method:"DELETE",body:approval});await s.refreshData(); },
   async importExpenses(s,batch){if(!s.can('expensesWrite'))throw new Error('Ask a manager to import expenses.');const result=await api(companyPath(s,'/import-expenses'),{method:'POST',body:batch});await s.refreshData();return result;},
   async addClient(s, c) {

@@ -4,12 +4,14 @@ import { Store } from '../../../store';
 import { businessDate, money } from '../../../domain/pos';
 import { documentCollectedAmount, documentOutstandingAmount } from '../../../domain/documents';
 import Icon from '../../ui/EditionIcon.vue';
+import ManualSaleModal from './ManualSaleModal.vue';
 
 const query = ref('');
 const refreshing = ref(false);
+const recordingSale = ref(false);
 const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 const sales = computed(() => [...Store.state.transactions]
-  .filter(row => row.source === 'pos' || (row.type === 'Invoice' && ['issued', 'legacy'].includes(row.documentState) && !['Voided', 'Corrected'].includes(row.status)))
+  .filter(row => ['pos', 'manual_sale'].includes(row.source) || (row.type === 'Invoice' && ['issued', 'legacy'].includes(row.documentState) && !['Voided', 'Corrected'].includes(row.status)))
   .sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))));
 const shown = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase();
@@ -20,7 +22,7 @@ const shown = computed(() => {
 const customer = row => row.customerName || Store.state.clients.find(client => client.id === row.client_id)?.name || 'Walk-in customer';
 const collected = documentCollectedAmount;
 const outstanding = documentOutstandingAmount;
-const origin = row => row.source === 'pos' ? 'Checkout' : row.quoteId ? 'Invoice from quote' : row.documentState === 'legacy' ? 'Historical invoice' : 'Invoice';
+const origin = row => row.source === 'pos' ? 'Checkout' : row.source === 'manual_sale' ? 'Recorded later' : row.quoteId ? 'Invoice from quote' : row.documentState === 'legacy' ? 'Historical invoice' : 'Invoice';
 const totals = computed(() => sales.value.reduce((value, row) => ({ sales: value.sales + Number(row.total || 0), collected: value.collected + collected(row), outstanding: value.outstanding + outstanding(row) }), { sales: 0, collected: 0, outstanding: 0 }));
 async function refresh() {
   if (refreshing.value || !Store.state.online) return;
@@ -35,7 +37,7 @@ async function refresh() {
   <div class="ed-page mf-finance-sales">
     <header class="ed-page-head">
       <div><div class="ed-eyebrow">FINANCE / SALES & RECEIVABLES</div><h1>Every sale, paid or due.</h1><p>Checkout receipts and issued invoices share one sales record. Payment changes cash, while an issued invoice remains a sale.</p></div>
-      <div class="ed-actions"><router-link :to="{path:'/documents',query:{new:'quote'}}" class="ed-btn">New quote</router-link><router-link :to="{path:'/documents',query:{new:'invoice'}}" class="ed-btn primary"><Icon name="plus" />New invoice</router-link></div>
+      <div class="ed-actions"><button v-if="Store.can('manualSalesCreate')" class="ed-btn" :disabled="!Store.state.online || Store.state.fromCache" @click="recordingSale=true">Record completed sale</button><router-link :to="{path:'/documents',query:{new:'quote'}}" class="ed-btn">New quote</router-link><router-link :to="{path:'/documents',query:{new:'invoice'}}" class="ed-btn primary"><Icon name="plus" />New invoice</router-link></div>
     </header>
     <div class="ed-metrics"><div class="ed-metric"><label>Issued sales</label><strong>{{ money(totals.sales,currency) }}</strong></div><div class="ed-metric"><label>Collected</label><strong>{{ money(totals.collected,currency) }}</strong></div><div class="ed-metric"><label>Outstanding</label><strong>{{ money(totals.outstanding,currency) }}</strong></div></div>
     <div class="ed-filters">
@@ -48,5 +50,6 @@ async function refresh() {
     <div class="ed-row"><div><strong>Quotes, invoices and collections</strong><small>Create a quote, convert it to an invoice, issue it, then record partial or full payment without using Checkout.</small></div><router-link class="ed-link" to="/documents">Open documents<Icon name="arrow" /></router-link></div>
     <div class="ed-row"><div><strong>Need the payment-date breakdown?</strong><small>Financial analysis uses the actual payment dates for invoice collections.</small></div><router-link class="ed-link" to="/analytics">Financial analysis<Icon name="arrow" /></router-link></div>
     <div class="ed-row"><div><strong>Payment needs review?</strong><small>Check receipts waiting for sync or manager resolution.</small></div><router-link class="ed-link" to="/receipt-reviews">Payment reviews<Icon name="arrow" /></router-link></div>
+    <ManualSaleModal v-if="recordingSale && Store.can('manualSalesCreate')" @close="recordingSale=false" @saved="recordingSale=false" />
   </div>
 </template>

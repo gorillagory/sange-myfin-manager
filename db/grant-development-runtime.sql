@@ -25,6 +25,8 @@ GRANT SELECT,INSERT ON myfin.customer_identities,myfin.customer_company_links,my
  myfin.customer_loyalty_events,myfin.customer_order_lines,myfin.customer_order_events,
  myfin.customer_order_payments TO myfin_dev_runtime;
 GRANT SELECT, INSERT ON myfin.expense_import_batches TO myfin_dev_runtime;
+GRANT SELECT, INSERT, DELETE ON myfin.expense_links TO myfin_dev_runtime;
+GRANT SELECT, INSERT ON myfin.expense_events TO myfin_dev_runtime;
 GRANT SELECT, INSERT ON myfin.activities, myfin.stock_movements,
  myfin.company_enrollments, myfin.management_events,
  myfin.document_template_versions, myfin.document_payments, myfin.document_events,

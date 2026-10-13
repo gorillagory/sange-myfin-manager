@@ -295,6 +295,24 @@ try {
     });
     assert.equal(linked.movement.supplierId, supplierA.id);
     assert.equal(linked.movement.expenseId, saved[0].id);
+    const evidenceMovement=(await db.query(`SELECT id FROM myfin.stock_ledger
+      WHERE company_id=$1 AND expense_id IS NULL ORDER BY created_at,id LIMIT 1`,[companyA])).rows[0].id;
+    const purchaseOrderId=`expense-po-${tag}`,goodsReceiptId=`expense-gr-${tag}`;
+    await admin.query(`INSERT INTO myfin.purchase_orders(company_id,id,number,supplier_id,total_sen,idempotency_key,
+      request_digest,created_by) VALUES($1,$2,$3,$4,100,$5,$6,$7)`,
+    [companyA,purchaseOrderId,`PO-EXP-${tag}`,supplierA.id,`expense-po-key-${tag}`,'1'.repeat(64),ownerId]);
+    await admin.query(`INSERT INTO myfin.goods_receipts(company_id,id,purchase_order_id,reference,received_at,
+      idempotency_key,request_digest,received_by) VALUES($1,$2,$3,$4,now(),$5,$6,$7)`,
+    [companyA,goodsReceiptId,purchaseOrderId,`GR-EXP-${tag}`,`expense-gr-key-${tag}`,'2'.repeat(64),ownerId]);
+    const linkedTypes=await ok(hostA,url(companyA,'/expenses'),{cookie:cookieA,method:'POST',body:{
+      date:'2026-09-29',description:'All linked evidence',amount:1,status:'paid',paidOn:'2026-09-29',
+      paidByType:'other',paidByName:'Acceptance business account',links:[
+        {type:'stock_item',id:beans.id},{type:'stock_movement',id:evidenceMovement},
+        {type:'purchase_order',id:purchaseOrderId},{type:'goods_receipt',id:goodsReceiptId},
+      ],
+    }});
+    assert.deepEqual(linkedTypes.links.map(row=>row.type),
+      ['goods_receipt','purchase_order','stock_item','stock_movement']);
     await reject(hostA, url(companyA, `/stock_items/${beans.id}/movements`), {
       cookie: cookieA, method: 'POST', body: movement(`foreign-expense-${tag}`, {
         supplierId: supplierB.id,

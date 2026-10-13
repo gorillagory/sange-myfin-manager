@@ -178,12 +178,14 @@ async function paymentOperationsOutput(c, companyId, input) {
         AND (r.checked_at AT TIME ZONE 'Asia/Kuala_Lumpur')::date BETWEEN $2::date AND $3::date
       WHERE c.company_id=$1 GROUP BY c.company_id,c.id ORDER BY c.display_name,c.id`, params.slice(0, 3)),
     c.query(`WITH payment_facts AS (
-      SELECT 'pos'::text AS source,coalesce(nullif(data->>'paymentMethod',''),'Unspecified') AS method,
+      SELECT CASE WHEN source='manual_sale' THEN 'manual' ELSE 'pos' END AS source,
+        coalesce(nullif(data->>'paymentMethod',''),'Unspecified') AS method,
         round(total*100)::bigint AS amount_sen
       FROM myfin.transactions
-      WHERE company_id=$1 AND source='pos' AND data->>'status'='Paid'
+      WHERE company_id=$1 AND source IN ('pos','manual_sale') AND data->>'status'='Paid'
         AND (CASE WHEN data->>'businessDate' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-          THEN (data->>'businessDate')::date ELSE (created_at AT TIME ZONE 'Asia/Kuala_Lumpur')::date END)
+          THEN (data->>'businessDate')::date
+          ELSE ((data->>'date')::timestamptz AT TIME ZONE 'Asia/Kuala_Lumpur')::date END)
           BETWEEN $2::date AND $3::date
       UNION ALL
       SELECT 'invoice',coalesce(nullif(method,''),'Unspecified'),round(amount*100)::bigint

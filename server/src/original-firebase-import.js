@@ -337,7 +337,10 @@ function transformed(record, targetCompanyId) {
     return product;
   }
   if (record.collection === 'transactions' && data.total !== undefined) data.total=cents(data.total);
-  if (record.collection === 'expenses') data.amount=cents(data.amount);
+  if (record.collection === 'expenses') {
+    data.amount=cents(data.amount);
+    data.date=(safeDate(data.date)||safeDate(record.createTime)||new Date(0).toISOString()).slice(0,10);
+  }
   return data;
 }
 

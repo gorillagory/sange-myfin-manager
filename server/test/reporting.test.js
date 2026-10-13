@@ -80,6 +80,44 @@ test('a recent imported pending invoice appears as accrued sales but not cash', 
   assert.deepEqual(report.receipts, []);
 });
 
+test('credit expenses remain accrued while only paid expenses reduce cash', () => {
+  const rows = { expenses: [
+    { id: 'paid', company_id: 'co', amount_sen: 1250, status: 'paid', paid_by_type: 'petty_cash',
+      data: { amount: 12.5, date: '2026-10-02', description: 'Paid supplies' } },
+    { id: 'pending', company_id: 'co', amount_sen: 2075, status: 'pending', paid_by_type: 'credit', credit_due_date: '2026-11-01',
+      data: { amount: 20.75, date: '2026-10-02', description: 'Supplier credit' } },
+    { id: 'overdue', company_id: 'co', amount_sen: 725, status: 'pending', paid_by_type: 'credit', credit_due_date: '2026-10-01',
+      data: { amount: 7.25, date: '2026-10-02', description: 'Overdue supplier credit' } },
+  ] };
+  const report = companyReport(rows, '2026-10-02', '2026-10-02');
+  assert.deepEqual(report.totals, { sales: 0, tax: 0, expenses: 40.5, cashIn: 0, cashOut: 12.5,
+    cashFlow: -12.5, quoted: 0, convertedQuoted: 0 });
+  assert.deepEqual(report.expenses.map(row => [row.id, row.status, row.cashImpact]), [
+    ['overdue', 'pending', false], ['paid', 'paid', true], ['pending', 'pending', false],
+  ]);
+  assert.deepEqual(report.daily[0], { date: '2026-10-02', sales: 0, tax: 0, expenses: 40.5,
+    cashIn: 0, cashOut: 12.5, cashFlow: -12.5 });
+});
+
+test('credit settlement posts cash out in its own period without repeating accrual', () => {
+  const rows = { expenses: [{ id: 'settled-credit', company_id: 'co', amount_sen: 4205, status: 'paid',
+    paid_by_type: 'credit', credit_due_date: '2026-10-30', paid_on: '2026-10-02',
+    data: { amount: 42.05, date: '2026-09-29', description: 'September stock on credit' } }] };
+  const accrual = companyReport(rows, '2026-09-29', '2026-09-29');
+  assert.deepEqual(accrual.totals, { sales: 0, tax: 0, expenses: 42.05, cashIn: 0, cashOut: 0,
+    cashFlow: 0, quoted: 0, convertedQuoted: 0 });
+  assert.deepEqual(accrual.expenses.map(row => [row.date, row.cashDate, row.accrualImpact, row.cashImpact]),
+    [['2026-09-29', '2026-10-02', true, false]]);
+
+  const settlement = companyReport(rows, '2026-10-02', '2026-10-02');
+  assert.deepEqual(settlement.totals, { sales: 0, tax: 0, expenses: 0, cashIn: 0, cashOut: 42.05,
+    cashFlow: -42.05, quoted: 0, convertedQuoted: 0 });
+  assert.deepEqual(settlement.expenses.map(row => [row.date, row.cashDate, row.accrualImpact, row.cashImpact]),
+    [['2026-09-29', '2026-10-02', false, true]]);
+  assert.deepEqual(settlement.daily[0], { date: '2026-10-02', sales: 0, tax: 0, expenses: 0,
+    cashIn: 0, cashOut: 42.05, cashFlow: -42.05 });
+});
+
 test('migrated invoices derive tax and expose only strict quote provenance', () => {
   const report = companyReport({ transactions: [
     { id: 'legacy-from-quote', company_id: 'co', source: 'manual', document_state: 'legacy', total: 3686.04,
@@ -118,7 +156,7 @@ test('report queries bound each ordinary date source before materializing record
   assert.equal(calls.length, 3);
   const allParams = [['company-a'], '2026-09-30', '2026-09-30', '2026-09-29', '2026-10-01', '2026-10-01'];
   assert.deepEqual(calls[0].params, allParams);
-  assert.deepEqual(calls[1].params, [['company-a'], '2026-09-29', '2026-10-01']);
+  assert.deepEqual(calls[1].params, [['company-a'], '2026-09-29', '2026-10-01', '2026-09-30', '2026-09-30']);
   assert.deepEqual(calls[2].params, [['company-a'], '2026-09-30', '2026-10-01']);
   const transactions = calls[0].sql.split(' UNION ALL ');
   assert.equal(transactions.length, 4);
@@ -126,7 +164,12 @@ test('report queries bound each ordinary date source before materializing record
   assert.match(transactions[1], /issued_at >=/);
   assert.match(transactions[2], /date',10\).*BETWEEN \$4 AND \$5/);
   assert.match(transactions[3], /issued_at IS NULL.*!~/);
-  assert.equal(calls[1].sql.split(' UNION ALL ').length, 2);
+  const expenseBranches = calls[1].sql.split(' UNION ALL ');
+  assert.equal(expenseBranches.length, 3);
+  for (const branch of expenseBranches) {
+    assert.match(branch, /WHERE company_id=ANY\(\$1::text\[\]\) AND voided_at IS NULL AND \([\s\S]+\)$/);
+  }
+  assert.match(expenseBranches[2], /paid_on BETWEEN \$4 AND \$5/);
   assert.match(calls[2].sql, /paid_at >=.*paid_at </s);
 });
 

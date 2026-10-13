@@ -217,7 +217,7 @@ const salesDate = `(CASE
   WHEN issued_at IS NOT NULL THEN to_char(issued_at AT TIME ZONE 'Asia/Kuala_Lumpur','YYYY-MM-DD')
   WHEN left(data->>'date',10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN left(data->>'date',10)
   ELSE NULL END)`;
-const salesRelevant = `(source='pos' OR (document_state='issued' AND data->>'type'='Invoice') OR
+const salesRelevant = `(source IN ('pos','manual_sale') OR (document_state='issued' AND data->>'type'='Invoice') OR
   (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Paid','Cleared','Partially paid')))`;
 const SALES_SQL = `SELECT id,total,source,document_state,
     coalesce(issued_snapshot->>'tax',data->>'tax') AS tax,
@@ -336,7 +336,7 @@ const STUDENT_SQL = `WITH company_scope AS (
   FROM activity`;
 
 const EXPENSE_SQL = `SELECT coalesce(sum(amount_sen),0)::bigint AS amount_sen FROM (
-    SELECT round(amount*100)::bigint AS amount_sen FROM myfin.expenses
+    SELECT amount_sen FROM myfin.expenses
      WHERE company_id=$1 AND voided_at IS NULL
        AND left(data->>'date',10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
        AND left(data->>'date',10) BETWEEN $2 AND $3

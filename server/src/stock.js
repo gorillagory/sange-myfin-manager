@@ -3,7 +3,8 @@ import { z } from 'zod';
 import * as v from './validation.js';
 import { requireCapability } from './access.js';
 import { stockMovement } from '../../src/domain/stock.js';
-import { canonical } from '../../src/domain/pos.js';
+import { businessDate,canonical } from '../../src/domain/pos.js';
+import { effectiveExpenseStatus } from '../../src/domain/expenseLifecycle.js';
 import { registerInventoryRecipes } from './inventory-recipes.js';
 
 const quantity=z.number().finite().min(-1e12).max(1e12).refine(value=>Math.abs(value*1e6-Math.round(value*1e6))<1e-5);
@@ -40,7 +41,12 @@ async function packagings(c,companyId,itemIds){
   return map;
 }
 const output=(row,packs=[])=>({id:row.id,company_id:row.company_id,internalCode:row.internal_code,name:row.name,category:row.category,trackingMode:row.tracking_mode,baseUnit:row.base_unit,barcode:row.barcode,onHand:number(row.on_hand),reorderLevel:number(row.reorder_level),preferredSupplierId:row.preferred_supplier_id||'',active:row.active,notes:row.notes,version:Number(row.version),packagings:packs});
-const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
+export const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.item_id,actorId:row.actor_id,kind:row.kind,inputQuantity:number(row.input_quantity),delta:number(row.delta),quantityAfter:number(row.quantity_after),packagingId:row.packaging_id||'',supplierId:row.supplier_id||'',expenseId:row.expense_id||'',
+  ...(row.expense_id?{expenseDescription:row.expense_description||'',expenseStatus:row.expense_status||'',
+    expenseDueDate:String(row.expense_due_date||'').slice(0,10),expensePaidOn:String(row.expense_paid_on||'').slice(0,10),
+    expenseVoided:Boolean(row.expense_voided_at),expenseEffectiveStatus:row.expense_voided_at?'voided':effectiveExpenseStatus({
+      status:row.expense_status,creditDueDate:String(row.expense_due_date||'').slice(0,10)},businessDate())}:{}),
+  reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
 
 async function ensureCodes(c,companyId,itemId,codes){
   const normalized=codes.filter(Boolean).map(key);
@@ -104,7 +110,11 @@ export function registerStock(app,{scoped,audit}){
   app.get('/api/companies/:company/stock_ledger',req=>scoped(req,async(c,companyId)=>{
     requireCapability(req.identity,'stockHistoryRead');
     const query=v.parse(z.strictObject({after:v.id.optional(),limit:z.coerce.number().int().min(1).max(500).default(500)}),req.query);
-    const result=await c.query('SELECT * FROM myfin.stock_ledger WHERE company_id=$1 AND id>$2 ORDER BY id LIMIT $3',[companyId,query.after||'',query.limit+1]);
+    const result=await c.query(`SELECT sl.*,e.data->>'description' AS expense_description,e.status AS expense_status,
+      e.credit_due_date AS expense_due_date,e.paid_on AS expense_paid_on,e.voided_at AS expense_voided_at
+      FROM myfin.stock_ledger sl LEFT JOIN myfin.expenses e
+        ON e.company_id=sl.company_id AND e.id=sl.expense_id
+      WHERE sl.company_id=$1 AND sl.id>$2 ORDER BY sl.id LIMIT $3`,[companyId,query.after||'',query.limit+1]);
     const visible=result.rows.slice(0,query.limit);
     return {rows:visible.map(ledgerOutput),next:result.rowCount>query.limit?visible.at(-1).id:null};
   }));
