@@ -5,6 +5,12 @@ export class MigrationError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
 
+// Migration identity is based on SQL text, independent of the checkout's
+// platform line endings. This keeps a release built from a Windows Git archive
+// compatible with the same migrations previously applied from Linux, while
+// still rejecting every substantive edit through the checksum ledger.
+const canonicalMigrationSql = value => value.replace(/\r\n?/g, '\n');
+
 export async function readMigrations(directory = new URL('../../db/migrations/', import.meta.url)) {
   const names = (await readdir(directory)).filter(name => name.endsWith('.sql')).sort();
   if (!names.length || names.some(name => !/^\d{4}_[a-z0-9_]+\.sql$/.test(name)) ||
@@ -12,7 +18,7 @@ export async function readMigrations(directory = new URL('../../db/migrations/',
     throw new MigrationError('invalid_migration_names');
   }
   return Promise.all(names.map(async version => {
-    const sql = await readFile(new URL(version, directory), 'utf8');
+    const sql = canonicalMigrationSql(await readFile(new URL(version, directory), 'utf8'));
     if (!sql.trim()) throw new MigrationError('empty_migration');
     return { version, sql, checksum: createHash('sha256').update(sql).digest('hex') };
   }));

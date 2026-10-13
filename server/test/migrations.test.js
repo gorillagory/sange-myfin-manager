@@ -65,14 +65,19 @@ test('SQL, history-insert and commit failures roll back; rollback failure keeps 
   } };
   await assert.rejects(runMigrations(client, [migration]), /original/);
 });
-test('migration files have deterministic byte-sensitive checksums and reject ambiguous versions', async t => {
+test('migration checksums canonicalize platform line endings and reject substantive edits and ambiguous versions', async t => {
   const dir = await mkdtemp(`${tmpdir()}/myfin-migrations-`);
   t.after(() => rm(dir, { recursive:true, force:true }));
   const url = pathToFileURL(`${dir}/`);
-  await writeFile(new URL('0001_one.sql', url), 'SELECT 1;\n');
+  const filename = new URL('0001_one.sql', url);
+  await writeFile(filename, 'SELECT 1;\nSELECT 2;\n');
   const first = await readMigrations(url);
   assert.equal(first[0].checksum.length, 64);
-  await writeFile(new URL('0001_one.sql', url), 'SELECT 1;\r\n');
+  await writeFile(filename, 'SELECT 1;\r\nSELECT 2;\r\n');
+  const windows = await readMigrations(url);
+  assert.equal(windows[0].checksum, first[0].checksum);
+  assert.equal(windows[0].sql, first[0].sql);
+  await writeFile(filename, 'SELECT 1;\r\nSELECT 3;\r\n');
   assert.notEqual((await readMigrations(url))[0].checksum, first[0].checksum);
   await writeFile(new URL('0001_other.sql', url), 'SELECT 2;');
   await assert.rejects(readMigrations(url), { code:'invalid_migration_names' });
