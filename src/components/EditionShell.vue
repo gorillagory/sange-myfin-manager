@@ -25,6 +25,7 @@ const matches = computed(() => {
 });
 
 const MODULE_STATE_KEY = 'myfin.workspace.expanded-modules';
+const SIDEBAR_STATE_KEY = 'myfin.workspace.sidebar-collapsed';
 function savedModuleState() {
   if (typeof window === 'undefined') return {};
   try {
@@ -32,12 +33,35 @@ function savedModuleState() {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   } catch { return {}; }
 }
+function savedSidebarState() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const value = window.localStorage.getItem(SIDEBAR_STATE_KEY);
+    if (value === 'true' || value === 'false') return value === 'true';
+  } catch { /* Storage may be unavailable. */ }
+  return window.matchMedia?.('(max-width: 1280px)').matches ?? false;
+}
 const expandedModules = ref(savedModuleState());
+const sidebarCollapsed = ref(savedSidebarState());
+const desktopSidebar = ref(typeof window === 'undefined' ? true : window.matchMedia('(min-width: 961px)').matches);
+const sidebarRail = computed(() => sidebarCollapsed.value && desktopSidebar.value);
 const moduleButtons = ref([]);
 const isActiveModule = section => section.pages.some(page => page.path === route.path);
 const isModuleOpen = section => expandedModules.value[section.id] === true;
 function toggleModule(section) {
+  if (sidebarRail.value) {
+    sidebarCollapsed.value = false;
+    expandedModules.value = { ...expandedModules.value, [section.id]: true };
+    return;
+  }
   expandedModules.value = { ...expandedModules.value, [section.id]: !isModuleOpen(section) };
+}
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+  if (!sidebarCollapsed.value) {
+    const active = WORKSPACE_MODULES.find(section => section.pages.some(page => page.path === route.path));
+    if (active) expandedModules.value = { ...expandedModules.value, [active.id]: true };
+  }
 }
 function setModuleButton(element, index) {
   if (element) moduleButtons.value[index] = element;
@@ -63,6 +87,8 @@ function exportPending() {
   const a = document.createElement('a'); a.href = url; a.download = 'myfin-unsynced-receipts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
 }
 let reviewPollTimer;
+let sidebarMedia;
+function syncSidebarMedia(event) { desktopSidebar.value = event.matches; }
 function refreshServerReviews() {
   if (typeof document !== 'undefined' && document.visibilityState === 'visible' && Store.state.online &&
       company.value.id && Store.can('receiptReviewsResolve'))
@@ -76,8 +102,15 @@ watch(expandedModules, value => {
   if (typeof window === 'undefined') return;
   try { window.localStorage.setItem(MODULE_STATE_KEY, JSON.stringify(value)); } catch { /* Storage may be unavailable. */ }
 }, { deep: true });
+watch(sidebarCollapsed, value => {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(SIDEBAR_STATE_KEY, String(value)); } catch { /* Storage may be unavailable. */ }
+});
 onBeforeUpdate(() => { moduleButtons.value = []; });
 onMounted(() => {
+  sidebarMedia = window.matchMedia('(min-width: 961px)');
+  desktopSidebar.value = sidebarMedia.matches;
+  sidebarMedia.addEventListener('change', syncSidebarMedia);
   window.addEventListener('keydown', shortcut);
   window.addEventListener('focus', refreshServerReviews);
   document.addEventListener('visibilitychange', refreshServerReviews);
@@ -87,6 +120,7 @@ watchEffect(() => {
   if (typeof document !== 'undefined') applyThemeVariables(document.documentElement, Store.state.preferences.primaryColor || company.value.preferences?.primaryColor);
 });
 onBeforeUnmount(() => {
+  sidebarMedia?.removeEventListener('change', syncSidebarMedia);
   window.removeEventListener('keydown', shortcut);
   window.removeEventListener('focus', refreshServerReviews);
   document.removeEventListener('visibilitychange', refreshServerReviews);
@@ -95,13 +129,16 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <div class="ed-shell" :class="{'ed-compact':Store.state.preferences.density==='compact','ed-reduce-motion':Store.state.preferences.reduceMotion}">
+  <div class="ed-shell" :class="{'ed-compact':Store.state.preferences.density==='compact','ed-reduce-motion':Store.state.preferences.reduceMotion,'ed-sidebar-collapsed':sidebarRail}">
     <a class="ed-skip" href="#workspace-main">Skip to workspace</a>
     <button v-if="menu" class="ed-scrim" aria-label="Close navigation" @click="menu=false"></button>
-    <aside class="ed-sidebar" :class="{open:menu}" aria-label="Main navigation">
-      <router-link to="/overview" class="ed-brand"><span class="ed-brandmark"><i></i><i></i><i></i><i></i></span>myfin<small>edition</small></router-link>
+    <aside id="workspace-navigation" class="ed-sidebar" :class="{open:menu}" aria-label="Main navigation">
+      <div class="ed-sidebar-head">
+        <router-link to="/overview" class="ed-brand" aria-label="MyFin overview" title="MyFin overview" @click="menu=false"><span class="ed-brandmark"><i></i><i></i><i></i><i></i></span><span class="ed-brand-name">myfin<small>edition</small></span></router-link>
+        <button class="ed-icon-button ed-sidebar-collapse" type="button" :aria-label="sidebarCollapsed?'Expand navigation':'Collapse navigation'" :aria-expanded="!sidebarCollapsed" aria-controls="workspace-navigation" :title="sidebarCollapsed?'Expand navigation':'Collapse navigation'" @click="toggleSidebar"><Icon name="arrow-left" /></button>
+      </div>
       <button class="ed-icon-button ed-drawer-close" aria-label="Close menu" @click="menu=false"><Icon name="close" /></button>
-      <button class="ed-store" :disabled="!['super_admin','workspace_owner'].includes(user.role)" @click="switcher=true"><span class="ed-avatar solid">{{ initials(company.name) }}</span><span><strong>{{ company.name }}</strong><small>{{ ['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Your company' }}</small></span><Icon v-if="['super_admin','workspace_owner'].includes(user.role)" name="down" /></button>
+      <button class="ed-store" :disabled="!['super_admin','workspace_owner'].includes(user.role)" :aria-label="`${company.name || 'Company'}. ${['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Current company'}`" :title="sidebarRail?(company.name || 'Current company'):undefined" @click="switcher=true"><span class="ed-avatar solid">{{ initials(company.name) }}</span><span class="ed-store-copy"><strong>{{ company.name }}</strong><small>{{ ['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Your company' }}</small></span><Icon v-if="['super_admin','workspace_owner'].includes(user.role)" name="down" /></button>
       <nav class="ed-nav" aria-label="Modules">
         <div class="ed-nav-heading">Modules</div>
         <section v-for="(section,index) in navSections" :key="section.id" class="ed-nav-section" :class="{active:isActiveModule(section)}">
@@ -111,13 +148,16 @@ onBeforeUnmount(() => {
             type="button"
             class="ed-nav-module"
             :class="{active:isActiveModule(section)}"
-            :aria-expanded="isModuleOpen(section)"
+            :aria-expanded="!sidebarRail && isModuleOpen(section)"
             :aria-controls="`module-${section.id}-pages`"
             :aria-current="isActiveModule(section)?'true':undefined"
+            :aria-label="sidebarRail?`${section.label}${isActiveModule(section)?', current module':''}`:undefined"
+            :title="sidebarRail?section.label:undefined"
             @click="toggleModule(section)"
             @keydown="moduleKeydown($event,index,section)"
           >
-            <span>{{ section.label }}</span>
+            <Icon :name="section.pages[0]?.icon || 'grid'" class="ed-nav-module-symbol" aria-hidden="true" />
+            <span class="ed-nav-module-label">{{ section.label }}</span>
             <span v-if="isActiveModule(section)" class="ed-nav-current">Current</span>
             <Icon name="down" class="ed-nav-module-icon" aria-hidden="true" />
           </button>
@@ -138,7 +178,10 @@ onBeforeUnmount(() => {
           </div>
         </section>
       </nav>
-      <div class="ed-sidebar-bottom"><div class="ed-actions" style="justify-content:space-between;margin-bottom:17px"><span class="ed-status" :class="{offline:!Store.state.online||Store.state.fromCache}">{{ !Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Connected' }}</span><button class="ed-icon-button" aria-label="Sign out" title="Sign out" @click="Store.logout()"><Icon name="logout" /></button></div><router-link to="/profile" class="ed-profile" @click="menu=false"><span class="ed-avatar">{{ initials(user.username) }}</span><span><strong>{{ user.username || user.email }}</strong><small>{{ user.role==='super_admin'?'SuperAdmin':user.role==='workspace_owner'?'Workspace owner':user.role==='manager'?'Manager':'Operator' }} · {{ user.authLevel==='pos_code'?'POS code':'Password' }}</small></span><Icon name="settings" /></router-link></div>
+      <div class="ed-sidebar-bottom">
+        <div class="ed-sidebar-session"><span class="ed-status" :class="{offline:!Store.state.online||Store.state.fromCache}" role="status" :title="!Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Connected'"><span class="ed-status-label">{{ !Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Connected' }}</span></span><button class="ed-icon-button" aria-label="Sign out" title="Sign out" @click="Store.logout()"><Icon name="logout" /></button></div>
+        <router-link to="/profile" class="ed-profile" aria-label="Open my profile" :title="sidebarRail?(user.username || user.email || 'My profile'):undefined" @click="menu=false"><span class="ed-avatar">{{ initials(user.username) }}</span><span class="ed-profile-copy"><strong>{{ user.username || user.email }}</strong><small>{{ user.role==='super_admin'?'SuperAdmin':user.role==='workspace_owner'?'Workspace owner':user.role==='manager'?'Manager':'Operator' }} · {{ user.authLevel==='pos_code'?'POS code':'Password' }}</small></span><Icon name="settings" /></router-link>
+      </div>
     </aside>
     <div class="ed-workspace"><header class="ed-topbar"><div class="ed-breadcrumb"><button class="ed-icon-button ed-menu-toggle" aria-label="Open navigation" @click="menu=true"><Icon name="menu" /></button><span>{{ pageMeta.module }}</span><span aria-hidden="true">/</span><strong>{{ pageMeta.title }}</strong></div><div class="ed-top-actions"><button class="ed-search-trigger" aria-label="Search workspace" @click="query='';search=true"><Icon name="search" /><span>Find a module</span><kbd>Ctrl K</kbd></button><button v-if="Store.state.pendingSales.length" class="ed-pill warning" @click="pending=true">{{ Store.state.pendingSales.length }} to sync</button><span v-else class="ed-status" :class="{offline:Store.state.fromCache || !Store.state.online}">{{ !Store.state.online?'Offline':Store.state.fromCache?'Cached data':'Live data' }}</span></div></header>
       <main id="workspace-main" class="ed-main" tabindex="-1">

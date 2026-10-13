@@ -39,7 +39,7 @@ test('module navigation is collapsed, route-aware, persistent, and keyboard acce
 
   assert.match(shell, /aria-label="Modules"/);
   assert.match(shell, /v-show="isModuleOpen\(section\)"/);
-  assert.match(shell, /:aria-expanded="isModuleOpen\(section\)"/);
+  assert.match(shell, /:aria-expanded="!sidebarRail && isModuleOpen\(section\)"/);
   assert.match(shell, /:aria-controls="`module-\$\{section\.id\}-pages`"/);
   assert.match(shell, /:aria-current="route\.path===item\.path\?'page':undefined"/);
   assert.match(shell, /\['ArrowDown'|'ArrowDown'/);
@@ -47,8 +47,25 @@ test('module navigation is collapsed, route-aware, persistent, and keyboard acce
   assert.match(shell, /event\.key === 'End'/);
   assert.match(shell, /window\.localStorage\.setItem\(MODULE_STATE_KEY/);
   assert.match(shell, /\[active\.id\]: true/);
+  assert.match(shell, /SIDEBAR_STATE_KEY = 'myfin\.workspace\.sidebar-collapsed'/);
+  assert.match(shell, /matchMedia\?\.\('\(max-width: 1280px\)'\)/,
+    'first-use tablet layouts should preserve workspace width');
+  assert.match(shell, /window\.localStorage\.setItem\(SIDEBAR_STATE_KEY, String\(value\)\)/);
+  assert.match(shell, /'ed-sidebar-collapsed':sidebarRail/);
+  assert.match(shell, /sidebarRail = computed\(\(\) => sidebarCollapsed\.value && desktopSidebar\.value\)/,
+    'mobile drawers should remain expanded independently of the saved desktop rail state');
+  assert.match(shell, /aria-controls="workspace-navigation"/);
+  assert.match(shell, /sidebarCollapsed\?'Expand navigation':'Collapse navigation'/);
+  assert.match(shell, /class="ed-nav-module-symbol"/);
+  assert.match(shell, /sidebarRail\?section\.label:undefined/,
+    'icon-only module controls need discoverable labels');
   assert.match(shell, /id="workspace-page-title">\{\{ pageMeta\.title \}\}/);
   assert.match(css, /\.ed-nav-module\[aria-expanded=true\]/);
+  assert.match(css, /\.ed-shell\.ed-sidebar-collapsed\{grid-template-columns:76px minmax\(0,1fr\)\}/);
+  assert.match(css, /@media\(max-width:960px\)[\s\S]*\.ed-shell\.ed-sidebar-collapsed\{display:block\}/,
+    'the compact desktop rail must not shrink the mobile drawer');
+  assert.match(css, /@media\(pointer:coarse\)[^{]*\{\.ed-nav-module,\.ed-nav-pages a\{min-height:48px\}/,
+    'module navigation needs touch-sized targets');
   assert.match(css, /\.ed-route-view>\.ed-page>\.ed-page-head>div:has\(>h1\)/);
   assert.doesNotMatch(css, /\.ed-route-view \.ed-page-head>div:has\(>h1\)/,
     'nested editor and dialog headers must remain visible');

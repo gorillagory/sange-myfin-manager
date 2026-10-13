@@ -114,13 +114,17 @@ function stopCamera(){
   if(video.value)video.value.srcObject=null;
   cameraTarget.value={kind:'lookup',index:-1};
 }
+function closeActionMenu(event){event.currentTarget.closest('details')?.removeAttribute('open');}
 onBeforeUnmount(stopCamera);
 </script>
 
-<template><div v-if="Store.can('inventoryRead')" class="ed-page"><header class="ed-page-head"><div><div class="ed-eyebrow">OPERATIONS / STOCK RECORDS</div><h1>Know what is on the shelf.</h1><p>Choose the smallest unit you use, convert purchase packages into it, then let recipes consume it.</p></div><div class="ed-actions"><button v-if="Store.can('inventoryWrite')" class="ed-btn primary" @click="edit()"><Icon name="plus"/>New stock item</button></div></header>
-  <div class="ed-tabs"><button :class="{active:tab==='items'}" @click="tab='items'">Items</button><button v-if="Store.can('stockHistoryRead')" :class="{active:tab==='history'}" @click="tab='history'">Movement history</button><button v-if="Store.can('inventoryWrite')" :class="{active:tab==='recipes'}" @click="openRecipes">Recipes</button></div>
-  <template v-if="tab==='items'"><div class="ed-filters"><div class="ed-search"><Icon name="search"/><input v-model="search" class="ed-input" placeholder="Search stock, internal code, barcode or category" aria-label="Search stock records"></div><div class="ed-stock-scan"><input v-model="scanCode" class="ed-input" placeholder="Scan or enter internal code / barcode / QR" aria-label="Internal code, barcode or QR code" @keydown.enter="useScan()"><button class="ed-btn" @click="useScan()">Find</button><button class="ed-btn" @click="startCamera('lookup')"><Icon name="qr"/>Camera</button></div></div><p v-if="error&&!form&&!movement" class="ed-alert" role="alert">{{ error }}</p>
-    <div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Stock item</th><th>Tracking</th><th>On hand</th><th>Reorder at</th><th>Supplier</th><th>Actions</th></tr></thead><tbody><tr v-for="item in items" :key="item.id" :class="{'ed-company-archived':!item.active}"><td><strong>{{ item.name }}</strong><small><template v-if="item.internalCode">{{ item.internalCode }} · </template>{{ item.category }}<template v-if="item.barcode"> · {{ item.barcode }}</template><template v-if="!item.active"> · Archived</template></small></td><td>{{ STOCK_MODES.find(mode=>mode.value===item.trackingMode)?.label }}<small v-for="pack in item.packagings" :key="pack.id">{{ stockConversionText(pack,item.baseUnit) }}</small></td><td :class="{'ed-low-stock':item.active&&item.onHand<=item.reorderLevel}"><strong>{{ fmt(item.onHand) }} {{ item.baseUnit }}</strong></td><td>{{ fmt(item.reorderLevel) }} {{ item.baseUnit }}</td><td>{{ supplierName(item.preferredSupplierId) }}</td><td><div class="ed-actions"><button v-if="item.active" class="ed-btn small" @click="openMovement(item,'receive')">Receive</button><button v-if="item.active" class="ed-btn small" @click="openMovement(item,'count')">Count</button><button v-if="item.internalCode" class="ed-btn small" :aria-label="`Code and labels for ${item.name}`" @click="resourceItem=item">Code / labels</button><button v-if="Store.can('inventoryWrite')" class="ed-btn small" :aria-label="`Duplicate ${item.name}`" @click="duplicate(item)">Duplicate</button><button v-if="Store.can('inventoryWrite')" class="ed-icon-button" :aria-label="`Edit ${item.name}`" @click="edit(item)"><Icon name="edit"/></button><button v-if="Store.can('inventoryWrite')&&item.active" class="ed-icon-button" :aria-label="`Archive ${item.name}`" @click="archive(item)"><Icon name="close"/></button><button v-if="Store.can('inventoryWrite')&&!item.active" class="ed-btn small" :aria-label="`Restore ${item.name}`" @click="restore(item)">Restore</button></div></td></tr></tbody></table></div><div v-if="!items.length" class="ed-empty"><Icon name="box"/><h3>No stock records found.</h3><p>Add cups, ingredients or bulk goods, then receive or count them.</p></div>
+<template><div v-if="Store.can('inventoryRead')" class="ed-page mf-stock-page">
+  <div class="mf-stock-viewbar">
+    <div class="ed-tabs" aria-label="Stock record views"><button :class="{active:tab==='items'}" @click="tab='items'">Items</button><button v-if="Store.can('stockHistoryRead')" :class="{active:tab==='history'}" @click="tab='history'">Movement history</button><button v-if="Store.can('inventoryWrite')" :class="{active:tab==='recipes'}" @click="openRecipes">Recipes</button></div>
+    <button v-if="Store.can('inventoryWrite')" class="ed-btn primary mf-stock-new" @click="edit()"><Icon name="plus"/>New stock item</button>
+  </div>
+  <template v-if="tab==='items'"><div class="ed-filters mf-stock-filters"><div class="ed-search"><Icon name="search"/><input v-model="search" class="ed-input" placeholder="Search stock, internal code, barcode or category" aria-label="Search stock records"></div><div class="ed-stock-scan"><input v-model="scanCode" class="ed-input" placeholder="Scan or enter internal code / barcode / QR" aria-label="Internal code, barcode or QR code" @keydown.enter="useScan()"><button class="ed-btn" @click="useScan()">Find</button><button class="ed-btn" @click="startCamera('lookup')"><Icon name="qr"/>Camera</button></div></div><p v-if="error&&!form&&!movement" class="ed-alert" role="alert">{{ error }}</p>
+    <div class="ed-table-wrap mf-stock-table-wrap"><table class="ed-table mf-stock-table"><colgroup><col class="mf-stock-col-item"><col class="mf-stock-col-tracking"><col class="mf-stock-col-balance"><col class="mf-stock-col-reorder"><col class="mf-stock-col-supplier"><col class="mf-stock-col-actions"></colgroup><thead><tr><th>Stock item</th><th>Tracking</th><th>On hand</th><th>Reorder at</th><th>Supplier</th><th>Actions</th></tr></thead><tbody><tr v-for="item in items" :key="item.id" :class="{'ed-company-archived':!item.active}"><td data-label="Stock item"><strong>{{ item.name }}</strong><small><template v-if="item.internalCode">{{ item.internalCode }} · </template>{{ item.category }}<template v-if="item.barcode"> · {{ item.barcode }}</template><template v-if="!item.active"> · Archived</template></small><small class="mf-stock-supplier-inline">Supplier · {{ supplierName(item.preferredSupplierId) }}</small></td><td data-label="Tracking">{{ STOCK_MODES.find(mode=>mode.value===item.trackingMode)?.label }}<small v-for="pack in item.packagings" :key="pack.id">{{ stockConversionText(pack,item.baseUnit) }}</small></td><td data-label="On hand" :class="{'ed-low-stock':item.active&&item.onHand<=item.reorderLevel}"><strong>{{ fmt(item.onHand) }} {{ item.baseUnit }}</strong></td><td data-label="Reorder at">{{ fmt(item.reorderLevel) }} {{ item.baseUnit }}</td><td data-label="Supplier">{{ supplierName(item.preferredSupplierId) }}</td><td data-label="Actions"><div class="mf-stock-actions"><button v-if="item.active" class="ed-btn small mf-stock-row-action" @click="openMovement(item,'receive')">Receive</button><button v-if="item.active" class="ed-btn small mf-stock-row-action" @click="openMovement(item,'count')">Count</button><details v-if="item.internalCode||Store.can('inventoryWrite')" class="mf-stock-action-menu" name="stock-row-actions"><summary class="ed-btn small" :aria-label="`More actions for ${item.name}`" :title="`More actions for ${item.name}`"><span aria-hidden="true">•••</span></summary><div class="mf-stock-action-panel" :aria-label="`More actions for ${item.name}`"><button v-if="item.internalCode" type="button" @click="closeActionMenu($event);resourceItem=item"><Icon name="qr"/>Code &amp; labels</button><button v-if="Store.can('inventoryWrite')" type="button" @click="closeActionMenu($event);duplicate(item)"><Icon name="plus"/>Duplicate</button><button v-if="Store.can('inventoryWrite')" type="button" @click="closeActionMenu($event);edit(item)"><Icon name="edit"/>Edit</button><button v-if="Store.can('inventoryWrite')&&item.active" type="button" class="danger" @click="closeActionMenu($event);archive(item)"><Icon name="close"/>Archive</button><button v-if="Store.can('inventoryWrite')&&!item.active" type="button" @click="closeActionMenu($event);restore(item)"><Icon name="check"/>Restore</button></div></details><span v-if="!item.active&&!item.internalCode&&!Store.can('inventoryWrite')" class="ed-muted">—</span></div></td></tr></tbody></table></div><div v-if="!items.length" class="ed-empty"><Icon name="box"/><h3>No stock records found.</h3><p>Add cups, ingredients or bulk goods, then receive or count them.</p></div>
   </template>
   <template v-else-if="tab==='history'"><div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Date</th><th>Item</th><th>Action</th><th>Change</th><th>Balance</th><th>Expense</th><th>Reason</th></tr></thead><tbody><tr v-for="entry in history" :key="entry.id"><td>{{ new Date(entry.createdAt).toLocaleString() }}</td><td>{{ itemMap.get(entry.itemId)?.name||entry.itemId }}</td><td>{{ entry.sourceType==='pos_sale'?'Sale recipe':entry.kind }}</td><td>{{ entry.delta>0?'+':'' }}{{ fmt(entry.delta) }} {{ itemMap.get(entry.itemId)?.baseUnit }}</td><td>{{ fmt(entry.quantityAfter) }} {{ itemMap.get(entry.itemId)?.baseUnit }}</td><td><template v-if="entry.expenseId"><strong>{{ entry.expenseDescription||entry.expenseId }}</strong><small>{{ linkedExpenseStatus(entry) }}<template v-if="entry.expenseStatus==='pending'&&entry.expenseDueDate"> · due {{ entry.expenseDueDate }}</template><template v-else-if="entry.expensePaidOn"> · paid {{ entry.expensePaidOn }}</template></small></template><span v-else class="ed-muted">—</span></td><td>{{ entry.reason }}</td></tr></tbody></table></div><div v-if="!history.length" class="ed-empty"><Icon name="clock"/><h3>No movements recorded.</h3></div></template>
   <template v-else-if="tab==='recipes'"><section class="ed-editor-section"><div class="ed-section-head"><div><h2>Product recipes</h2><p class="ed-muted">Map one sellable unit to the ingredients or packaging it consumes. Recipes are disabled until you explicitly enable them.</p></div><button class="ed-btn" :disabled="recipeLoading" @click="loadRecipes">Refresh</button></div><div class="ed-form-grid"><label class="ed-field wide"><span>Sellable product or variant</span><select v-model="recipeSelection"><option value="">Choose a target</option><option v-for="target in recipeTargets" :key="target.value" :value="target.value">{{ target.label }}</option></select></label><div class="ed-field"><span>&nbsp;</span><button class="ed-btn primary" :disabled="!currentRecipeTarget||recipeLoading" @click="configureRecipe()">Configure recipe</button></div></div><p v-if="recipeError&&!recipeForm" class="ed-alert" role="alert">{{ recipeError }}</p></section>
@@ -173,3 +177,335 @@ onBeforeUnmount(stopCamera);
   <StockCodeResourcesModal v-if="resourceItem" :item="resourceItem" @close="resourceItem=null"/>
   <Modal v-if="camera" title="Scan barcode or QR" @close="stopCamera"><video ref="video" class="ed-stock-camera" playsinline muted></video><p v-if="cameraTarget.kind==='lookup'" class="ed-muted">Point the camera at an existing item code to open Receive.</p><p v-else class="ed-muted">Point the camera at the item or packaging code. The form will fill in; save the item to keep it.</p><template #actions><button class="ed-btn" @click="stopCamera">Cancel</button></template></Modal>
 </div></template>
+
+<style scoped>
+.mf-stock-viewbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.mf-stock-viewbar .ed-tabs {
+  min-width: 0;
+}
+
+.mf-stock-new {
+  flex: 0 0 auto;
+}
+
+.mf-stock-filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(450px, .95fr);
+  align-items: center;
+}
+
+.mf-stock-filters .ed-search,
+.mf-stock-filters .ed-stock-scan {
+  min-width: 0;
+}
+
+.mf-stock-filters .ed-stock-scan {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  justify-content: stretch;
+}
+
+.mf-stock-filters .ed-stock-scan input {
+  max-width: none;
+}
+
+.mf-stock-table-wrap {
+  max-width: 100%;
+  overflow: visible;
+  overscroll-behavior-inline: contain;
+}
+
+.mf-stock-table {
+  min-width: 940px;
+  table-layout: fixed;
+}
+
+.mf-stock-col-item { width: 25%; }
+.mf-stock-col-tracking { width: auto; }
+.mf-stock-col-balance { width: 112px; }
+.mf-stock-col-reorder { width: 112px; }
+.mf-stock-col-supplier { width: 14%; }
+.mf-stock-col-actions { width: 205px; }
+
+.mf-stock-table :is(th, td) {
+  vertical-align: middle;
+}
+
+.mf-stock-table :is(th, td):nth-child(1),
+.mf-stock-table :is(th, td):nth-child(2),
+.mf-stock-table :is(th, td):nth-child(5) {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.mf-stock-table :is(th, td):nth-child(3),
+.mf-stock-table :is(th, td):nth-child(4) {
+  white-space: nowrap;
+}
+
+.mf-stock-table :is(th, td):last-child {
+  text-align: right;
+}
+
+.mf-stock-supplier-inline {
+  display: none;
+}
+
+.mf-stock-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.mf-stock-row-action {
+  padding-inline: 9px;
+}
+
+.mf-stock-action-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.mf-stock-action-menu > summary {
+  width: 38px;
+  padding-inline: 0;
+  cursor: pointer;
+  list-style: none;
+  letter-spacing: 1px;
+}
+
+.mf-stock-action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mf-stock-action-menu > summary::marker {
+  content: '';
+}
+
+.mf-stock-action-menu[open] > summary {
+  border-color: var(--ed-accent);
+  background: var(--ed-tint);
+  color: var(--ed-accent);
+}
+
+.mf-stock-action-panel {
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 188px;
+  padding: 6px;
+  border: 1px solid var(--ed-line);
+  border-radius: var(--ed-radius);
+  background: var(--ed-paper);
+  box-shadow: var(--ed-shadow-sm, 0 10px 28px #172c2624);
+  text-align: left;
+}
+
+.mf-stock-action-panel button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ed-ink);
+  font-size: 12px;
+  font-weight: 580;
+  text-align: left;
+}
+
+.mf-stock-action-panel button:hover,
+.mf-stock-action-panel button:focus-visible {
+  background: var(--ed-tint);
+  color: var(--ed-accent);
+}
+
+.mf-stock-action-panel button.danger {
+  color: var(--ed-danger);
+}
+
+.mf-stock-action-panel .ed-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+
+@media (max-width: 1180px) {
+  .mf-stock-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .mf-stock-table-wrap {
+    overflow: auto;
+  }
+
+  .mf-stock-table {
+    min-width: 710px;
+  }
+
+  .mf-stock-table :is(th, td):nth-child(5),
+  .mf-stock-col-supplier {
+    display: none;
+  }
+
+  .mf-stock-supplier-inline {
+    display: block;
+  }
+
+  .mf-stock-col-item { width: 26%; }
+  .mf-stock-col-balance,
+  .mf-stock-col-reorder { width: 100px; }
+
+  .mf-stock-actions {
+    flex-wrap: wrap;
+  }
+
+  .mf-stock-action-menu[open] {
+    flex: 0 0 100%;
+  }
+
+  .mf-stock-action-menu[open] > summary {
+    margin-left: auto;
+  }
+
+  .mf-stock-action-panel {
+    position: static;
+    width: 100%;
+    margin-top: 6px;
+  }
+}
+
+@media (max-width: 720px) {
+  .mf-stock-viewbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .mf-stock-viewbar .ed-tabs {
+    flex: 1 1 100%;
+  }
+
+  .mf-stock-new {
+    width: 100%;
+  }
+
+  .mf-stock-filters .ed-stock-scan {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mf-stock-filters .ed-stock-scan input {
+    grid-column: 1 / -1;
+  }
+
+  .mf-stock-filters .ed-stock-scan .ed-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .mf-stock-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .mf-stock-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .mf-stock-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .mf-stock-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mf-stock-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    overflow: visible;
+    border: 1px solid var(--ed-line);
+    border-radius: var(--ed-radius);
+    background: var(--ed-paper);
+    box-shadow: var(--ed-shadow-xs, 0 1px 2px #172c260d);
+  }
+
+  .mf-stock-table td,
+  .mf-stock-table :is(td, th):first-child,
+  .mf-stock-table :is(td, th):last-child {
+    display: block;
+    min-width: 0;
+    padding: 11px 13px;
+    border: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .mf-stock-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: var(--ed-muted);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+
+  .mf-stock-table td:first-child {
+    grid-column: 1 / -1;
+    padding-block: 14px;
+    border-bottom: 1px solid var(--ed-line);
+  }
+
+  .mf-stock-table td:first-child::before,
+  .mf-stock-table td:nth-child(5) {
+    display: none;
+  }
+
+  .mf-stock-table td:last-child {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--ed-line);
+  }
+
+  .mf-stock-actions {
+    justify-content: flex-start;
+  }
+
+}
+
+@media (pointer: coarse) {
+  .mf-stock-action-menu > summary {
+    width: 46px;
+  }
+
+  .mf-stock-action-panel button {
+    min-height: 46px;
+    font-size: 13px;
+  }
+}
+</style>
