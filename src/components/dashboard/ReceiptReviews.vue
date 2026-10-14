@@ -65,6 +65,10 @@ async function refresh({ verifyActor = true, quiet = false } = {}) {
   if (!quiet) error.value = '';
   try {
     if (verifyActor) await Store.refreshActor();
+    // Re-read the durable device outbox whenever this module refreshes. A
+    // receipt may have been queued in another tab or restored after initial
+    // company hydration, and server reviews alone cannot reveal that row.
+    await Store.refreshPending();
     await Store.refreshReceiptReviews();
   } catch (e) {
     if (!quiet) error.value = e.message;

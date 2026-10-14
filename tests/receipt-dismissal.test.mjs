@@ -116,8 +116,10 @@ try{
  await test('recipe timing review UI requires and explains the structured recipe choice',async()=>{
   const source=await readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8');
   assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'dismissal'/);
-  assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'retry'/);
-  assert.match(source,/<h2>Retry sync<\/h2>/);
+ assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'retry'/);
+ assert.match(source,/<h2>Retry sync<\/h2>/);
+ assert.match(source,/await Store\.refreshPending\(\);\s*await Store\.refreshReceiptReviews\(\);/,
+  'payment reviews must re-read the IndexedDB outbox before classifying recovery rows');
   assert.match(source,/receipt_review_required_recipe_timing/);
   assert.match(source,/receipt_review_required_delayed_sync/);
   assert.match(source,/receipt_review_required_offline_sync/);
