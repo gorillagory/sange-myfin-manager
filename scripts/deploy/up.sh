@@ -1,5 +1,6 @@
 #!/bin/sh
 . "$(dirname "$0")/common.sh"
+. "$(dirname "$0")/wait-api-ready.sh"
 compose config --quiet
 # Caller must have reviewed exact LAN bind/port, DNS, backup and image evidence.
 [ "${MYFIN_REVIEWED_DEV_DEPLOYMENT:-}" = myfin-dev ] || { echo 'Set MYFIN_REVIEWED_DEV_DEPLOYMENT=myfin-dev after deployment review' >&2; exit 1; }
@@ -14,4 +15,5 @@ web_app_ip=$(docker inspect --format '{{with index .NetworkSettings.Networks "my
 PUBLIC_PROXY_ADDRESSES=$web_app_ip
 export PUBLIC_PROXY_ADDRESSES
 compose up -d --no-build api report-worker
+wait_api_ready
 compose ps

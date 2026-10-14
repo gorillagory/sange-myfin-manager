@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { Store } from '../../store';
-import { needsReceiptReview } from '../../domain/offlinePolicy';
+import { receiptRecoveryBucket } from '../../domain/offlinePolicy';
 import { money } from '../../domain/pos';
 import Modal from '../ui/EditionModal.vue';
 
@@ -13,9 +13,9 @@ const unlistedSales = computed(() => Store.state.pendingSales.filter(sale =>
   sale.company_id === Store.state.selectedCompany?.id &&
   !rows.value.some(row => row.id === sale.id)
 ));
-const ownNeedsReview = computed(() => unlistedSales.value.filter(sale => needsReceiptReview(sale.syncError)));
-const ownCanRequestDismissal = computed(() => unlistedSales.value.filter(sale => sale.syncError && !needsReceiptReview(sale.syncError)));
-const ownNeedsSync = computed(() => unlistedSales.value.filter(sale => !sale.syncError));
+const ownNeedsReview = computed(() => unlistedSales.value.filter(sale => receiptRecoveryBucket(sale.syncError) === 'review'));
+const ownCanRequestDismissal = computed(() => unlistedSales.value.filter(sale => receiptRecoveryBucket(sale.syncError) === 'dismissal'));
+const ownNeedsSync = computed(() => unlistedSales.value.filter(sale => receiptRecoveryBucket(sale.syncError) === 'retry'));
 const canResolve = computed(() => Store.can('receiptReviewsResolve'));
 const companySelected = computed(() => Boolean(Store.state.selectedCompany?.id));
 const status = computed(() => Store.state.online
@@ -38,6 +38,9 @@ function reasonText(code) {
     receipt_review_required_pricing_policy: 'Catalog price, tax or discount policy changed',
     receipt_review_required_merchant_changed: 'Original merchant details differ from current settings',
     receipt_review_required_product_changed: 'The original product option changed; reconcile the catalog before approval',
+    receipt_review_required_delayed_sync: 'This payment reached the server later; approval preserves its original sale date',
+    receipt_review_required_offline_sync: 'This payment was captured offline and is ready for manager approval',
+    receipt_review_required_offline_time: 'The offline capture time is unusual; verify the original payment date before approval',
     receipt_review_required_recipe_timing: 'The inventory recipe changed after this offline sale was captured',
     receipt_review_required_recipe_stock: 'Recipe ingredients are below the amount required by this paid sale',
     receipt_review_required_record_conflict: 'The server found a conflicting financial or inventory record',
@@ -194,9 +197,9 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
     </section>
 
     <section v-if="ownNeedsSync.length">
-      <h2>Saved on this device</h2>
-      <p>Try syncing these receipts first. A dismissal review becomes available only if the server cannot confirm the original payment.</p>
-      <div v-for="sale in ownNeedsSync" :key="sale.id" class="ed-row"><div><strong>{{ sale.number }}</strong><small>{{ money(sale.total,currency(sale)) }} · Original cashier: {{ sale.cashierId }}</small></div><button class="ed-btn" :disabled="busy||Store.state.syncing||!Store.state.online" @click="Store.syncSales()">Retry sync</button></div>
+      <h2>Retry sync</h2>
+      <p>The server has not confirmed an outcome for these receipts. Retry syncing while the saved payment remains on this device.</p>
+      <div v-for="sale in ownNeedsSync" :key="sale.id" class="ed-row"><div><strong>{{ sale.number }}</strong><small>{{ money(sale.total,currency(sale)) }} · Original cashier: {{ sale.cashierId }}</small><small v-if="sale.syncError">Last sync: {{ sale.syncError }}</small></div><button class="ed-btn" :disabled="busy||Store.state.syncing||!Store.state.online" @click="Store.syncSales()">Retry sync</button></div>
     </section>
 
     <div class="ed-table-wrap">

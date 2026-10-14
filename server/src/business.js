@@ -39,6 +39,17 @@ import { registerAdvancedAnalytics } from "./advanced-analytics.js";
 import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
+const delayedReceiptReviewMs = 5 * 60 * 1000;
+
+export function receiptCapturePolicy(sale, serverOccurredAt, acceptedOrderQuote = false) {
+  const capturedAt = new Date(sale?.date), serverAt = new Date(serverOccurredAt),
+    valid = Number.isFinite(capturedAt.getTime()) && Number.isFinite(serverAt.getTime()),
+    delayedRecovery = valid && !acceptedOrderQuote && sale?.offline !== true &&
+      Math.abs(serverAt.getTime() - capturedAt.getTime()) > delayedReceiptReviewMs,
+    historicalCapture = !acceptedOrderQuote && (sale?.offline === true || delayedRecovery);
+  return { capturedAt, serverAt, valid, delayedRecovery, historicalCapture };
+}
+
 export async function identity(db, subject, tenant=null) {
   const r = (await db.query(
     `SELECT i.id,i.display_name AS username,i.is_super,i.disabled_at,u.email
@@ -287,10 +298,11 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     cents(sale.change) / 100 !== sale.change
   )
     v.fail(400, "invalid_receipt_fields");
-  const serverRow=options.serverNow?{server_now:options.serverNow}:(await c.query('SELECT now() AS server_now')).rows[0];
-  const serverOccurredAt=new Date(serverRow?.server_now),capturedAt=new Date(sale.date),
-    effectiveOffline=sale.offline&&!options.acceptedOrderQuote;
-  if(!Number.isFinite(serverOccurredAt.getTime())||!Number.isFinite(capturedAt.getTime()))v.fail(500,'server_time_unavailable');
+  const serverRow=options.serverNow?{server_now:options.serverNow}:(await c.query('SELECT now() AS server_now')).rows[0],
+    capturePolicy=receiptCapturePolicy(sale,serverRow?.server_now,options.acceptedOrderQuote),
+    serverOccurredAt=capturePolicy.serverAt,capturedAt=capturePolicy.capturedAt,
+    effectiveOffline=capturePolicy.historicalCapture,delayedRecovery=capturePolicy.delayedRecovery;
+  if(!capturePolicy.valid)v.fail(500,'server_time_unavailable');
   const serverIso=serverOccurredAt.toISOString(),capturedIso=capturedAt.toISOString();
   if((sale.receiptTemplateId&&!(sale.receiptTemplateVersion>0))||(!sale.receiptTemplateId&&sale.receiptTemplateVersion>0))v.fail(400,"invalid_receipt_template_reference");
   const fingerprint = createHash("sha256")
@@ -323,6 +335,22 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     if(approval&&requestedResolution!==recordedResolution)v.fail(409,"inventory_recipe_resolution_changed");
     return publicTransaction(asRecord(existing.rows[0]),who);
   }
+  // A paid intent retried well after its captured time is no longer a live
+  // checkout. Preserve its original accounting date, but require a manager to
+  // confirm that the historical payment should be posted. Exact lost-response
+  // retries still return from the existing-transaction branch above.
+  if(!approval&&!options.acceptedOrderQuote){
+    if(delayedRecovery)v.fail(409,'receipt_review_required_delayed_sync');
+    // A receipt captured while the device was offline represents an already
+    // collected payment. Transfer it to the durable review queue before any
+    // accounting or inventory mutation, even when its creator is a manager.
+    if(sale.offline===true){
+      if(capturedAt.getTime()>serverOccurredAt.getTime()+5*60*1000||
+          serverOccurredAt.getTime()-capturedAt.getTime()>72*60*60*1000)
+        v.fail(409,'receipt_review_required_offline_time');
+      v.fail(409,'receipt_review_required_offline_sync');
+    }
+  }
   if(!effectiveOffline){
     sale.date=serverIso;sale.businessDate=businessDate(serverIso);sale.offline=false;
   }
@@ -342,9 +370,6 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     if(!boundary.changed&&approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
   }
   else if(approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
-  if(effectiveOffline&&!approval&&(capturedAt.getTime()>serverOccurredAt.getTime()+5*60*1000||
-      serverOccurredAt.getTime()-capturedAt.getTime()>72*60*60*1000))
-    v.fail(409,'receipt_review_required_offline_time');
   const companyRow=(await c.query("SELECT name,data FROM myfin.companies WHERE id=$1",[companyId])).rows[0];
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
@@ -404,7 +429,8 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     cashierName: who.username,
     stockShortage: shortage,
     serverRecordedAt:serverIso,
-    ...(sale.date!==capturedIso?{clientCapturedAt:capturedIso}:{}),
+    ...(delayedRecovery?{clientCapturedAt:capturedIso,recordingMode:'delayed_sync_recovery'}:
+      sale.date!==capturedIso?{clientCapturedAt:capturedIso}:{}),
     ...(approval?.inventoryRecipeResolution?{inventoryRecipeResolution:approval.inventoryRecipeResolution}:{}),
     storeSnapshot:expectedStore,companySnapshot,templateSnapshot:template.settings,
     ...(lockedPricing ? { promotionDiscounts: lockedPricing.discounts } : {}),

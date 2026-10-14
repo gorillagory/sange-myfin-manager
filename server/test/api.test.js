@@ -54,6 +54,34 @@ test('ready response, unknown business routes, and handler errors are minimal', 
   await app.close();
   assert.equal(closes, 1);
 });
+test('500 responses expose a request id and log only safe diagnostic metadata', async t => {
+  const logs = [];
+  const app = buildApp({ logger:{ level:'error', base:null, timestamp:false,
+    stream:{ write:line => logs.push(JSON.parse(line)) } } });
+  t.after(() => app.close());
+  class DatabaseError extends Error {}
+  app.post('/test-errors/:recordId', async request => {
+    const error = new DatabaseError(`private detail ${request.body.password}`);
+    error.code = request.params.recordId === 'valid' ? '42P01' : 'unsafe-secret-code';
+    error.detail = request.body;
+    throw error;
+  });
+  const valid = await app.inject({ method:'POST', url:'/test-errors/valid?token=query-secret',
+    payload:{ password:'payload-secret' } });
+  assert.equal(valid.statusCode, 500);
+  assert.deepEqual(valid.json(), { error:'internal_error' });
+  assert.equal(valid.headers['x-request-id'], logs[0].reqId);
+  assert.deepEqual(logs[0], { level:50, reqId:logs[0].reqId, method:'POST',
+    route:'/test-errors/:recordId', errorClass:'DatabaseError', sqlstate:'42P01' });
+  const invalid = await app.inject({ method:'POST', url:'/test-errors/invalid',
+    payload:{ password:'another-payload-secret' } });
+  assert.equal(invalid.statusCode, 500);
+  assert.deepEqual(invalid.json(), { error:'internal_error' });
+  assert.equal(invalid.headers['x-request-id'], logs[1].reqId);
+  assert.deepEqual(logs[1], { level:50, reqId:logs[1].reqId, method:'POST',
+    route:'/test-errors/:recordId', errorClass:'DatabaseError', sqlstate:null });
+  assert.doesNotMatch(JSON.stringify(logs), /private detail|payload-secret|query-secret|unsafe-secret-code|password/);
+});
 test('the complete authenticated route graph registers without duplicate endpoints', async t => {
   const database={ready:async()=>true,close:async()=>{},transaction:async fn=>fn({query:async()=>({rows:[],rowCount:0})})};
   const auth={handler:async()=>new Response(null,{status:401})};
@@ -69,7 +97,16 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   const events = [];
   class FakePool extends EventEmitter {
     constructor(options) { super(); this.options = options; pool = this; }
-    async query(sql) { assert.match(sql, /0033_manual_sales\.sql/); return { rows:[{ ready:true }] }; }
+    async query(sql) {
+      assert.match(sql, /0034_receipt_sync_recovery\.sql/);
+      for (const [table, privileges] of [
+        ['inventory_source_effects', ['SELECT', 'INSERT']],
+        ['stock_ledger', ['SELECT', 'INSERT']],
+        ['stock_items', ['SELECT', 'UPDATE']]
+      ]) for (const privilege of privileges)
+        assert.match(sql, new RegExp(`has_table_privilege\\(current_user, 'myfin\\.${table}', '${privilege}'\\)`));
+      return { rows:[{ ready:true }] };
+    }
     async end() { closes++; }
   }
   const config = loadConfig(env).database;
@@ -80,6 +117,18 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   assert.deepEqual(events, ['database_pool_error']);
   await Promise.all([db.close(), db.close()]);
   assert.equal(closes, 1);
+});
+test('database readiness fails closed when migrations or critical recipe checkout grants are missing', async () => {
+  for (const ready of [false, null, undefined]) {
+    class FakePool extends EventEmitter {
+      on() {}
+      async query() { return { rows:ready === undefined ? [] : [{ ready }] }; }
+      async end() {}
+    }
+    const db = createDatabase({}, { Pool:FakePool });
+    assert.equal(await db.ready(), false);
+    await db.close();
+  }
 });
 test('signals drain once and remove listeners; failed/overdue shutdown exits nonzero', async () => {
   const signals = new EventEmitter();

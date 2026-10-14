@@ -1,5 +1,6 @@
 #!/bin/sh
 . "$(dirname "$0")/production-common.sh"
+. "$(dirname "$0")/wait-api-ready.sh"
 compose config --quiet
 [ "${MYFIN_REVIEWED_PROD_DEPLOYMENT:-}" = myfin-prod ] || { echo 'Set MYFIN_REVIEWED_PROD_DEPLOYMENT=myfin-prod after deployment review' >&2; exit 1; }
 # Trust only the web container's exact project-private address for the
@@ -12,4 +13,5 @@ web_app_ip=$(docker inspect --format '{{with index .NetworkSettings.Networks "my
 PUBLIC_PROXY_ADDRESSES=$web_app_ip
 export PUBLIC_PROXY_ADDRESSES
 compose up -d --no-build api report-worker
+wait_api_ready
 compose ps

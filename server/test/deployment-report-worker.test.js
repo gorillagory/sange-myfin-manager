@@ -6,9 +6,10 @@ const root = new URL('../../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
 
 test('report automation is registered, mounted and deployed as one constrained worker', async () => {
-  const [business,analytics,compose,developmentUp,productionUp,worker] = await Promise.all([
+  const [business,analytics,compose,developmentUp,productionUp,readinessGuard,worker] = await Promise.all([
     read('server/src/business.js'),read('src/components/dashboard/AnalyticsTab.vue'),
     read('deploy/compose.yml'),read('scripts/deploy/up.sh'),read('scripts/deploy/production-up.sh'),
+    read('scripts/deploy/wait-api-ready.sh'),
     read('server/src/report-worker.js'),
   ]);
   assert.match(business, /registerReportAutomation\(app,\{scoped,audit\}\)/);
@@ -20,8 +21,13 @@ test('report automation is registered, mounted and deployed as one constrained w
   assert.match(compose, /CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT: \$\{MYFIN_CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT:-100\}/);
   assert.match(compose, /networks: \[nexus-data\]/);
   assert.doesNotMatch(compose.match(/^  report-worker:[\s\S]*?(?=^networks:)/m)?.[0] || '', /ports:/);
-  for (const source of [developmentUp,productionUp])
+  for (const source of [developmentUp,productionUp]) {
     assert.match(source, /compose up -d --no-build api report-worker/);
+    assert.match(source, /wait_api_ready/);
+  }
+  assert.match(readinessGuard, /\.State\.Health/);
+  assert.match(readinessGuard, /\[ "\$health" = healthy \]/);
+  assert.match(readinessGuard, /verify migrations and runtime database privileges/);
 });
 
 test('report and procurement tables have least-privilege runtime grants', async () => {

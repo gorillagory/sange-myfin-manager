@@ -24,6 +24,7 @@ const vite=await createServer({server:{middlewareMode:true,hmr:{port:0}},appType
 const {Store}=await vite.ssrLoadModule('/src/store/editionStore.js');
 const {localPos}=await vite.ssrLoadModule('/src/services/posLocal.js');
 const {checkoutPayload}=await vite.ssrLoadModule('/src/services/postSale.js');
+const {receiptRecoveryBucket}=await vite.ssrLoadModule('/src/domain/offlinePolicy.js');
 const response=(value,status=200)=>({ok:status<400,status,json:async()=>value});
 const requests=[],modes=new Map();
 let actor={...cashier};
@@ -78,6 +79,13 @@ try{
   assert.equal(result.status,'posted');assert.equal((await localPos.sales(cashier.uid,company.id)).length,0);
   assert.equal(sent('/checkout').length,0);
  });
+ await test('receipt recovery keeps infrastructure failures in retry sync and reserves dismissal for a reconciled receipt',()=>{
+  for(const error of [undefined,'internal_error','network_error','Network unavailable','unexpected_checkout'])
+   assert.equal(receiptRecoveryBucket(error),'retry',String(error));
+  for(const error of ['receipt_review_required','receipt_review_required_pricing_policy','stock_unavailable','record_conflict'])
+   assert.equal(receiptRecoveryBucket(error),'review',error);
+  assert.equal(receiptRecoveryBucket('receipt_dismissed'),'dismissal');
+ });
  await test('successful v2 and v3 checkout retries preserve each schema and rounded amount',async()=>{
   reset();await localPos.putSale(v2);await localPos.putSale(v3);for(const sale of [v2,v3])modes.set(sale.id,'posted');
   const summary=await Store.syncSales({feedback:false});
@@ -107,7 +115,13 @@ try{
  });
  await test('recipe timing review UI requires and explains the structured recipe choice',async()=>{
   const source=await readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8');
+  assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'dismissal'/);
+  assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'retry'/);
+  assert.match(source,/<h2>Retry sync<\/h2>/);
   assert.match(source,/receipt_review_required_recipe_timing/);
+  assert.match(source,/receipt_review_required_delayed_sync/);
+  assert.match(source,/receipt_review_required_offline_sync/);
+  assert.match(source,/receipt_review_required_offline_time/);
   assert.match(source,/<option value="current_recipe">Current recipe<\/option>/);
  assert.match(source,/<option value="captured_recipe">Recipe active when the sale was captured<\/option>/);
  assert.match(source,/:disabled="approvalBlocked"/);

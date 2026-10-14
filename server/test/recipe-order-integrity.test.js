@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { releaseOrderReservations } from '../src/customer-order-reservations.js';
 import { customerOrderTransitionExpiry } from '../src/customer-orders.js';
-import { checkout } from '../src/business.js';
+import { checkout, receiptCapturePolicy } from '../src/business.js';
 import { canonical, cartItem, createSale } from '../../src/domain/pos.js';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -60,6 +60,50 @@ test('recipe timing resolution is recorded only during pending review approval, 
   assert.match(guard, /NEW\.inventory_recipe_resolution IN \('current_recipe','captured_recipe'\)/);
   assert.match(guard, /NEW\.inventory_recipe_resolution IS NULL OR[\s\S]*coalesce\(NEW\.payload->>'offline','false'\)='true'/);
   assert.match(guard, /NEW\.reason_code<>'receipt_review_required_recipe_timing' OR[\s\S]*NEW\.inventory_recipe_resolution IN/);
+});
+
+test('delayed online receipts become historical captures without changing accepted customer orders', () => {
+  const captured = '2026-10-11T08:00:00.000Z';
+  assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-11T08:04:59.000Z'), {
+    capturedAt:new Date(captured), serverAt:new Date('2026-10-11T08:04:59.000Z'),
+    valid:true, delayedRecovery:false, historicalCapture:false,
+  });
+  assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-11T08:05:01.000Z'), {
+    capturedAt:new Date(captured), serverAt:new Date('2026-10-11T08:05:01.000Z'),
+    valid:true, delayedRecovery:true, historicalCapture:true,
+  });
+  assert.equal(receiptCapturePolicy({ date:captured, offline:true }, '2026-10-11T08:00:01.000Z').historicalCapture,true);
+  assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-14T08:00:00.000Z',true), {
+    capturedAt:new Date(captured), serverAt:new Date('2026-10-14T08:00:00.000Z'),
+    valid:true, delayedRecovery:false, historicalCapture:false,
+  });
+  const source = receiptCapturePolicy.toString();
+  assert.match(source,/Math\.abs/,'future device-clock skew and old retries share review protection');
+});
+
+test('new offline receipts always require durable review before posting', async () => {
+  const source = await read('../src/business.js');
+  const existingTransactionBranch = source.indexOf('if (existing.rowCount)');
+  const offlineReviewGuard = source.indexOf("v.fail(409,'receipt_review_required_offline_sync')");
+  const transactionInsert = source.indexOf('INSERT INTO myfin.transactions');
+  assert.ok(existingTransactionBranch >= 0 && existingTransactionBranch < offlineReviewGuard,
+    'an exact posted replay must remain idempotent');
+  assert.ok(offlineReviewGuard < transactionInsert,
+    'offline paid intent must enter review before accounting or inventory mutation');
+  assert.match(source,/if\(!approval&&!options\.acceptedOrderQuote\)[\s\S]*receipt_review_required_offline_sync/,
+    'approval replays and accepted customer-order checkouts bypass the staging guard');
+  assert.ok(source.indexOf("receipt_review_required_offline_time") < offlineReviewGuard,
+    'an unusual offline timestamp keeps its stronger review reason');
+});
+
+test('receipt review constraints permit recipe evidence for delayed-sync recovery only', async () => {
+  const sql = await read('../../db/migrations/0034_receipt_sync_recovery.sql');
+  assert.match(sql,/DROP CONSTRAINT receipt_reviews_recipe_resolution_context/);
+  assert.match(sql,/reason_code='receipt_review_required_delayed_sync'/);
+  assert.match(sql,/coalesce\(payload->>'offline','false'\)='true' OR[\s\S]*receipt_review_required_delayed_sync/);
+  const guard = sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION myfin.protect_receipt_review'));
+  assert.match(guard,/NEW\.reason_code='receipt_review_required_delayed_sync'/);
+  assert.doesNotMatch(sql,/GRANT .*UPDATE.*inventory_source_effects/);
 });
 
 test('runtime may create and finalize recipe reservations but never delete them', async () => {

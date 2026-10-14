@@ -61,8 +61,9 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   await lockSale(c,co,id);
   const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,id]);if(!r.rowCount)v.fail(404,"not_found");const row=r.rows[0];
   if(row.status==="dismissed")v.fail(409,"receipt_dismissed");
-  const recipeTiming=row.reason_code==="receipt_review_required_recipe_timing",storedResolution=row.inventory_recipe_resolution||null;
-  if((inventoryRecipeResolution||storedResolution)&&row.payload?.offline!==true)v.fail(400,"inventory_recipe_resolution_not_applicable");
+  const recipeTiming=row.reason_code==="receipt_review_required_recipe_timing",storedResolution=row.inventory_recipe_resolution||null,
+   historicalCapture=row.payload?.offline===true||row.reason_code==="receipt_review_required_delayed_sync";
+  if((inventoryRecipeResolution||storedResolution)&&!historicalCapture)v.fail(400,"inventory_recipe_resolution_not_applicable");
   if(recipeTiming&&!inventoryRecipeResolution)v.fail(400,"inventory_recipe_resolution_required");
   if(storedResolution&&inventoryRecipeResolution&&storedResolution!==inventoryRecipeResolution)v.fail(409,"inventory_recipe_resolution_changed");
   // A different review cause can remain pending long enough for its captured

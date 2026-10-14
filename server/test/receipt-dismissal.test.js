@@ -168,6 +168,37 @@ test('recipe timing approval requires, applies, persists and exposes an inventor
  assert.equal(checkoutCalls,1);
 });
 
+test('a delayed online receipt can preserve captured-time recipe evidence during approval',async()=>{
+ const manager={id:'manager-delayed',role:'manager'},cashier={id:'cashier-delayed',username:'Cashier'},companyId='company-delayed';
+ const review={id:'delayed-sale',company_id:companyId,actor_id:cashier.id,status:'pending',
+  payload:{id:'delayed-sale',company_id:companyId,cashierId:cashier.id,items:[],offline:false},
+  reason_code:'receipt_review_required_delayed_sync',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
+ let updated=false;
+ const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-delayed'}]};
+  if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
+  if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:1,rows:[review]};
+  if(sql.includes('FROM myfin.app_identities'))return {rowCount:1,rows:[cashier]};
+  if(sql.includes('UPDATE myfin.receipt_reviews')){
+   assert.deepEqual(args,[companyId,review.id,manager.id,'Verified delayed payment','captured_recipe']);
+   updated=true;Object.assign(review,{status:'approved',inventory_recipe_resolution:args[4]});
+   return {rowCount:1,rows:[]};
+  }
+  throw Error(`Unexpected query: ${sql}`);
+ }};
+ const routes=new Map(),app={post:(path,handler)=>routes.set(path,handler),get:()=>{}};
+ registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},audit:async()=>{},
+  checkout:async(_client,actor,co,payload,approval)=>{
+   assert.deepEqual(actor,{...cashier,role:'operator',company_id:companyId});assert.equal(co,companyId);
+   assert.equal(payload,review.payload);assert.equal(approval.inventoryRecipeResolution,'captured_recipe');
+   return {...payload,date:'2026-10-11T08:00:00.000Z',businessDate:'2026-10-11'};
+  }});
+ const approve=routes.get('/api/companies/:company/receipt-reviews/:id/approve');
+ const result=await approve({params:{company:companyId,id:review.id},identity:manager,authLevel:'password',
+  authSessionId:'session-delayed',body:{reason:'Verified delayed payment',inventoryRecipeResolution:'captured_recipe'}});
+ assert.equal(result.status,'approved');assert.equal(result.receipt.businessDate,'2026-10-11');assert.equal(updated,true);
+});
+
 test('recipe shortage stays pending until replenished, then approves and replays exactly once',async()=>{
  const cashier={id:'cashier-stock',role:'operator',username:'Cashier'},manager={id:'manager-stock',role:'manager'},
   company={id:'company-stock',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};

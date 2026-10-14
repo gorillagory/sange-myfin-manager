@@ -10,6 +10,17 @@ import { registerStorefrontPublic } from './storefront-public.js';
 import { registerCustomerAccounts } from './customer-auth.js';
 import { registerCustomerOrderHistory } from './customer-order-history.js';
 
+const safeErrorClass = error => {
+  try {
+    const name = error?.constructor?.name;
+    return typeof name === 'string' && /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(name) ? name : 'UnknownError';
+  } catch { return 'UnknownError'; }
+};
+const safeSqlstate = error => {
+  try { return typeof error?.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null; }
+  catch { return null; }
+};
+
 export function buildApp({ database = null, logger = false, auth = null, authOptions = null, uploadDir = null } = {}) {
   const app = Fastify({
     logger, logController: new LogController({ disableRequestLogging: true }), trustProxy: false,
@@ -20,12 +31,18 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
   app.decorateRequest('tenant', null);
   app.addHook('onClose', async () => { await database?.close(); });
   app.addHook('preClose', async () => { closing = true; });
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     const status = error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : ['23505','23503','23514'].includes(error.code) ? 409 : 500;
+    if (status === 500) request.log.error({
+      method: request.method,
+      route: request.routeOptions?.url ?? null,
+      errorClass: safeErrorClass(error),
+      sqlstate: safeSqlstate(error)
+    });
     reply.code(status).send({ error: status === 500 ? 'internal_error' : error.code?.startsWith('FST_') ? (status === 413 ? 'payload_too_large' : 'invalid_request') : error.statusCode ? error.message : 'record_conflict' });
   });
   app.addHook('onRequest', async (req, reply) => {
-    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options','nosniff');
+    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options','nosniff').header('X-Request-ID',req.id);
     if (!authOptions || req.url.startsWith('/api/health/')) return;
     req.tenant=await requestContext(database,req,authOptions);
     if(authOptions.enforceTenantHosts&&!req.tenant)return reply.code(404).send({error:'not_found'});

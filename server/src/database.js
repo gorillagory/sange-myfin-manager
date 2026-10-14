@@ -17,7 +17,13 @@ export function createDatabase(config, { Pool = pg.Pool, onError = () => {} } = 
     async ready() {
       const result = await pool.query(`SELECT
         EXISTS (SELECT 1 FROM myfin.schema_migrations
-          WHERE version = '0033_manual_sales.sql') AS ready,
+          WHERE version = '0034_receipt_sync_recovery.sql')
+        AND has_table_privilege(current_user, 'myfin.inventory_source_effects', 'SELECT')
+        AND has_table_privilege(current_user, 'myfin.inventory_source_effects', 'INSERT')
+        AND has_table_privilege(current_user, 'myfin.stock_ledger', 'SELECT')
+        AND has_table_privilege(current_user, 'myfin.stock_ledger', 'INSERT')
+        AND has_table_privilege(current_user, 'myfin.stock_items', 'SELECT')
+        AND has_table_privilege(current_user, 'myfin.stock_items', 'UPDATE') AS ready,
         (SELECT id FROM myfin.companies LIMIT 0),
         (SELECT id FROM myfin.app_identities LIMIT 0),
         (SELECT subject FROM myfin.identity_mappings LIMIT 0),
