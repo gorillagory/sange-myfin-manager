@@ -580,7 +580,7 @@ async function advanceCampaignLifecycle(c, who, workspaceId, companyId, row, act
     [workspaceId, companyId, row.id, nextVersion, transition.to, who.id, Number(row.version)],
   );
   await appendCampaignEvent(c, {
-    workspaceId, companyId, campaignId: row.id, campaignVersion: nextVersion, eventType: action,
+    workspaceId, companyId, campaignId: row.id, campaignVersion: nextVersion, eventType: transition.to,
     fromLifecycle: row.lifecycle, toLifecycle: transition.to, actorId: who.id,
     details: { promotionState: enablePromotions ? 'enabled' : 'disabled' },
   });
@@ -608,7 +608,7 @@ async function transitionCampaign(c, who, companyId, campaignId, action, expecte
     [workspaceId, companyId, campaignId, transition.to, who.id],
   );
   await appendCampaignEvent(c, {
-    workspaceId, companyId, campaignId, campaignVersion: expectedVersion, eventType: action,
+    workspaceId, companyId, campaignId, campaignVersion: expectedVersion, eventType: transition.to,
     fromLifecycle: row.lifecycle, toLifecycle: transition.to, actorId: who.id,
   });
   return campaignOutput({ ...row, lifecycle: transition.to, updated_at: now }, now);

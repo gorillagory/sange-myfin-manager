@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
 import { buildApp } from '../src/app.js';
 import { createDatabase } from '../src/database.js';
+import { REQUIRED_RUNTIME_MIGRATION, runtimePrivilegeCheck } from '../src/runtime-privileges.js';
 import { installShutdown } from '../src/shutdown.js';
 
 const env = { PGPASSWORD: 'synthetic-secret' };
@@ -97,14 +98,14 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   const events = [];
   class FakePool extends EventEmitter {
     constructor(options) { super(); this.options = options; pool = this; }
-    async query(sql) {
-      assert.match(sql, /0034_receipt_sync_recovery\.sql/);
-      for (const [table, privileges] of [
-        ['inventory_source_effects', ['SELECT', 'INSERT']],
-        ['stock_ledger', ['SELECT', 'INSERT']],
-        ['stock_items', ['SELECT', 'UPDATE']]
-      ]) for (const privilege of privileges)
-        assert.match(sql, new RegExp(`has_table_privilege\\(current_user, 'myfin\\.${table}', '${privilege}'\\)`));
+    async query(sql, parameters) {
+      const runtimeAcl = runtimePrivilegeCheck(2);
+      assert.match(sql, /version = \$1/);
+      assert.match(sql, /has_schema_privilege\(current_user, \$2, \$3\)/);
+      assert.match(sql, /has_table_privilege\(current_user, \$\d+, \$\d+\)/);
+      assert.match(sql, /has_sequence_privilege\(current_user, \$\d+, \$\d+\)/);
+      assert.match(sql, /has_function_privilege\(current_user, \$\d+, \$\d+\)/);
+      assert.deepEqual(parameters, [REQUIRED_RUNTIME_MIGRATION, ...runtimeAcl.parameters]);
       return { rows:[{ ready:true }] };
     }
     async end() { closes++; }
@@ -118,11 +119,14 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   await Promise.all([db.close(), db.close()]);
   assert.equal(closes, 1);
 });
-test('database readiness fails closed when migrations or critical recipe checkout grants are missing', async () => {
-  for (const ready of [false, null, undefined]) {
+test('database readiness fails closed when migrations or any runtime ACL check fails', async () => {
+  for (const ready of [false, null, undefined, 'throw']) {
     class FakePool extends EventEmitter {
       on() {}
-      async query() { return { rows:ready === undefined ? [] : [{ ready }] }; }
+      async query() {
+        if (ready === 'throw') throw Error('sensitive_database_detail');
+        return { rows:ready === undefined ? [] : [{ ready }] };
+      }
       async end() {}
     }
     const db = createDatabase({}, { Pool:FakePool });

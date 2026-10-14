@@ -59,6 +59,12 @@ GRANT USAGE,SELECT ON SEQUENCE myfin.marketing_campaign_events_sequence_seq TO m
 GRANT SELECT,INSERT ON myfin.workspace_loyalty_setting_versions,myfin.loyalty_point_events,
  myfin.loyalty_sale_award_batches,myfin.loyalty_point_reservation_events TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.loyalty_point_reservations TO myfin_prod_runtime;
+-- PostgreSQL locking reads require UPDATE even when immutable evidence rows are never changed.
+GRANT UPDATE ON myfin.inventory_source_effects,myfin.purchase_order_lines,
+ myfin.goods_receipts,myfin.goods_receipt_lines,myfin.pricing_snapshots,
+ myfin.promotion_redemptions,myfin.loyalty_point_events,myfin.loyalty_sale_award_batches,
+ myfin.customer_order_lines,myfin.inventory_recipe_versions,
+ myfin.inventory_recipe_components TO myfin_prod_runtime;
 GRANT EXECUTE ON FUNCTION myfin.reserve_order_promotions(text,text,text,timestamptz),
  myfin.extend_order_promotion_reservations(text,text,timestamptz),
  myfin.release_order_promotion_reservations(text,text,text),

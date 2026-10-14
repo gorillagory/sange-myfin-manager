@@ -257,8 +257,49 @@ test('publish atomically clones complete promotion rules, advances exact links, 
   assert.match(clone.sql, /reward_product_id,reward_variant_id,reward_quantity_milli/);
   assert.equal(clone.params[5], true);
   const event = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.marketing_campaign_events'));
-  assert.equal(event.params[4], 'publish');
+  assert.equal(event.params[4], 'published');
   assert.equal(event.params[6], 'published');
+});
+
+test('campaign transitions append event types accepted by the database constraint', async t => {
+  for (const { action, from, to, versions } of [
+    { action: 'publish', from: 'draft', to: 'published', versions: [1, 2] },
+    { action: 'pause', from: 'published', to: 'paused', versions: [1, 2] },
+    { action: 'complete', from: 'paused', to: 'completed', versions: [1, 2] },
+    { action: 'archive', from: 'completed', to: 'archived', versions: [1, 1] },
+  ]) await t.test(action, async () => {
+    const fixture = register({ query(sql) {
+      if (sql.startsWith('SELECT workspace_id'))
+        return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+      if (sql.includes('FROM myfin.marketing_campaigns campaign') && sql.includes('FOR UPDATE OF campaign'))
+        return { rows: [campaignRow({
+          version: String(versions[0]), lifecycle: from, promotion_links: [],
+          ends_at: '2099-11-20T00:00:00.000Z',
+        })], rowCount: 1 };
+      if (sql.includes('INSERT INTO myfin.marketing_campaign_versions'))
+        return { rows: [], rowCount: 1 };
+      if (sql.includes('INSERT INTO myfin.marketing_campaign_version_audiences'))
+        return { rows: [], rowCount: 1 };
+      if (sql.includes('UPDATE myfin.marketing_campaigns'))
+        return { rows: [], rowCount: 1 };
+      if (sql.includes('INSERT INTO myfin.marketing_campaign_events'))
+        return { rows: [], rowCount: 1 };
+      if (sql.includes('FROM myfin.marketing_campaigns campaign'))
+        return { rows: [campaignRow({
+          version: String(versions[1]), lifecycle: to, promotion_links: [],
+          ends_at: '2099-11-20T00:00:00.000Z',
+        })], rowCount: 1 };
+      throw Error(`unexpected query: ${sql}`);
+    } });
+
+    const result = await fixture.routes.get(
+      `POST /api/companies/:company/marketing/campaigns/:campaignId/${action}`,
+    )(fixture.request({ expectedVersion: versions[0] }, { campaignId: 'campaign-a' }));
+
+    assert.equal(result.lifecycle, to);
+    const event = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.marketing_campaign_events'));
+    assert.deepEqual(event.params.slice(4, 7), [to, from, to]);
+  });
 });
 
 test('targeted campaign publishes after preserving the exact audience version link', async () => {
