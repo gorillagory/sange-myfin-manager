@@ -39,6 +39,9 @@ test('recovery plan strips device-only fields, validates paid facts and assigns 
   assert.equal(result.receipts[0].sale.companySnapshot,undefined);
   const old=receipt('offline-old',{offline:true,date:'2026-10-10T08:00:00.000Z'});
   assert.deepEqual(plan([old]).reasons,{receipt_review_required_offline_time:1});
+  const delayedOld=receipt('delayed-old',{date:'2026-10-10T08:00:00.000Z'}),
+    delayedFuture=receipt('delayed-future',{date:'2026-10-14T12:05:01.000Z'});
+  assert.deepEqual(plan([delayedOld,delayedFuture]).reasons,{receipt_review_required_offline_time:2});
 });
 
 test('recovery plan fails closed on changed totals, duplicate IDs and mixed scope',()=>{

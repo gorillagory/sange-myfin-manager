@@ -11,6 +11,7 @@ import { stockModule } from "./stock";
 import { companiesModule } from "./companies";
 import { authModule } from "./auth";
 import { normalizeProduct } from "../domain/pos";
+import { BULK_RECEIPT_REVIEW_LIMIT } from "../domain/receiptReviews";
 import { localPos } from "../services/posLocal";
 import { postSale } from "../services/checkout";
 import { checkoutPayload } from "../services/postSale";
@@ -598,6 +599,34 @@ export const Store = reactive({
     await this.refreshReceiptReviews();
     await this.refreshPostedSales([result.receipt]);
     return result;
+  },
+  async approveAllEligibleReceiptReviews(reviewIds, reason) {
+    if (!state.online || !this.can("receiptReviewsResolve"))
+      throw new Error("An online manager or owner must approve these payments.");
+    const explanation = reason.trim();
+    if (explanation.length < 3)
+      throw new Error("Explain why these original recorded payments are approved (at least 3 characters).");
+    if (explanation.length > 1000)
+      throw new Error("Keep the batch approval reason within 1000 characters.");
+    const ids = [...new Set((Array.isArray(reviewIds) ? reviewIds : []).filter(id => typeof id === "string" && id))];
+    if (!ids.length) throw new Error("No eligible payments are selected for approval.");
+    if (ids.length > BULK_RECEIPT_REVIEW_LIMIT)
+      throw new Error(`Approve no more than ${BULK_RECEIPT_REVIEW_LIMIT} payments at once.`);
+    const co = state.selectedCompany?.id;
+    if (!co) throw new Error("Choose a workspace first.");
+    const result = await api("/companies/" + encodeURIComponent(co) + "/receipt-reviews/approve-all", {
+      method: "POST", body: { reviewIds: ids, reason: explanation },
+    });
+    const approved = Array.isArray(result?.approved) ? result.approved : [];
+    const skipped = Array.isArray(result?.skipped) ? result.skipped : [];
+    const receipts = approved.map(row => row?.receipt).filter(Boolean);
+    // The response is the durable acknowledgement. A follow-up refresh must not
+    // turn a successful batch into an ambiguous retry prompt.
+    await Promise.all([
+      this.refreshReceiptReviews().catch(() => null),
+      receipts.length ? this.refreshPostedSales(receipts).catch(() => null) : Promise.resolve(),
+    ]);
+    return { approved, skipped };
   },
   async dismissReceiptReview(id, reason) {
     if (!state.online || !this.can("receiptReviewsResolve")) throw new Error("An online manager or owner must review this payment.");

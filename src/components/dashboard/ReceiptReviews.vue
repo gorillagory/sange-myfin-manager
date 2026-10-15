@@ -2,10 +2,12 @@
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { Store } from '../../store';
 import { receiptRecoveryBucket } from '../../domain/offlinePolicy';
-import { money } from '../../domain/pos';
+import { cents, money } from '../../domain/pos';
+import { BULK_RECEIPT_REVIEW_LIMIT, canBulkApproveReceipt, receiptBulkApprovalBlock } from '../../domain/receiptReviews';
 import Modal from '../ui/EditionModal.vue';
 
 const busy = ref(false), error = ref(''), selected = ref(null), reason = ref(''), inventoryRecipeResolution = ref('');
+const bulkApprovalOpen = ref(false), bulkRows = ref([]), bulkExcludedRows = ref([]), bulkReason = ref(''), bulkConfirmed = ref(false), bulkError = ref(''), bulkUncertain = ref(false), bulkOutcome = ref(null);
 const recipeResolutions = ['current_recipe', 'captured_recipe'];
 const rows = computed(() => Store.state.receiptReviews || []);
 const unlistedSales = computed(() => Store.state.pendingSales.filter(sale =>
@@ -18,6 +20,18 @@ const ownCanRequestDismissal = computed(() => unlistedSales.value.filter(sale =>
 const ownNeedsSync = computed(() => unlistedSales.value.filter(sale => receiptRecoveryBucket(sale.syncError) === 'retry'));
 const canResolve = computed(() => Store.can('receiptReviewsResolve'));
 const companySelected = computed(() => Boolean(Store.state.selectedCompany?.id));
+const pendingRows = computed(() => rows.value.filter(row => row.status === 'pending'));
+const bulkEligibleRows = computed(() => pendingRows.value.filter(canBulkApproveReceipt));
+const bulkIneligibleRows = computed(() => pendingRows.value.filter(row => !canBulkApproveReceipt(row)));
+const bulkTotal = computed(() => bulkRows.value.reduce((total, row) => total + cents(row.sale?.total || 0), 0) / 100);
+const bulkExclusionSummary = computed(() => {
+  const counts = new Map();
+  for (const row of bulkExcludedRows.value) {
+    const label = receiptBulkApprovalBlock(row);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts].map(([label, count]) => `${count} × ${label.toLowerCase()}`).join(' · ');
+});
 const status = computed(() => Store.state.online
   ? 'A confirmed review handoff moves the full paid record to the server and clears the original device queue. Managers and workspace owners can then approve or dismiss it.'
   : 'Reconnect to request or resolve a review. Paid receipts remain saved on the original device.');
@@ -40,16 +54,18 @@ function reasonText(code) {
     receipt_review_required_product_changed: 'The original product option changed; reconcile the catalog before approval',
     receipt_review_required_delayed_sync: 'This payment reached the server later; approval preserves its original sale date',
     receipt_review_required_offline_sync: 'This payment was captured offline and is ready for manager approval',
-    receipt_review_required_offline_time: 'The offline capture time is unusual; verify the original payment date before approval',
+    receipt_review_required_offline_time: 'The recorded capture time is unusual; verify the original payment date before approval',
     receipt_review_required_recipe_timing: 'The inventory recipe changed after this offline sale was captured',
     receipt_review_required_recipe_stock: 'Recipe ingredients are below the amount required by this paid sale',
     receipt_review_required_record_conflict: 'The server found a conflicting financial or inventory record',
+    manager_override_reason_required: 'The recorded discount needs an individual manager reason',
     stock_unavailable: 'Stock needs review',
     price_changed: 'Catalog price changed',
     tax_changed: 'Tax policy changed',
     merchant_changed: 'Receipt details changed',
     receipt_review_required: 'Recorded payment differs from current checkout policy',
     cashier_requested_dismissal: 'Original cashier requested dismissal after reconciliation',
+    stock_reserved_or_unavailable: 'Stock is reserved for another order or no longer available',
   })[code] || 'Recorded payment needs review against the current checkout policy';
 }
 
@@ -60,8 +76,23 @@ function recipeResolutionText(resolution) {
   })[resolution] || '';
 }
 
+function bulkSkipText(item) {
+  if (['approved', 'posted'].includes(item?.status)) return 'Already approved by another manager';
+  if (item?.status === 'dismissed') return 'Already dismissed';
+  const code = item?.error || item?.reasonCode;
+  return ({
+    not_found: 'Review no longer exists',
+    original_cashier_unavailable: 'Original cashier account is unavailable',
+    receipt_review_required_recipe_timing: 'Inventory recipe choice is now required',
+    receipt_review_required_recipe_stock: 'Recipe ingredients are still unavailable',
+    receipt_review_required_product_changed: 'A product or option still needs reconciliation',
+    receipt_review_required_record_conflict: 'A financial or inventory conflict remains',
+    receipt_dismissed: 'The payment was dismissed',
+  })[code] || reasonText(code);
+}
+
 async function refresh({ verifyActor = true, quiet = false } = {}) {
-  if (!companySelected.value) return;
+  if (!companySelected.value) return false;
   if (!quiet) error.value = '';
   try {
     if (verifyActor) await Store.refreshActor();
@@ -70,8 +101,10 @@ async function refresh({ verifyActor = true, quiet = false } = {}) {
     // company hydration, and server reviews alone cannot reveal that row.
     await Store.refreshPending();
     await Store.refreshReceiptReviews();
+    return true;
   } catch (e) {
     if (!quiet) error.value = e.message;
+    return false;
   }
 }
 async function request(sale) {
@@ -101,6 +134,74 @@ async function requestDismissal(sale) {
   } finally { busy.value = false; }
 }
 function choose(row) { selected.value = row; reason.value = ''; inventoryRecipeResolution.value = ''; error.value = ''; }
+async function openBulkApproval() {
+  if (busy.value || !canResolve.value || !Store.state.online) return;
+  busy.value = true;
+  bulkOutcome.value = null;
+  const refreshed = await refresh();
+  busy.value = false;
+  if (!refreshed) return;
+  if (!canResolve.value) {
+    error.value = 'Your account no longer has permission to approve payment reviews.';
+    return;
+  }
+  if (!bulkEligibleRows.value.length) {
+    error.value = 'No pending payments are currently eligible for bulk approval.';
+    return;
+  }
+  if (bulkEligibleRows.value.length > BULK_RECEIPT_REVIEW_LIMIT) {
+    error.value = `The queue is too large to approve at once. Refresh after resolving some payments individually.`;
+    return;
+  }
+  bulkRows.value = bulkEligibleRows.value.map(row => ({ ...row, sale: { ...row.sale } }));
+  bulkExcludedRows.value = bulkIneligibleRows.value.map(row => ({ ...row }));
+  bulkReason.value = '';
+  bulkConfirmed.value = false;
+  bulkError.value = '';
+  bulkUncertain.value = false;
+  bulkApprovalOpen.value = true;
+}
+function closeBulkApproval() {
+  if (!busy.value) bulkApprovalOpen.value = false;
+}
+async function approveAllEligible() {
+  if (busy.value) return;
+  const explanation = bulkReason.value.trim();
+  if (explanation.length < 3) {
+    bulkError.value = 'Enter one approval reason of at least 3 characters for this batch.';
+    return;
+  }
+  if (!bulkConfirmed.value) {
+    bulkError.value = 'Confirm that you reviewed the eligible payment total before approving.';
+    return;
+  }
+  busy.value = true;
+  bulkError.value = '';
+  try {
+    const result = await Store.approveAllEligibleReceiptReviews(bulkRows.value.map(row => row.id), explanation);
+    const approved = result.approved.length, skipped = result.skipped.length;
+    const pending = result.skipped.filter(row => row?.status === 'pending').length;
+    const noLongerPending = skipped - pending;
+    const skippedReasons = [...new Set(result.skipped.filter(row => row?.status === 'pending').map(bulkSkipText))].slice(0, 3);
+    bulkOutcome.value = { approved, skipped, pending, noLongerPending, skippedReasons };
+    bulkApprovalOpen.value = false;
+    const outcome = [`${approved} approved`];
+    if (pending) outcome.push(`${pending} still pending`);
+    if (noLongerPending) outcome.push(`${noLongerPending} already resolved or unavailable`);
+    Store.notify(outcome.join('; ') + '.', pending ? 'warning' : 'success');
+  } catch (e) {
+    bulkUncertain.value = Boolean(e.network);
+    bulkError.value = e.network
+      ? 'The server response was interrupted. Refresh reviews before retrying so you can see which payments were posted.'
+      : e.message || 'Bulk approval could not be confirmed. Refresh the queue before trying again.';
+  } finally { busy.value = false; }
+}
+async function reconcileBulkStatus() {
+  if (busy.value) return;
+  bulkApprovalOpen.value = false;
+  bulkUncertain.value = false;
+  await refresh();
+}
 async function resolve(decision) {
   if (busy.value || !selected.value) return;
   error.value = '';
@@ -154,7 +255,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', visibilityChanged);
   window.clearInterval(pollTimer);
 });
-watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refresh(); });
+watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; bulkApprovalOpen.value = false; bulkOutcome.value = null; refresh(); });
 </script>
 
 <template>
@@ -165,7 +266,12 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
         <h1>Resolve recorded payments.</h1>
         <p>{{ canResolve ? 'Check the original payment before approving or dismissing it.' : 'Track saved paid receipts that need a manager decision.' }}</p>
       </div>
-      <button class="ed-btn" :disabled="busy || !Store.state.online || !companySelected" @click="refresh()">Refresh reviews</button>
+      <div class="ed-actions">
+        <button v-if="canResolve" class="ed-btn primary" :aria-label="`Approve all ${bulkEligibleRows.length} eligible payments`" :disabled="busy || !Store.state.online || !companySelected || !bulkEligibleRows.length" @click="openBulkApproval">
+          Approve all eligible<span v-if="bulkEligibleRows.length" class="ed-pill">{{ bulkEligibleRows.length }}</span>
+        </button>
+        <button class="ed-btn" :disabled="busy || !Store.state.online || !companySelected" @click="refresh()">Refresh reviews</button>
+      </div>
     </header>
     <div v-if="!companySelected" class="ed-empty">
       <h3>Choose a company to review payments.</h3>
@@ -174,6 +280,15 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
     <template v-else>
       <div class="ed-notice warning">{{ status }}</div>
       <p v-if="error" class="ed-alert" role="alert">{{ error }}</p>
+      <div v-if="bulkOutcome" class="ed-notice" :class="{ warning: bulkOutcome.pending }" role="status">
+        <div class="mf-review-bulk-outcome">
+          <strong v-if="bulkOutcome.approved">{{ bulkOutcome.approved }} {{ bulkOutcome.approved === 1 ? 'payment was' : 'payments were' }} approved and posted.</strong>
+          <strong v-else>No payments were approved.</strong>
+          <span v-if="bulkOutcome.pending">{{ bulkOutcome.pending }} {{ bulkOutcome.pending === 1 ? 'payment remains' : 'payments remain' }} pending{{ bulkOutcome.skippedReasons.length ? ': ' + bulkOutcome.skippedReasons.join('; ') : '' }}. Review those payments individually.</span>
+          <span v-if="bulkOutcome.noLongerPending">{{ bulkOutcome.noLongerPending }} {{ bulkOutcome.noLongerPending === 1 ? 'payment was' : 'payments were' }} already resolved or no longer available.</span>
+          <span v-if="!bulkOutcome.skipped">The server rechecked every payment before recording it.</span>
+        </div>
+      </div>
 
     <section v-if="ownNeedsReview.length">
       <h2>Ready to request review</h2>
@@ -217,6 +332,7 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
             <td>
               <span class="ed-pill">{{ isPosted(row) ? 'Approved and posted' : isDismissed(row) ? 'Reviewed · not recorded' : 'Awaiting review' }}</span>
               <small>{{ reasonText(row.reasonCode) }}</small>
+              <small v-if="isPending(row) && canResolve && !canBulkApproveReceipt(row)">Excluded from bulk approval · {{ receiptBulkApprovalBlock(row) }}</small>
               <small v-if="row.inventoryRecipeResolution">Inventory recipe: {{ recipeResolutionText(row.inventoryRecipeResolution) }}</small>
               <small v-if="isDismissed(row) && row.dismissalReason">Dismissal reason: {{ row.dismissalReason }}</small>
             </td>
@@ -261,6 +377,48 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; refr
         <button class="ed-btn primary" :disabled="approvalBlocked" @click="resolve('approve')">{{ busy ? 'Confirming…' : 'Approve original payment' }}</button>
       </template>
     </Modal>
+
+    <Modal v-if="bulkApprovalOpen" title="Approve all eligible payments" :busy="busy" wide @close="closeBulkApproval">
+      <div class="ed-notice warning">
+        <div><strong>This records each saved payment and deducts its stock once.</strong>No customer is charged. Only routine offline or delayed sync receipts are eligible. The server rechecks every receipt and leaves any payment that now needs an individual decision pending.</div>
+      </div>
+      <div class="mf-review-bulk-summary" aria-live="polite">
+        <div><span>Eligible payments</span><strong>{{ bulkRows.length }}</strong></div>
+        <div><span>Recorded total</span><strong>{{ money(bulkTotal, currency(bulkRows[0]?.sale || {})) }}</strong></div>
+        <div><span>Excluded</span><strong>{{ bulkExcludedRows.length }}</strong></div>
+      </div>
+      <p v-if="bulkExcludedRows.length" class="ed-muted mf-review-bulk-exclusions">Excluded from this batch: {{ bulkExclusionSummary }}. Resolve these one at a time.</p>
+      <label class="ed-field">
+        <span>Reason for approving this batch</span>
+        <textarea v-model="bulkReason" rows="3" maxlength="1000" :disabled="busy" placeholder="Explain why these original payments can be posted together."></textarea>
+        <small>This reason is recorded against every payment approved in this batch.</small>
+      </label>
+      <label class="ed-check mf-review-bulk-confirm">
+        <input v-model="bulkConfirmed" type="checkbox" :disabled="busy">
+        <span>I reviewed the {{ bulkRows.length }} eligible payments and their total of {{ money(bulkTotal, currency(bulkRows[0]?.sale || {})) }}.</span>
+      </label>
+      <p v-if="bulkError" class="ed-alert" role="alert">{{ bulkError }}</p>
+      <template #actions>
+        <button class="ed-btn" :disabled="busy" @click="closeBulkApproval">Cancel</button>
+        <button v-if="bulkUncertain" class="ed-btn primary" :disabled="busy || !Store.state.online" @click="reconcileBulkStatus">Refresh approval status</button>
+        <button v-else class="ed-btn primary" :disabled="busy || bulkReason.trim().length < 3 || !bulkConfirmed" @click="approveAllEligible">
+          {{ busy ? 'Approving payments…' : `Approve ${bulkRows.length} eligible ${bulkRows.length === 1 ? 'payment' : 'payments'}` }}
+        </button>
+      </template>
+    </Modal>
     </template>
   </div>
 </template>
+
+<style scoped>
+.mf-review-bulk-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-block:1px solid var(--ed-line);margin:22px 0}
+.mf-review-bulk-summary>div{display:flex;flex-direction:column;gap:5px;padding:18px}
+.mf-review-bulk-summary>div+div{border-left:1px solid var(--ed-line)}
+.mf-review-bulk-summary span{color:var(--ed-muted);font-size:11px}
+.mf-review-bulk-summary strong{font-size:24px;font-weight:500}
+.mf-review-bulk-exclusions{font-size:11px;margin:-7px 0 22px}
+.mf-review-bulk-confirm{align-items:flex-start;margin-top:18px}
+.mf-review-bulk-confirm span{padding-top:3px;font-size:12px;line-height:1.5}
+.mf-review-bulk-outcome span{display:block}
+@media(max-width:600px){.mf-review-bulk-summary{grid-template-columns:1fr}.mf-review-bulk-summary>div{padding:13px 0}.mf-review-bulk-summary>div+div{border-left:0;border-top:1px solid var(--ed-line)}}
+</style>

@@ -6,8 +6,8 @@ import { businessDate, canonical, cents, saleTotalsFor } from '../../src/domain/
 import { safePaidSale } from '../../src/domain/offlinePolicy.js';
 
 const MAX_EXPORT_BYTES = 10 * 1024 * 1024;
-const OFFLINE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
-const OFFLINE_AGE_LIMIT_MS = 72 * 60 * 60 * 1000;
+const CAPTURE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+const CAPTURE_AGE_LIMIT_MS = 72 * 60 * 60 * 1000;
 const DELAYED_RECEIPT_MS = 5 * 60 * 1000;
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -82,12 +82,10 @@ function recoveryReason(sale, serverNow) {
   const capturedAt = new Date(sale.date), serverAt = new Date(serverNow);
   if (!Number.isFinite(capturedAt.getTime()) || !Number.isFinite(serverAt.getTime()))
     fail('invalid_receipt_recovery_time');
-  if (sale.offline === true) {
-    if (capturedAt.getTime() > serverAt.getTime() + OFFLINE_FUTURE_TOLERANCE_MS ||
-        serverAt.getTime() - capturedAt.getTime() > OFFLINE_AGE_LIMIT_MS)
-      return 'receipt_review_required_offline_time';
-    return 'receipt_review_required_offline_sync';
-  }
+  const ageMs=serverAt.getTime()-capturedAt.getTime();
+  if (ageMs < -CAPTURE_FUTURE_TOLERANCE_MS || ageMs > CAPTURE_AGE_LIMIT_MS)
+    return 'receipt_review_required_offline_time';
+  if (sale.offline === true) return 'receipt_review_required_offline_sync';
   if (Math.abs(serverAt.getTime() - capturedAt.getTime()) <= DELAYED_RECEIPT_MS)
     fail('receipt_recovery_not_historical');
   return 'receipt_review_required_delayed_sync';
@@ -203,4 +201,3 @@ export async function applyReceiptRecoveryPlan(client, plan, { apply = false } =
     reasons:plan.reasons,
   };
 }
-

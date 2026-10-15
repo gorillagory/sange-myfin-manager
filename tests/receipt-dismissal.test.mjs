@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { createSale,cartItem,totalsFor,cents } from '../src/domain/pos.js';
+import { canBulkApproveReceipt,receiptBulkApprovalBlock } from '../src/domain/receiptReviews.js';
 
 const storage=new Map();
 globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
@@ -38,6 +39,13 @@ globalThis.fetch=async(path,options={})=>{
  if(path.endsWith('/receipt-dismissal-requests')){
   const sale=JSON.parse(options.body).sale,mode=modes.get(sale.id);
   return response({id:sale.id,status:mode==='posted'?'posted':mode==='dismissed'?'dismissed':'pending',reasonCode:'cashier_requested_dismissal',...(mode==='posted'?{receipt:sale}:{})});
+ }
+ if(path.endsWith('/receipt-reviews/approve-all')){
+  const body=JSON.parse(options.body);
+  return response({
+   approved:body.reviewIds.slice(0,1).map(id=>({id,status:'approved',inventoryRecipeResolution:null,receipt:{id,company_id:company.id}})),
+   skipped:body.reviewIds.slice(1).map(id=>({id,status:'pending',reasonCode:'receipt_review_required_recipe_stock'})),
+  });
  }
  if(path.endsWith('/approve')){
   const body=JSON.parse(options.body);
@@ -82,7 +90,7 @@ try{
  await test('receipt recovery keeps infrastructure failures in retry sync and reserves dismissal for a reconciled receipt',()=>{
   for(const error of [undefined,'internal_error','network_error','Network unavailable','unexpected_checkout'])
    assert.equal(receiptRecoveryBucket(error),'retry',String(error));
-  for(const error of ['receipt_review_required','receipt_review_required_pricing_policy','stock_unavailable','record_conflict'])
+  for(const error of ['receipt_review_required','receipt_review_required_pricing_policy','stock_unavailable','stock_reserved_or_unavailable','record_conflict'])
    assert.equal(receiptRecoveryBucket(error),'review',error);
   assert.equal(receiptRecoveryBucket('receipt_dismissed'),'dismissal');
  });
@@ -113,6 +121,36 @@ try{
    reason:'Use captured recipe',inventoryRecipeResolution:'captured_recipe',
   }]);
  });
+ await test('bulk receipt approval sends one reviewed snapshot and reports partial outcomes',async()=>{
+  reset();Store.state.currentUser={uid:'receipt-manager',id:'receipt-manager',role:'manager',company_id:company.id};
+  actor={...Store.state.currentUser};
+  Store.state.receiptReviews=[
+   {id:'offline-sale',status:'pending',reasonCode:'receipt_review_required_offline_sync'},
+   {id:'delayed-sale',status:'pending',reasonCode:'receipt_review_required_delayed_sync'},
+  ];
+  await assert.rejects(Store.approveAllEligibleReceiptReviews([], 'Reviewed batch'),/No eligible payments/);
+  await assert.rejects(Store.approveAllEligibleReceiptReviews(['offline-sale'], '  '),/at least 3 characters/);
+  await assert.rejects(Store.approveAllEligibleReceiptReviews(['offline-sale'], 'x'.repeat(1001)),/within 1000 characters/);
+  const result=await Store.approveAllEligibleReceiptReviews(['offline-sale','delayed-sale','offline-sale'],'  Verified original paid receipts  ');
+  assert.deepEqual(sent('/receipt-reviews/approve-all'),[{
+   reviewIds:['offline-sale','delayed-sale'],reason:'Verified original paid receipts',
+  }]);
+  assert.deepEqual(result.approved.map(row=>row.id),['offline-sale']);
+  assert.deepEqual(result.skipped.map(row=>row.id),['delayed-sale']);
+ });
+ await test('bulk receipt eligibility is an explicit safe allowlist',()=>{
+  for(const reasonCode of ['receipt_review_required_offline_sync','receipt_review_required_delayed_sync'])
+   assert.equal(canBulkApproveReceipt({status:'pending',reasonCode}),true,reasonCode);
+  for(const reasonCode of [
+   'receipt_review_required_offline_time','receipt_review_required_pricing_policy',
+   'receipt_review_required_merchant_changed','receipt_review_required_product_changed',
+   'receipt_review_required_recipe_timing','receipt_review_required_recipe_stock',
+   'receipt_review_required_record_conflict','manager_override_reason_required',
+   'stock_unavailable','stock_reserved_or_unavailable','cashier_requested_dismissal','new_unknown_review_reason',undefined,
+  ])assert.equal(canBulkApproveReceipt({status:'pending',reasonCode}),false,String(reasonCode));
+  assert.equal(canBulkApproveReceipt({status:'approved',reasonCode:'receipt_review_required_offline_sync'}),false);
+  assert.equal(receiptBulkApprovalBlock({status:'pending',reasonCode:'new_unknown_review_reason'}),'Individual verification required');
+ });
  await test('recipe timing review UI requires and explains the structured recipe choice',async()=>{
   const source=await readFile(new URL('../src/components/dashboard/ReceiptReviews.vue',import.meta.url),'utf8');
   assert.match(source,/receiptRecoveryBucket\(sale\.syncError\) === 'dismissal'/);
@@ -130,7 +168,13 @@ try{
  assert.match(source,/approveReceiptReview\(selected\.value\.id, explanation, inventoryRecipeResolution\.value\)/);
   assert.match(source,/row\?\.recipeTimingRequired === true/);
   assert.match(source,/e\.message === 'receipt_review_required_recipe_timing'/);
-  assert.match(source,/selected\.value = \{ \.\.\.selected\.value, recipeTimingRequired: true \}/);
+ assert.match(source,/selected\.value = \{ \.\.\.selected\.value, recipeTimingRequired: true \}/);
+ assert.match(source,/Approve all eligible/);
+ assert.match(source,/Store\.approveAllEligibleReceiptReviews\(bulkRows\.value\.map\(row => row\.id\), explanation\)/);
+ assert.match(source,/This records each saved payment and deducts its stock once/);
+ assert.match(source,/This reason is recorded against every payment approved in this batch/);
+ assert.match(source,/Refresh approval status/);
+ assert.match(source,/server response was interrupted/);
  });
  await test('payment reviews refresh across devices and expose server pending reviews in navigation',async()=>{
   const [reviews,shell,pos,preview]=await Promise.all([

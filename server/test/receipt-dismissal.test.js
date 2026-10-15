@@ -96,6 +96,7 @@ test('only validated paid intents and whitelisted constraint failures enter auto
   },audit:async()=>{},
   checkout:async(_client,_actor,_co,sale)=>{
    if(sale.id==='safe-constraint')throw Object.assign(Error('private constraint detail'),{code:'23505'});
+   if(sale.id==='reserved-stock')throw Object.assign(Error('stock_reserved_or_unavailable'),{statusCode:409});
    throw Object.assign(Error('database unavailable'),{code:'57P01'});
   }});
  const submit=routes.get('/api/companies/:company/receipt-reviews'),request=(sale,extra={})=>submit({
@@ -103,13 +104,15 @@ test('only validated paid intents and whitelisted constraint failures enter auto
  });
  const pending=await request(make('safe-constraint'));
  assert.equal(pending.reasonCode,'receipt_review_required_record_conflict');assert.equal(inserts,1);
- await assert.rejects(request(make('internal-failure')),error=>error.code==='57P01');assert.equal(inserts,1);
- await assert.rejects(request(make('invalid-conflict-code'),{conflictCode:'internal_error'}),error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,1);
- await assert.rejects(request({...make('wrong-actor'),cashierId:'somebody-else'}),error=>error.statusCode===403&&error.message==='invalid_sale_actor');assert.equal(inserts,1);
+ const reserved=await request(make('reserved-stock'));
+ assert.equal(reserved.reasonCode,'stock_reserved_or_unavailable');assert.equal(inserts,2);
+ await assert.rejects(request(make('internal-failure')),error=>error.code==='57P01');assert.equal(inserts,2);
+ await assert.rejects(request(make('invalid-conflict-code'),{conflictCode:'internal_error'}),error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,2);
+ await assert.rejects(request({...make('wrong-actor'),cashierId:'somebody-else'}),error=>error.statusCode===403&&error.message==='invalid_sale_actor');assert.equal(inserts,2);
  await assert.rejects(submit({params:{company:company.id},identity:{...actor,id:'denied-cashier'},authLevel:'password',authSessionId:'session-safe-conflict',body:{sale:{...make('denied-sale'),cashierId:'denied-cashier'}}}),
-  error=>error.statusCode===403&&error.message==='access_denied');assert.equal(inserts,1);
+   error=>error.statusCode===403&&error.message==='access_denied');assert.equal(inserts,2);
  await assert.rejects(submit({params:{company:company.id},identity:actor,authLevel:'password',authSessionId:'session-safe-conflict',body:{sale:{}}}),
-  error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,1);
+   error=>error.statusCode===400&&error.message==='invalid_input');assert.equal(inserts,2);
 });
 
 test('recipe timing approval requires, applies, persists and exposes an inventory recipe resolution',async()=>{

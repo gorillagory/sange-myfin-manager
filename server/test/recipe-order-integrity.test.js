@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { releaseOrderReservations } from '../src/customer-order-reservations.js';
 import { customerOrderTransitionExpiry } from '../src/customer-orders.js';
 import { checkout, receiptCapturePolicy } from '../src/business.js';
-import { canonical, cartItem, createSale } from '../../src/domain/pos.js';
+import { canonical, cartItem, createSale, businessDate } from '../../src/domain/pos.js';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
@@ -66,22 +66,24 @@ test('delayed online receipts become historical captures without changing accept
   const captured = '2026-10-11T08:00:00.000Z';
   assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-11T08:04:59.000Z'), {
     capturedAt:new Date(captured), serverAt:new Date('2026-10-11T08:04:59.000Z'),
-    valid:true, delayedRecovery:false, historicalCapture:false,
+    valid:true, delayedRecovery:false, historicalCapture:false, unusualCaptureTime:false,
   });
   assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-11T08:05:01.000Z'), {
     capturedAt:new Date(captured), serverAt:new Date('2026-10-11T08:05:01.000Z'),
-    valid:true, delayedRecovery:true, historicalCapture:true,
+    valid:true, delayedRecovery:true, historicalCapture:true, unusualCaptureTime:false,
   });
   assert.equal(receiptCapturePolicy({ date:captured, offline:true }, '2026-10-11T08:00:01.000Z').historicalCapture,true);
   assert.deepEqual(receiptCapturePolicy({ date:captured, offline:false }, '2026-10-14T08:00:00.000Z',true), {
     capturedAt:new Date(captured), serverAt:new Date('2026-10-14T08:00:00.000Z'),
-    valid:true, delayedRecovery:false, historicalCapture:false,
+    valid:true, delayedRecovery:false, historicalCapture:false, unusualCaptureTime:false,
   });
+  assert.equal(receiptCapturePolicy({date:captured,offline:false},'2026-10-14T08:00:00.001Z').unusualCaptureTime,true);
+  assert.equal(receiptCapturePolicy({date:'2026-10-11T08:05:00.001Z',offline:false},captured).unusualCaptureTime,true);
   const source = receiptCapturePolicy.toString();
   assert.match(source,/Math\.abs/,'future device-clock skew and old retries share review protection');
 });
 
-test('new offline receipts always require durable review before posting', async () => {
+test('new offline operator receipts require durable review while managers and owners may self-recover', async () => {
   const source = await read('../src/business.js');
   const existingTransactionBranch = source.indexOf('if (existing.rowCount)');
   const offlineReviewGuard = source.indexOf("v.fail(409,'receipt_review_required_offline_sync')");
@@ -90,10 +92,87 @@ test('new offline receipts always require durable review before posting', async 
     'an exact posted replay must remain idempotent');
   assert.ok(offlineReviewGuard < transactionInsert,
     'offline paid intent must enter review before accounting or inventory mutation');
-  assert.match(source,/if\(!approval&&!options\.acceptedOrderQuote\)[\s\S]*receipt_review_required_offline_sync/,
-    'approval replays and accepted customer-order checkouts bypass the staging guard');
+  assert.match(source,/const selfManagedRecovery=manager\(who\)\|\|owner\(who\)/);
+  assert.match(source,/if\(!approval&&!options\.acceptedOrderQuote\)[\s\S]*delayedRecovery&&!selfManagedRecovery[\s\S]*receipt_review_required_offline_sync/,
+    'manager or owner self-recovery bypasses only routine transport staging');
   assert.ok(source.indexOf("receipt_review_required_offline_time") < offlineReviewGuard,
     'an unusual offline timestamp keeps its stronger review reason');
+});
+
+test('privileged self-recovery and bulk replay continue through merchant and pricing validation', async () => {
+  const capturedCompany={id:'recovery-company',name:'Captured Shop',address:'Old address',preferences:{currency:'RM',taxRate:0}},
+    currentCompany={id:capturedCompany.id,name:'Current Shop',address:'New address',preferences:{currency:'RM',taxRate:0}},
+    capturedProduct={id:'recovery-product',name:'Item',price:10,cost:2,stock:0,trackStock:false,unit:'unit',variants:[]},
+    serverNow='2026-10-11T08:10:00.000Z';
+  const saleFor=(id,{offline=true,company=capturedCompany}={})=>{
+    const sale=createSale({id,items:[cartItem(capturedProduct)],company,user:{uid:'recovery-actor',username:'Manager'},
+      method:'Cash',received:10,offline});
+    sale.date='2026-10-11T08:00:00.000Z';sale.businessDate=businessDate(sale.date);return sale;
+  };
+  const clientFor=({company=currentCompany,product=capturedProduct}={})=>({query:async sql=>{
+    if(sql.includes('pg_advisory_xact_lock'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.transactions'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.products'))return {rowCount:1,rows:[{id:product.id,data:product}]};
+    if(sql.includes('FROM myfin.inventory_recipes'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{name:company.name,data:company}]};
+    throw Error(`Unexpected query: ${sql}`);
+  }});
+
+  for(const role of ['manager','workspace_owner'])await assert.rejects(
+    checkout(clientFor(),{id:'recovery-actor',username:'Manager',role},capturedCompany.id,saleFor(`offline-${role}`),null,{serverNow}),
+    error=>error.statusCode===409&&error.message==='receipt_review_required_merchant_changed',
+    `${role} should bypass only the offline staging guard`,
+  );
+  for(const role of ['manager','workspace_owner']){
+    const unusual=saleFor(`unusual-${role}`);unusual.date='2026-10-08T08:00:00.000Z';unusual.businessDate=businessDate(unusual.date);
+    await assert.rejects(
+      checkout(clientFor(),{id:'recovery-actor',username:'Manager',role},capturedCompany.id,unusual,null,{serverNow}),
+      error=>error.statusCode===409&&error.message==='receipt_review_required_offline_time',
+      `${role} must individually verify an unusual offline timestamp`,
+    );
+  }
+  await assert.rejects(
+    checkout(clientFor(),{id:'recovery-actor',username:'Cashier',role:'operator'},capturedCompany.id,saleFor('offline-operator'),null,{serverNow}),
+    error=>error.statusCode===409&&error.message==='receipt_review_required_offline_sync',
+  );
+  await assert.rejects(
+    checkout(clientFor(),{id:'recovery-actor',username:'Manager',role:'manager'},capturedCompany.id,saleFor('delayed-manager',{offline:false}),null,{serverNow}),
+    error=>error.statusCode===409&&error.message==='receipt_review_required_merchant_changed',
+  );
+  for(const [id,date] of [['delayed-old','2026-10-08T08:00:00.000Z'],['delayed-future','2026-10-11T08:15:01.000Z']]){
+    const unusual=saleFor(id,{offline:false});unusual.date=date;unusual.businessDate=businessDate(date);
+    await assert.rejects(
+      checkout(clientFor(),{id:'recovery-actor',username:'Manager',role:'manager'},capturedCompany.id,unusual,null,{serverNow}),
+      error=>error.statusCode===409&&error.message==='receipt_review_required_offline_time',
+    );
+  }
+  const reviewed=saleFor('individually-reviewed-old',{offline:false});
+  reviewed.date='2026-10-08T08:00:00.000Z';reviewed.businessDate=businessDate(reviewed.date);
+  const reachedPostingChecks=Error('reached_posting_checks'),individualClient={query:async sql=>{
+    if(sql.includes('pg_advisory_xact_lock'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.transactions'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.receipt_reviews'))throw reachedPostingChecks;
+    throw Error(`Unexpected query: ${sql}`);
+  }};
+  await assert.rejects(
+    checkout(individualClient,{id:'recovery-actor',username:'Cashier',role:'operator'},capturedCompany.id,reviewed,
+      {who:{id:'approver',role:'manager'},reason:'Verified unusual payment time'},{serverNow}),
+    error=>error===reachedPostingChecks,
+    'an explicit individual approval may continue past the unusual-time gate',
+  );
+
+  const approval={who:{id:'approver',role:'manager'},reason:'Verified recovered payment',revalidatePolicy:true};
+  await assert.rejects(
+    checkout(clientFor(),{id:'recovery-actor',username:'Cashier',role:'operator'},capturedCompany.id,saleFor('bulk-merchant'),approval,{serverNow}),
+    error=>error.statusCode===409&&error.message==='receipt_review_required_merchant_changed',
+  );
+  const matchingCompany={...capturedCompany};
+  await assert.rejects(
+    checkout(clientFor({company:matchingCompany,product:{...capturedProduct,price:11}}),
+      {id:'recovery-actor',username:'Cashier',role:'operator'},capturedCompany.id,saleFor('bulk-pricing',{company:matchingCompany}),approval,{serverNow}),
+    error=>error.statusCode===409&&error.message==='receipt_review_required_pricing_policy',
+  );
 });
 
 test('receipt review constraints permit recipe evidence for delayed-sync recovery only', async () => {

@@ -43,7 +43,7 @@ export function localReceiptPresentation(sale, company) {
 
 export function needsReceiptReview(error) {
   const code=typeof error==='string'?error:error?.message;
-  return typeof code==='string' && (code==='receipt_review_required' || code.startsWith('receipt_review_required_') || ['manager_override_reason_required','stock_unavailable','record_conflict'].includes(code));
+  return typeof code==='string' && (code==='receipt_review_required' || code.startsWith('receipt_review_required_') || ['manager_override_reason_required','stock_unavailable','stock_reserved_or_unavailable','record_conflict'].includes(code));
 }
 
 export function receiptRecoveryBucket(error) {

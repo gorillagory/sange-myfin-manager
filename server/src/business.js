@@ -40,14 +40,18 @@ import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 
 const delayedReceiptReviewMs = 5 * 60 * 1000;
+const maximumHistoricalReceiptMs = 72 * 60 * 60 * 1000;
 
 export function receiptCapturePolicy(sale, serverOccurredAt, acceptedOrderQuote = false) {
   const capturedAt = new Date(sale?.date), serverAt = new Date(serverOccurredAt),
     valid = Number.isFinite(capturedAt.getTime()) && Number.isFinite(serverAt.getTime()),
+    ageMs = valid ? serverAt.getTime() - capturedAt.getTime() : 0,
     delayedRecovery = valid && !acceptedOrderQuote && sale?.offline !== true &&
-      Math.abs(serverAt.getTime() - capturedAt.getTime()) > delayedReceiptReviewMs,
-    historicalCapture = !acceptedOrderQuote && (sale?.offline === true || delayedRecovery);
-  return { capturedAt, serverAt, valid, delayedRecovery, historicalCapture };
+      Math.abs(ageMs) > delayedReceiptReviewMs,
+    historicalCapture = !acceptedOrderQuote && (sale?.offline === true || delayedRecovery),
+    unusualCaptureTime = valid && !acceptedOrderQuote &&
+      (ageMs < -delayedReceiptReviewMs || ageMs > maximumHistoricalReceiptMs);
+  return { capturedAt, serverAt, valid, delayedRecovery, historicalCapture, unusualCaptureTime };
 }
 
 export async function identity(db, subject, tenant=null) {
@@ -301,7 +305,8 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   const serverRow=options.serverNow?{server_now:options.serverNow}:(await c.query('SELECT now() AS server_now')).rows[0],
     capturePolicy=receiptCapturePolicy(sale,serverRow?.server_now,options.acceptedOrderQuote),
     serverOccurredAt=capturePolicy.serverAt,capturedAt=capturePolicy.capturedAt,
-    effectiveOffline=capturePolicy.historicalCapture,delayedRecovery=capturePolicy.delayedRecovery;
+    effectiveOffline=capturePolicy.historicalCapture,delayedRecovery=capturePolicy.delayedRecovery,
+    unusualCaptureTime=capturePolicy.unusualCaptureTime;
   if(!capturePolicy.valid)v.fail(500,'server_time_unavailable');
   const serverIso=serverOccurredAt.toISOString(),capturedIso=capturedAt.toISOString();
   if((sale.receiptTemplateId&&!(sale.receiptTemplateVersion>0))||(!sale.receiptTemplateId&&sale.receiptTemplateVersion>0))v.fail(400,"invalid_receipt_template_reference");
@@ -336,19 +341,23 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     return publicTransaction(asRecord(existing.rows[0]),who);
   }
   // A paid intent retried well after its captured time is no longer a live
-  // checkout. Preserve its original accounting date, but require a manager to
-  // confirm that the historical payment should be posted. Exact lost-response
-  // retries still return from the existing-transaction branch above.
+  // checkout. Preserve its original accounting date and require an operator to
+  // hand it to a manager. Exact lost-response retries still return above.
+  // A manager or owner syncing their own routine receipt is already an
+  // authenticated resolver. Let that identity continue through the ordinary
+  // product, merchant, pricing, recipe and stock checks instead of forcing a
+  // second approval solely because transport was offline or delayed. Unusual
+  // historical capture timestamps still require an explicit review.
+  const selfManagedRecovery=manager(who)||owner(who);
+  if(!options.acceptedOrderQuote&&unusualCaptureTime&&(!approval||approval.revalidatePolicy))
+    v.fail(409,'receipt_review_required_offline_time');
   if(!approval&&!options.acceptedOrderQuote){
-    if(delayedRecovery)v.fail(409,'receipt_review_required_delayed_sync');
+    if(delayedRecovery&&!selfManagedRecovery)v.fail(409,'receipt_review_required_delayed_sync');
     // A receipt captured while the device was offline represents an already
-    // collected payment. Transfer it to the durable review queue before any
-    // accounting or inventory mutation, even when its creator is a manager.
+    // collected payment. Unusual timestamps always need an explicit decision;
+    // routine operator receipts transfer to the durable review queue.
     if(sale.offline===true){
-      if(capturedAt.getTime()>serverOccurredAt.getTime()+5*60*1000||
-          serverOccurredAt.getTime()-capturedAt.getTime()>72*60*60*1000)
-        v.fail(409,'receipt_review_required_offline_time');
-      v.fail(409,'receipt_review_required_offline_sync');
+      if(!selfManagedRecovery)v.fail(409,'receipt_review_required_offline_sync');
     }
   }
   if(!effectiveOffline){
@@ -373,7 +382,7 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   const companyRow=(await c.query("SELECT name,data FROM myfin.companies WHERE id=$1",[companyId])).rows[0];
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
-  if(!approval&&JSON.stringify(canonical(sale.storeSnapshot))!==JSON.stringify(canonical(expectedStore)))v.fail(409,"receipt_review_required_merchant_changed");
+  if((!approval||approval.revalidatePolicy)&&JSON.stringify(canonical(sale.storeSnapshot))!==JSON.stringify(canonical(expectedStore)))v.fail(409,"receipt_review_required_merchant_changed");
   const canonicalItems=sale.items.map(item=>{
     const product=rows.rows.find(row=>row.id===item.productId)?.data;
     const variant=item.variantId?product?.variants?.find(v=>v.id===item.variantId):null;
@@ -381,7 +390,7 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice:Number(variant?.price??product.price)};
   });
   const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0);
-  if(!approval&&!options.acceptedOrderQuote&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
+  if((!approval||approval.revalidatePolicy)&&!options.acceptedOrderQuote&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
   if(!approval&&!options.acceptedOrderQuote&&manager(who)&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
   sale.items=canonicalItems.map(({catalogPrice,...item})=>item);
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");

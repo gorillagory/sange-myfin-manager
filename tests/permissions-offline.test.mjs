@@ -64,6 +64,6 @@ await test('offline receipt protection preserves an accepted delivery fee and co
 });
 
 await test('review eligibility matches real suffixed server codes without retrying altered receipt payloads',()=>{
- for(const message of ['receipt_review_required','receipt_review_required_pricing_policy','receipt_review_required_merchant_changed','receipt_review_required_product_changed','manager_override_reason_required','stock_unavailable','record_conflict'])assert.ok(needsReceiptReview({message}));
+ for(const message of ['receipt_review_required','receipt_review_required_pricing_policy','receipt_review_required_merchant_changed','receipt_review_required_product_changed','manager_override_reason_required','stock_unavailable','stock_reserved_or_unavailable','record_conflict'])assert.ok(needsReceiptReview({message}));
  for(const message of ['receipt_payload_changed','invalid_input','session_required','product_not_found'])assert.equal(needsReceiptReview(message),false);
 });
