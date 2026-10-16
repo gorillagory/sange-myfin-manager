@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { Store } from '../../store';
 import Icon from '../ui/EditionIcon.vue';
+import PrinterSetup from './printing/PrinterSetup.vue';
 import { localSettings } from '../../services/localSettings';
 import { DEFAULT_THEME_COLOR, THEME_PRESETS, normalizeThemeColor, themeVariables } from '../../domain/theme';
 
@@ -14,6 +15,8 @@ const initialPreferences = {
   staffDiscountLimit: 0,
   primaryColor: DEFAULT_THEME_COLOR,
   ...Store.state.selectedCompany?.preferences,
+  ...Store.state.preferences,
+  printerProfile: Store.state.preferences?.printerProfile || { transport:'browser',name:'System print dialog' },
 };
 initialPreferences.primaryColor = normalizeThemeColor(initialPreferences.primaryColor);
 const prefs = ref(initialPreferences);
@@ -26,6 +29,7 @@ async function save() {
       density: prefs.value.density,
       reduceMotion: !!prefs.value.reduceMotion,
       paperWidth: prefs.value.paperWidth,
+      printerProfile: prefs.value.printerProfile,
     };
     localSettings.setItem('myfin-device-preferences-' + Store.state.selectedCompany?.id, JSON.stringify(device));
     Object.assign(Store.state.preferences, device);
@@ -33,7 +37,8 @@ async function save() {
       if (Store.permissions().owner && (!Number.isFinite(Number(prefs.value.staffDiscountLimit)) || Number(prefs.value.staffDiscountLimit) < 0 || Number(prefs.value.staffDiscountLimit) > 100))
         throw new Error('Operator discount limit must be between 0 and 100%.');
       prefs.value.primaryColor = normalizeThemeColor(prefs.value.primaryColor);
-      await Store.updatePreferences({ ...prefs.value, theme: 'light' });
+      const { printerProfile: _localPrinter, ...companyPreferences } = prefs.value;
+      await Store.updatePreferences({ ...companyPreferences, theme: 'light' });
     }
     Store.notify(Store.can('companyWrite') ? 'Company and device preferences saved.' : 'Device and printing preferences saved.');
   } catch (error) {
@@ -87,7 +92,8 @@ async function save() {
         <template v-else-if="tab==='Receipts'">
           <h2>Printing on this device</h2>
           <div class="ed-form-grid"><label class="ed-field"><span>Paper width</span><select v-model="prefs.paperWidth"><option value="80">80 mm thermal</option><option value="58">58 mm thermal</option></select></label><label v-if="Store.can('companyWrite')" class="ed-field wide"><span>Company receipt footer</span><textarea v-model="prefs.receiptFooter" maxlength="500"></textarea></label></div>
-          <div class="ed-notice"><Icon name="printer" /><div>Choose the matching paper size in the printer dialog. Reprinting never creates another sale.</div></div>
+          <PrinterSetup v-model="prefs.printerProfile" :paper-width="prefs.paperWidth" />
+          <div class="ed-notice"><Icon name="printer" /><div><strong>Label printers still use calibrated PDF media.</strong>Choose a label design in Inventory → QR / Labels, then print at actual size. Reprinting never creates another sale or stock movement.</div></div>
         </template>
         <template v-else>
           <h2>At the counter</h2>

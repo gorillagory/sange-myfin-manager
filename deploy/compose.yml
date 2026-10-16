@@ -50,6 +50,7 @@ services:
       POS_CODE_SECRET_FILE: /run/secrets/pos_code_secret
       POS_SESSION_SECRET_FILE: /run/secrets/pos_session_secret
       VOUCHER_HMAC_SECRET_FILE: /run/secrets/voucher_hmac_secret
+      RECEIPT_EMAIL_ENABLED: ${RECEIPT_EMAIL_ENABLED:-false}
       PG_TLS: disable
       PGPOOL_MAX: ${MYFIN_DB_POOL_MAX:-5}
       PG_CONNECT_TIMEOUT_MS: '2000'
@@ -106,6 +107,49 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     stop_grace_period: 15s
+  receipt-email-worker:
+    profiles: [receipt-email]
+    image: ${MYFIN_API_IMAGE:-myfin-api:phase02}
+    restart: unless-stopped
+    init: true
+    command: [node, src/receipt-email-worker.js]
+    environment:
+      NODE_ENV: production
+      PGHOST: nexus-shared-postgres
+      PGPORT: '5432'
+      PGDATABASE: ${MYFIN_DB_NAME:-myfin_dev}
+      PGUSER: ${MYFIN_DB_USER:-myfin_dev_runtime}
+      PGPASSWORD_FILE: /run/secrets/db_password
+      PG_TLS: disable
+      PGPOOL_MAX: ${MYFIN_RECEIPT_EMAIL_DB_POOL_MAX:-2}
+      PG_CONNECT_TIMEOUT_MS: '2000'
+      PG_STATEMENT_TIMEOUT_MS: '5000'
+      PG_QUERY_TIMEOUT_MS: '7000'
+      RECEIPT_EMAIL_ENABLED: ${RECEIPT_EMAIL_ENABLED:-false}
+      RECEIPT_EMAIL_WORKER_ID: ${MYFIN_COMPOSE_PROJECT:-myfin-dev}-receipt-email-worker-1
+      RECEIPT_EMAIL_WORKER_POLL_MS: ${RECEIPT_EMAIL_WORKER_POLL_MS:-2000}
+      # Connect to the reviewed address directly; validate TLS against the
+      # separate certificate name so split/legacy DNS cannot redirect SMTP.
+      RECEIPT_SMTP_ADDRESS: ${RECEIPT_SMTP_ADDRESS:-}
+      RECEIPT_SMTP_PORT: ${RECEIPT_SMTP_PORT:-587}
+      RECEIPT_SMTP_USERNAME: ${RECEIPT_SMTP_USERNAME:-}
+      RECEIPT_SMTP_PASSWORD_FILE: /run/secrets/receipt_smtp_password
+      RECEIPT_SMTP_TLS_SERVERNAME: ${RECEIPT_SMTP_TLS_SERVERNAME:-}
+      RECEIPT_EMAIL_FROM_ADDRESS: ${RECEIPT_EMAIL_FROM_ADDRESS:-}
+      RECEIPT_EMAIL_FROM_NAME: ${RECEIPT_EMAIL_FROM_NAME:-MyFin Receipts}
+    secrets: [db_password, receipt_smtp_password]
+    # `smtp-egress` must be pre-created with an infrastructure firewall that
+    # permits only the reviewed SMTP submission destination and DNS/NTP needed
+    # for that route. The API and other workers are never attached to it.
+    networks: [nexus-data, smtp-egress]
+    mem_limit: ${MYFIN_RECEIPT_EMAIL_MEMORY:-192m}
+    cpus: ${MYFIN_RECEIPT_EMAIL_CPUS:-0.35}
+    pids_limit: 64
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
 networks:
   ingress:
     driver: bridge
@@ -114,6 +158,9 @@ networks:
   nexus-data:
     external: true
     name: nexus-data
+  smtp-egress:
+    external: true
+    name: ${MYFIN_SMTP_EGRESS_NETWORK:-myfin-smtp-egress}
 volumes:
   uploads:
     external: true
@@ -130,3 +177,5 @@ secrets:
     file: ${MYFIN_POS_SESSION_SECRET_FILE:?set absolute POS session secret file path}
   voucher_hmac_secret:
     file: ${MYFIN_VOUCHER_HMAC_SECRET_FILE:?set absolute voucher HMAC secret file path}
+  receipt_smtp_password:
+    file: ${MYFIN_SMTP_PASSWORD_FILE:-./disabled-smtp-password}

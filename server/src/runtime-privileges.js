@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0041_customer_identity_security.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0042_receipt_email_delivery.sql';
 
 const tableGroups = [
   {
@@ -34,6 +34,7 @@ const tableGroups = [
       'customer_order_lines', 'inventory_recipe_versions', 'inventory_recipe_components',
       'payment_gateway_connections',
       'online_payment_reconciliation_jobs',
+      'receipt_email_deliveries',
     ],
   },
   {
@@ -57,6 +58,7 @@ const tableGroups = [
       'online_payment_intents', 'online_payment_events', 'online_payment_finalizations',
     ],
   },
+  { privileges: ['INSERT'], objects: ['receipt_email_events'] },
   { privileges: ['SELECT', 'INSERT', 'DELETE'], objects: ['expense_links'] },
   {
     privileges: ['SELECT'],

@@ -69,6 +69,8 @@ GRANT SELECT,INSERT,UPDATE ON myfin.payment_gateway_connections TO myfin_dev_run
 GRANT SELECT,INSERT ON myfin.online_payment_intents,myfin.online_payment_events,
  myfin.online_payment_finalizations TO myfin_dev_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.online_payment_reconciliation_jobs TO myfin_dev_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.receipt_email_deliveries TO myfin_dev_runtime;
+GRANT INSERT ON myfin.receipt_email_events TO myfin_dev_runtime;
 GRANT SELECT ON myfin.customer_order_online_payment_state TO myfin_dev_runtime;
 -- PostgreSQL locking reads require UPDATE even when immutable evidence rows are never changed.
 GRANT UPDATE ON myfin.inventory_source_effects,myfin.purchase_order_lines,

@@ -4,6 +4,7 @@ import { createDatabase } from './database.js';
 import { buildApp } from './app.js';
 import { installShutdown } from './shutdown.js';
 import { createPaymentGatewayRuntime } from './payment-gateways.js';
+import { receiptEmailFeatureEnabled } from './receipt-emails.js';
 
 let app;
 let shutdown;
@@ -16,6 +17,7 @@ try {
   const auth = createAuth(database.pool, authOptions);
   const paymentGateway = createPaymentGatewayRuntime(process.env);
   app = buildApp({ database, auth, authOptions, paymentGateway,
+    receiptEmailEnabled:receiptEmailFeatureEnabled(process.env),
     uploadDir: process.env.UPLOAD_DIR || '/app/uploads', logger: { level: 'info' } });
   shutdown = installShutdown(app, { timeoutMs: config.shutdownTimeoutMs });
   await app.listen({ host: config.host, port: config.port });

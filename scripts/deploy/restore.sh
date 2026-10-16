@@ -1,10 +1,14 @@
 #!/bin/sh
 . "$(dirname "$0")/common.sh"
+receipt_email_enabled=false
+case "${RECEIPT_EMAIL_ENABLED:-false}" in [Tt][Rr][Uu][Ee]) receipt_email_enabled=true;; esac
 [ "${MYFIN_REVIEWED_EMPTY_DEV_RESTORE:-}" = myfin_dev ] || { echo 'Explicit empty development restore review required' >&2; exit 1; }
 : "${MYFIN_BACKUP_DIR:?protected matching backup pair}"
 : "${MYFIN_MIGRATOR_PASSWORD_FILE:?protected migrator secret}"
 (cd "$MYFIN_BACKUP_DIR" && sha256sum -c SHA256SUMS)
-compose stop report-worker api
+writer_services='report-worker api'
+if [ "$receipt_email_enabled" = true ]; then writer_services="receipt-email-worker $writer_services"; fi
+compose --profile receipt-email stop $writer_services
 # Never drop an existing database or overwrite nonempty uploads.
 MYFIN_TABLES=$(docker run --rm --network nexus-data --memory 128m --cpus 0.5 --mount "type=bind,src=$MYFIN_MIGRATOR_PASSWORD_FILE,dst=/run/password,readonly" --entrypoint sh postgres:16-bookworm -c 'export PGPASSWORD="$(cat /run/password)"; psql -X -h nexus-shared-postgres -U myfin_dev_migrator -d myfin_dev -Atc "SELECT count(*) FROM pg_tables WHERE schemaname= '\''myfin'\''"')
 [ "$MYFIN_TABLES" = 0 ] || { echo 'Refusing restore over existing MyFin tables; API remains stopped' >&2; exit 1; }

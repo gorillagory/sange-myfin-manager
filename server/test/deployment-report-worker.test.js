@@ -43,13 +43,16 @@ test('report and procurement tables have least-privilege runtime grants', async 
   }
 });
 
-test('quiescent backup and destructive restore stop both database writers', async () => {
+test('quiescent backup and destructive restore stop every enabled database writer', async () => {
   const [development,production,restore] = await Promise.all([
     read('scripts/deploy/backup.sh'),read('scripts/deploy/production-backup.sh'),read('scripts/deploy/restore.sh'),
   ]);
-  assert.match(development, /compose stop report-worker api/);
-  assert.match(development, /compose start api report-worker/);
-  assert.match(production, /compose stop report-worker api/);
-  assert.match(production, /compose start api report-worker/);
-  assert.match(restore, /compose stop report-worker api/);
+  for (const source of [development,production,restore]) {
+    assert.match(source, /writer_services='report-worker api'/);
+    assert.match(source, /RECEIPT_EMAIL_ENABLED/);
+    assert.match(source, /receipt-email-worker \$writer_services/);
+    assert.match(source, /compose --profile receipt-email stop \$writer_services/);
+  }
+  assert.match(development, /compose --profile receipt-email start \$writer_services/);
+  assert.match(production, /compose --profile receipt-email start \$writer_services/);
 });

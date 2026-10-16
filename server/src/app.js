@@ -25,7 +25,7 @@ const safeSqlstate = error => {
 };
 
 export function buildApp({ database = null, logger = false, auth = null, authOptions = null,
-  uploadDir = null, paymentGateway = createPaymentGatewayRuntime({}) } = {}) {
+  uploadDir = null, paymentGateway = createPaymentGatewayRuntime({}), receiptEmailEnabled = false } = {}) {
   const app = Fastify({
     logger, logController: new LogController({ disableRequestLogging: true }), trustProxy: false,
     bodyLimit: 2 * 1024 * 1024, requestTimeout: 10000, connectionTimeout: 10000,
@@ -90,7 +90,7 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
       if(response.status>=400)return reply.send({error:'authentication_failed'});
       return reply.send(response.body?await response.text():null);
     }});
-    registerBusiness(app,{database,auth,authOptions,paymentGateway});
+    registerBusiness(app,{database,auth,authOptions,paymentGateway,receiptEmailEnabled});
     if(uploadDir)app.register(async scoped=>registerFiles(scoped,{database,uploadDir}));
   }
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'not_found' }));

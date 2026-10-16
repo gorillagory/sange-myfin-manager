@@ -10,6 +10,7 @@
     "start": "node src/index.js",
     "test": "node --test test/*.test.js",
     "test:acceptance:customer": "node --test test/customer-ordering-acceptance.mjs",
+    "test:acceptance:receipt-email": "node --test test/receipt-email-postgres-acceptance.mjs",
     "migrate": "node src/migrate-cli.js",
     "genesis": "node src/genesis-cli.js",
     "firebase-import": "node src/original-firebase-import-cli.js",
@@ -21,6 +22,7 @@
     "better-auth": "1.7.4",
     "fastify": "5.12.7",
     "file-type": "21.3.4",
+    "nodemailer": "10.1.2",
     "pg": "8.23.0",
     "zod": "4.3.6"
   }

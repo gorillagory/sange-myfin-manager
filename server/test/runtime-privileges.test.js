@@ -11,7 +11,7 @@ const serverRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repositoryRoot = dirname(serverRoot);
 const sourceRoot = join(serverRoot, 'src');
 
-const runtimeEntries = ['index.js', 'report-worker.js'];
+const runtimeEntries = ['index.js', 'report-worker.js', 'receipt-email-worker.js'];
 const implicitTablePrivileges = Object.freeze({
   // business.js registers generic CRUD handlers for these tables.
   products: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
@@ -209,7 +209,7 @@ test('startup readiness consumes every parameterized shared-manifest predicate',
   assert.equal((check.predicate.match(/has_(?:schema|table|sequence|function)_privilege/g) || []).length,
     expectedPredicateCount);
   assert.equal(check.parameters.length, expectedPredicateCount * 2);
-  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0041_customer_identity_security.sql');
+  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0042_receipt_email_delivery.sql');
 });
 
 test('the dynamic SQL allowlist stays narrow and reviewable', () => {

@@ -46,6 +46,7 @@ import { registerAdvancedAnalytics } from "./advanced-analytics.js";
 import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 import { registerPaymentGatewayStaff } from "./payment-gateways.js";
+import { registerReceiptEmails } from "./receipt-emails.js";
 
 const delayedReceiptReviewMs = 5 * 60 * 1000;
 const maximumHistoricalReceiptMs = 72 * 60 * 60 * 1000;
@@ -621,7 +622,7 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   if(approval)await audit(c,approval.who,companyId,"Approve paid receipt",sale.id+" · "+approval.reason);
   return publicTransaction(saved,who);
 }
-export function registerBusiness(app, { database: db, auth, authOptions, paymentGateway }) {
+export function registerBusiness(app, { database: db, auth, authOptions, paymentGateway, receiptEmailEnabled = false }) {
   app.decorateRequest("identity", null);
   app.decorateRequest("authSessionId", null);
   app.addHook("preHandler", async (req) => {
@@ -697,6 +698,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   registerMarketingLoyalty(app,{scoped,audit});
   registerPosPricing(app,{scoped,voucherPepper:authOptions.voucherHmacSecret});
   registerPaymentGatewayStaff(app,{scoped,audit,runtime:paymentGateway});
+  registerReceiptEmails(app,{scoped,audit,enabled:receiptEmailEnabled});
   app.get("/api/companies/:company/expense-link-options",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"expensesRead");
     return expenseLinkOptions(c,co,req.identity);

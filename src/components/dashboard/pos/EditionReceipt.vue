@@ -3,10 +3,12 @@ import { ref, computed, onBeforeUnmount } from 'vue';
 import Modal from '../../ui/EditionModal.vue';
 import Icon from '../../ui/EditionIcon.vue';
 import DocumentPreview from '../docdesign/DocumentPreview.vue';
+import ReceiptEmailPanel from './ReceiptEmailPanel.vue';
 import { Store } from '../../../store';
 import { receiptMailto } from '../../../domain/receipt';
 import { presentReceipt } from '../../../domain/documentPresentation';
 import { downloadDocumentPdf } from '../../../services/documentPdf';
+import { printSavedReceipt } from '../../../services/devicePrinting';
 import { validEmail } from '../../../domain/inventoryCsv';
 import { capabilities } from '../../../domain/permissions';
 const props=defineProps({sale:Object});defineEmits(['close']);
@@ -18,6 +20,8 @@ const document=computed(()=>{const view=presentReceipt(printable.value,Store.sta
 const paperWidth=ref(props.sale.storeSnapshot?.paperWidth||props.sale.templateSnapshot?.paperWidth||Store.state.selectedCompany?.preferences?.paperWidth||'80');
 const email=ref(props.sale.customerEmail||contact.value.email||''),error=ref(''),emailOpened=ref(false),busy=ref(false);
 const permission=computed(()=>capabilities(Store.state.currentUser));
+const printerProfile=computed(()=>Store.state.preferences?.printerProfile||{transport:'browser'});
+const directPrinter=computed(()=>printerProfile.value.transport&&printerProfile.value.transport!=='browser');
 const existingContact=computed(()=>Store.state.clients.find(c=>c.id===props.sale.client_id)||Store.state.clients.find(c=>c.email?.toLowerCase()===email.value.toLowerCase()&&c.type!=='Supplier'));
 const contactChangeBlocked=computed(()=>!permission.value.clientsWrite&&existingContact.value&&existingContact.value.email?.toLowerCase()!==email.value.toLowerCase());
 const mailLink=computed(()=>{try{return receiptMailto({...printable.value,clientSnapshot:document.value.customer},email.value)}catch{return ''}});
@@ -32,7 +36,14 @@ async function saveEmail(){
 }
 async function pdf(){busy.value=true;error.value='';try{await downloadDocumentPdf(document.value,{paperWidth:paperWidth.value});}catch{error.value='The PDF could not be created. Please try again.';}finally{busy.value=false;}}
 function cleanup(){window.document.body.classList.remove('ed-print-receipt');window.document.body.style.removeProperty('--receipt-width');}
-function print(){window.document.body.style.setProperty('--receipt-width',paperWidth.value==='58'?'58mm':'80mm');window.document.body.classList.add('ed-print-receipt');window.addEventListener('afterprint',cleanup,{once:true});window.print();}
+function browserPrint(){window.document.body.style.setProperty('--receipt-width',paperWidth.value==='58'?'58mm':'80mm');window.document.body.classList.add('ed-print-receipt');window.addEventListener('afterprint',cleanup,{once:true});window.print();}
+async function print(){
+  if(!directPrinter.value){browserPrint();return;}
+  busy.value=true;error.value='';
+  try{await printSavedReceipt(printable.value,paperWidth.value,printerProfile.value);Store.notify(`Receipt sent to ${printerProfile.value.name||'the configured printer'}.`);}
+  catch(failure){error.value=`Direct printing failed: ${failure.message} Use Browser print below, or reconnect the printer in Device / Printing.`;}
+  finally{busy.value=false;}
+}
 onBeforeUnmount(cleanup);
 </script>
 <template>
@@ -42,9 +53,10 @@ onBeforeUnmount(cleanup);
       <div class="ed-actions" style="margin-top:12px"><a v-if="mailLink" class="ed-btn" :href="mailLink" @click="emailOpened=true">Open email draft</a><button class="ed-btn" :disabled="busy||!email||!validEmail(email)||contactChangeBlocked" @click="saveEmail">Save email to contacts</button><button class="ed-btn" :disabled="busy" @click="pdf">Download receipt PDF</button></div>
       <p v-if="contactChangeBlocked" class="ed-muted">A manager can update this saved customer’s email. You can still open an email draft to the address above.</p><p class="ed-muted">Your mail app opens with the same receipt details. Review and send it there; attach the downloaded PDF if needed.</p>
       <p v-if="emailOpened" class="ed-notice">Email draft requested. If your mail app does not open or truncates a long receipt, attach the downloaded PDF in a new email.</p><p v-if="error" class="ed-alert" role="alert">{{ error }}</p>
+      <ReceiptEmailPanel :sale="sale" :email="email" :blocked="pending||reviewPending"/>
     </div>
     <DocumentPreview :document="document"/>
-    <template #actions><button class="ed-btn" :disabled="busy" @click="$emit('close')">Close</button><button class="ed-btn primary" :disabled="busy" @click="print"><Icon name="printer"/>Print receipt</button></template>
+    <template #actions><button class="ed-btn" :disabled="busy" @click="$emit('close')">Close</button><button v-if="directPrinter" class="ed-btn" :disabled="busy" @click="browserPrint">Browser print</button><button class="ed-btn primary" :disabled="busy" @click="print"><Icon name="printer"/>{{ directPrinter?`Print to ${printerProfile.name||'saved printer'}`:'Print receipt' }}</button></template>
   </Modal>
 </template>
 <style>

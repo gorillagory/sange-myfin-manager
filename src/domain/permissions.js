@@ -13,7 +13,7 @@ export function permissionsFor(user) {
     companyWrite:owner||manager,companyFinancialSettingsWrite:owner,integrationSettingsWrite:owner,integrationsRead:owner,
     deviceSettingsWrite:active,workspaceWrite:owner,companyEnroll:owner,usersManage:owner||manager,
     managersManage:owner,activityRead:owner||manager,stockHistoryRead:owner||manager,
-    receiptReviewsResolve:owner||manager,studentProgramsRead:owner||manager,
+    receiptReviewsResolve:owner||manager,receiptEmailsRetry:owner||manager,studentProgramsRead:owner||manager,
     studentEligibilityReview:owner,promotionsManage:owner||manager,
     marketingRead:owner||manager,marketingManage:owner||manager,marketingWorkspaceManage:owner,
     loyaltyWorkspaceManage:owner};
