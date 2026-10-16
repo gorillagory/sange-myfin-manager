@@ -12,6 +12,7 @@ import {
   sendPrinterJob,
 } from '../src/services/devicePrinting.js';
 import { normalizeLabelOptions } from '../src/services/printing.js';
+import { receiptPaperWidth } from '../src/domain/receipt.js';
 
 const job={version:2,type:'receipt',paperWidthMm:80,saleId:'sale-1',number:'POS-ABC123',lines:['MYFIN TEST','Total: RM 12.40']};
 
@@ -102,4 +103,13 @@ test('label presets retain a scannable code while bounding user design values',(
     design:'retail',accent:'#123ABC',subtitle:'Fresh coffee',showPrice:false,showName:true,
   });
   assert.equal(normalizeLabelOptions({design:'unknown',accent:'red'}).design,'classic');
+});
+
+test('receipt media follows this terminal before saved sale or company defaults',()=>{
+  const sale={storeSnapshot:{paperWidth:'80'},templateSnapshot:{paperWidth:'80'}};
+  const company={preferences:{paperWidth:'80'}};
+  assert.equal(receiptPaperWidth(sale,{paperWidth:'58'},company),'58');
+  assert.equal(receiptPaperWidth({storeSnapshot:{paperWidth:'58'}},{},company),'58');
+  assert.equal(receiptPaperWidth({}, {}, {preferences:{paperWidth:'58'}}),'58');
+  assert.equal(receiptPaperWidth(sale,{paperWidth:'A4'},company),'80');
 });

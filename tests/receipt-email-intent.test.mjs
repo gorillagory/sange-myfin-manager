@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   clearReceiptEmailIntent, loadOrCreateReceiptEmailIntent, loadReceiptEmailIntent, receiptEmailIntentKey,
 } from '../src/services/receiptEmailIntent.js';
@@ -41,4 +42,11 @@ test('a different recipient cannot inherit an ambiguous request identity',async(
   const first=await loadOrCreateReceiptEmailIntent('company','sale','first@example.test',options);
   const second=await loadOrCreateReceiptEmailIntent('company','sale','second@example.test',options);
   assert.notEqual(second.id,first.id);
+});
+
+test('pending receipt guidance takes precedence over disabled direct delivery',async()=>{
+  const component=await readFile(new URL('../src/components/dashboard/pos/ReceiptEmailPanel.vue',import.meta.url),'utf8');
+  const blocked=component.indexOf('<p v-if="blocked" class="ed-muted">Sync and approve this paid receipt before sending it from MyFin.</p>');
+  const disabled=component.indexOf('<p v-else-if="!enabled&&!loading" class="ed-muted">Direct receipt delivery is not connected. The email draft and PDF options remain available.</p>');
+  assert.ok(blocked>=0&&disabled>blocked,'blocked receipts must show sync guidance before SMTP availability');
 });

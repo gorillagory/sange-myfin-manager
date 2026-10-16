@@ -8,3 +8,7 @@ export function receiptMailto(sale,email) {
 export function receiptPrintJob(sale,paperWidth='80') {
   return {version:2,type:'receipt',paperWidthMm:paperWidth==='58'?58:80,saleId:sale.id,number:sale.number,lines:receiptLines(sale)};
 }
+export function receiptPaperWidth(sale={},devicePreferences={},company={}) {
+  const width=devicePreferences?.paperWidth??sale?.storeSnapshot?.paperWidth??sale?.templateSnapshot?.paperWidth??company?.preferences?.paperWidth;
+  return String(width)==='58'?'58':'80';
+}

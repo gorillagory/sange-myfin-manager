@@ -62,8 +62,8 @@ onMounted(load);onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);});
       <button v-if="permission.receiptEmailsRetry&&matching?.state==='sent'" class="ed-btn" :disabled="busy||loading||!ready" @click="send(true)">Send another copy</button>
       <button v-if="Store.state.online&&!blocked" class="ed-btn small" :disabled="busy||loading" @click="load">Refresh status</button>
     </div>
-    <p v-if="!enabled&&!loading" class="ed-muted">Direct receipt delivery is not connected. The email draft and PDF options remain available.</p>
-    <p v-else-if="blocked" class="ed-muted">Sync and approve this paid receipt before sending it from MyFin.</p>
+    <p v-if="blocked" class="ed-muted">Sync and approve this paid receipt before sending it from MyFin.</p>
+    <p v-else-if="!enabled&&!loading" class="ed-muted">Direct receipt delivery is not connected. The email draft and PDF options remain available.</p>
     <div v-if="latest" class="receipt-email-status" role="status" aria-live="polite">
       <span class="ed-pill" :class="{ready:latest.state==='sent',warning:['queued','running','retry_wait','delivery_unknown'].includes(latest.state)}">{{ labels[latest.state]||latest.state }}</span>
       <span><strong>{{ latest.recipient }}</strong><small>{{ latest.state==='sent'?stamp(latest.acceptedAt):stamp(latest.updatedAt||latest.createdAt) }}<template v-if="latest.errorCode"> · {{ errorLabels[latest.errorCode]||'Delivery needs attention' }}</template></small></span>
