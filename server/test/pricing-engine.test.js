@@ -6,6 +6,7 @@ import {
   decimalToScaledInteger,
   extendOrderPromotionReservations,
   loadPricingSnapshot,
+  posPricingRecoveryState,
   releaseOrderPromotionReservations,
   reserveOrderPromotions,
   consumeOrderPromotionReservations,
@@ -28,10 +29,15 @@ function pricingFixture(overrides = {}) {
       valid_from: '2026-01-01T00:00:00Z', valid_until: '2027-01-01T00:00:00Z',
       max_redemptions: '100', per_customer_limit: '2', total_usage: '3', customer_usage: '0',
     }] };
-    if (sql.includes('FROM myfin.products p') && sql.includes('LEFT JOIN myfin.product_variants')) return {
-      rowCount: 1, rows: [{ id: 'latte', data: { name: 'Latte', category: 'Beverage', subcategory: 'Coffee', variants: [] },
-        product_price: '19.9999', variant_id: null, variant_price: null }],
-    };
+    if (sql.includes('FROM myfin.products p') && sql.includes('LEFT JOIN myfin.product_variants')) {
+      const available = overrides.catalogRows || [overrides.catalogRow || {
+        id: 'latte', data: { name: 'Latte', category: 'Beverage', subcategory: 'Coffee', variants: [] },
+        product_price: '19.9999', product_online_price_sen: null, variant_id: null, variant_price: null,
+        variant_online_price_sen: null,
+      }];
+      const rows = available.filter(row => params[1].includes(row.id));
+      return { rowCount: rows.length, rows };
+    }
     if (sql.includes('FROM myfin.student_eligibilities')) return { rowCount: 1, rows: [{
       status: 'verified', version: '4', valid_from: '2026-01-01T00:00:00Z', valid_until: '2027-01-01T00:00:00Z',
     }] };
@@ -106,6 +112,135 @@ test('authoritative quote loads catalog, current rules, student state and HMAC v
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_lines')).length, 1);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discounts')).length, 2);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discount_lines')).length, 2);
+});
+
+test('POS preview is channel-aware and read-only while the final quote persists one cashier-bound snapshot', async () => {
+  const promotionRows = [{
+    id: 'pos-promo', version: '2', name: 'Counter 10%', enabled: true, redemption_mode: 'automatic',
+    valid_from: '2026-01-01T00:00:00Z', valid_until: null, discount_type: 'percentage',
+    discount_basis_points: 1000, discount_sen: null, max_discount_sen: null, min_subtotal_sen: '0',
+    max_total_redemptions: null, per_customer_limit: null, requires_customer: false,
+    requires_student: false, priority: 20, stackable: true, total_usage: '0', customer_usage: '0',
+    campaign_links: [{ campaignId:'campaign-pos', campaignVersion:1, currentVersion:1,
+      lifecycle:'published', startsAt:'2026-01-01T00:00:00Z', endsAt:null,
+      channels:['pos'], audiences:[] }],
+  }];
+  const fixture = pricingFixture({ promotionRows, catalogRow: {
+    id:'latte', data:{ name:'Latte', category:'Beverage', subcategory:'Coffee', variants:[] },
+    product_price:'20.00', product_online_price_sen:2500, variant_id:null, variant_price:null,
+    variant_online_price_sen:null,
+  } });
+  const input = { companyId:'company-a', lines:[{ productId:'latte', variantId:'', quantityMilli:1000 }],
+    channel:'pos', issuedToStaffId:'cashier-a', manualDiscountBasisPoints:500 };
+  const preview = await createPricingSnapshot(fixture.c, input,
+    { now:AT, cashRounding:true, persist:false, idFactory:()=>{ throw Error('preview must not allocate an id'); } });
+  assert.equal(preview.id, '');
+  assert.equal(preview.channel, 'pos');
+  assert.equal(preview.subtotalSen, 2000, 'POS ignores the separate online price');
+  assert.equal(preview.promotionDiscountSen, 200);
+  assert.equal(preview.manualDiscountSen, 90);
+  assert.equal(preview.discountSen, 290);
+  assert.equal(preview.totalSen, 1815);
+  assert.equal(fixture.calls.some(call => call.sql.startsWith('INSERT INTO myfin.')), false);
+
+  const locked = await createPricingSnapshot(fixture.c, input,
+    { now:AT, cashRounding:true, persist:true, idFactory:()=> 'pos-snapshot-a' });
+  assert.equal(locked.id, 'pos-snapshot-a');
+  const snapshots = fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshots'));
+  assert.equal(snapshots.length, 1);
+  assert.deepEqual(snapshots[0].params.slice(17, 21), ['pos','cashier-a',500,90]);
+  assert.equal(snapshots[0].params[21], '2026-10-09T04:15:00.000Z');
+});
+
+test('POS automatically inserts an eligible free reward while storefront pricing remains explicitly basket-driven', async () => {
+  const promotionRows = [{
+    id:'free-cookie', version:'1', name:'Free cookie', enabled:true, redemption_mode:'automatic',
+    valid_from:'2026-01-01T00:00:00Z', valid_until:null, discount_type:'free_item',
+    discount_basis_points:null, discount_sen:null, max_discount_sen:null,
+    reward_product_id:'cookie', reward_variant_id:null, reward_quantity_milli:'1000',
+    min_subtotal_sen:'1000', max_total_redemptions:null, per_customer_limit:null,
+    requires_customer:false, requires_student:false, priority:30, stackable:true,
+    total_usage:'0', customer_usage:'0', campaign_links:[{
+      campaignId:'campaign-free', campaignVersion:1, currentVersion:1, lifecycle:'published',
+      startsAt:'2026-01-01T00:00:00Z', endsAt:null, channels:['pos','storefront'], audiences:[],
+    }],
+  }];
+  const fixture = pricingFixture({ promotionRows, catalogRows:[
+    { id:'latte', data:{ name:'Latte', category:'Beverage', subcategory:'Coffee', variants:[] },
+      product_price:'20.00', product_online_price_sen:null, variant_id:null, variant_price:null,
+      variant_online_price_sen:null },
+    { id:'cookie', data:{ name:'Cookie', category:'Pastry', subcategory:'Cookies', variants:[] },
+      product_price:'5.00', product_online_price_sen:null, variant_id:null, variant_price:null,
+      variant_online_price_sen:null },
+  ] });
+  const base = { companyId:'company-a', lines:[{ productId:'latte', variantId:'', quantityMilli:1000 }] };
+  const pos = await createPricingSnapshot(fixture.c, {
+    ...base, channel:'pos', issuedToStaffId:'cashier-a',
+  }, { now:AT, persist:false, cashRounding:true });
+  assert.deepEqual(pos.lines.map(line => [line.productId,line.quantityMilli,line.automaticReward,line.grossSen,line.netSen]), [
+    ['latte',1000,false,2000,2000],
+    ['cookie',1000,true,500,0],
+  ]);
+  assert.equal(pos.subtotalSen,2500);
+  assert.equal(pos.discountSen,500);
+  assert.equal(pos.totalSen,2120);
+  assert.deepEqual(pos.discounts.map(row => [row.promotionId,row.discountSen]), [['free-cookie',500]]);
+
+  const partial = await createPricingSnapshot(fixture.c, {
+    companyId:'company-a', channel:'pos', issuedToStaffId:'cashier-a', lines:[
+      { productId:'latte', variantId:'', quantityMilli:1000 },
+      { productId:'cookie', variantId:'', quantityMilli:500 },
+    ],
+  }, { now:AT, persist:false, cashRounding:true });
+  assert.deepEqual(partial.lines.map(line => [
+    line.productId,line.quantityMilli,line.automaticReward,line.grossSen,line.netSen,
+  ]), [
+    ['latte',1000,false,2000,2000],
+    ['cookie',500,false,250,0],
+    ['cookie',500,true,250,0],
+  ], 'a partial reward already in the basket is discounted and only the missing quantity is inserted');
+  assert.equal(partial.subtotalSen,2500);
+  assert.equal(partial.discountSen,500);
+  assert.equal(partial.totalSen,2120);
+
+  const storefront = await createPricingSnapshot(fixture.c, base,
+    { now:AT, persist:false, cashRounding:false });
+  assert.equal(storefront.lines.length,1);
+  assert.equal(storefront.lines[0].automaticReward,false);
+  assert.equal(storefront.discountSen,0);
+});
+
+test('POS recovery state separates the collection window from durable exact replay', () => {
+  const snapshot = {
+    pricedAt:'2026-10-09T04:00:00.000Z',
+    expiresAt:'2026-10-09T04:05:00.000Z',
+    recoveryExpiresAt:'2026-10-09T04:15:00.000Z',
+  };
+  assert.deepEqual(posPricingRecoveryState(snapshot, {
+    capturedAt:'2026-10-09T04:04:00.000Z', now:'2026-10-09T04:10:00.000Z',
+  }), { capturedDuringTender:true, recoveryActive:true });
+  assert.deepEqual(posPricingRecoveryState(snapshot, {
+    capturedAt:'2026-10-09T03:59:00.000Z', now:'2026-10-09T04:15:00.000Z',
+  }), { capturedDuringTender:false, recoveryActive:false });
+});
+
+test('POS discretionary discounts retain exact half-up cents above floating-point multiplication range', async () => {
+  const unitPriceSen = 7_999_999_999_999_999n;
+  const basisPoints = 3333n;
+  const expectedDiscount = (unitPriceSen * basisPoints / 10_000n)
+    + ((unitPriceSen * basisPoints % 10_000n) * 2n >= 10_000n ? 1n : 0n);
+  const fixture = pricingFixture({ promotionRows: [], catalogRow: {
+    id:'asset', data:{ name:'High-value asset', category:'Asset', subcategory:'', variants:[] },
+    product_price:'79999999999999.99', product_online_price_sen:null, variant_id:null,
+    variant_price:null, variant_online_price_sen:null,
+  } });
+  const quote = await createPricingSnapshot(fixture.c, {
+    companyId:'company-a', lines:[{ productId:'asset', variantId:'', quantityMilli:1000 }],
+    channel:'pos', issuedToStaffId:'owner-a', manualDiscountBasisPoints:Number(basisPoints),
+  }, { now:AT, cashRounding:true, persist:false });
+  assert.equal(BigInt(quote.manualDiscountSen), expectedDiscount);
+  assert.equal(BigInt(quote.lines[0].discountSen), expectedDiscount);
+  assert.equal(BigInt(quote.lines[0].netSen), unitPriceSen - expectedDiscount);
 });
 
 test('quote accepts identifiers and quantities only and validates customer_account identity directly', async () => {
@@ -224,10 +359,14 @@ test('stored snapshots reload safely and lifecycle helpers expose only bounded i
   ]);
 });
 
-function commitFixture({ existing = [], bound = true, sourceType = 'customer_order' } = {}) {
+function commitFixture({ existing = [], bound = true, sourceType = 'customer_order',
+  snapshot: snapshotOverride = {}, recoveryException = false } = {}) {
   const calls = [];
   const snapshot = { id: 'snapshot-a', customer_id: 'customer-a', request_digest: 'a'.repeat(64),
-    expires_at: '2026-10-09T05:00:00Z' };
+    expires_at:sourceType === 'pos_sale' ? '2026-10-09T04:05:00Z' : '2026-10-09T05:00:00Z',
+    channel:sourceType === 'pos_sale' ? 'pos' : 'storefront',
+    recovery_expires_at:sourceType === 'pos_sale' ? '2026-10-09T04:15:00Z' : null,
+    ...snapshotOverride };
   const discounts = [{ promotion_id: 'promotion-a', promotion_version: '2', voucher_id: null,
     voucher_version: null, discount_sen: '150' }];
   const query = async (sql, params = []) => {
@@ -241,6 +380,9 @@ function commitFixture({ existing = [], bound = true, sourceType = 'customer_ord
       rows: bound ? [{ pricing_snapshot_id: 'snapshot-a', source: sourceType === 'pos_sale' ? 'pos' : 'manual',
         data: { type: 'Invoice' } }] : [] };
     if (sql.includes('FROM myfin.promotion_redemptions')) return { rowCount: existing.length, rows: existing };
+    if (sql.includes('myfin.pos_pricing_recovery_authorized')) return {
+      rowCount:1, rows:[{ allowed:recoveryException }],
+    };
     if (sql.startsWith('INSERT INTO myfin.promotion_redemptions')) return { rowCount: 1, rows: [{ id: params[2] }] };
     throw new Error(`Unexpected query: ${sql}`);
   };
@@ -297,4 +439,43 @@ test('POS and invoice sources are type checked instead of treating staff clients
     }, { now: AT, idFactory: () => `${sourceType}-redemption` });
     assert.equal(result.length, 1);
   }
+});
+
+test('POS redemption replay uses its durable hold, then requires an immutable manager exception', async () => {
+  const recovering = commitFixture({ sourceType:'pos_sale' });
+  assert.equal((await commitPricingRedemptions(recovering.c, {
+    workspaceId:'workspace-a', companyId:'company-a', snapshotId:'snapshot-a',
+    sourceType:'pos_sale', sourceId:'sale-a',
+  }, { now:'2026-10-09T04:10:00Z', idFactory:()=> 'redemption-recovered' }))[0].id,
+  'redemption-recovered');
+  assert.equal(recovering.calls.some(call => call.sql.includes('pos_pricing_recovery_authorized')), false,
+    'the bounded durable reservation is enough before its recovery deadline');
+
+  const approved = commitFixture({ sourceType:'pos_sale', recoveryException:true });
+  assert.equal((await commitPricingRedemptions(approved.c, {
+    workspaceId:'workspace-a', companyId:'company-a', snapshotId:'snapshot-a',
+    sourceType:'pos_sale', sourceId:'sale-a',
+  }, { now:'2026-10-09T04:20:00Z', idFactory:()=> 'redemption-approved' }))[0].id,
+  'redemption-approved');
+  assert.equal(approved.calls.some(call => call.sql.includes('pos_pricing_recovery_authorized')), true);
+
+  const expired = commitFixture({ sourceType:'pos_sale' });
+  await assert.rejects(commitPricingRedemptions(expired.c, {
+    workspaceId:'workspace-a', companyId:'company-a', snapshotId:'snapshot-a',
+    sourceType:'pos_sale', sourceId:'sale-a',
+  }, { now:'2026-10-09T04:20:00Z' }),
+  error => error.statusCode === 409 && error.message === 'pricing_snapshot_expired');
+});
+
+test('an exact prior redemption remains idempotent after every quote deadline', async () => {
+  const exact = {
+    id:'prior-pos', pricing_snapshot_id:'snapshot-a', promotion_id:'promotion-a', promotion_version:'2',
+    voucher_id:null, voucher_version:null, discount_sen:'150', customer_id:'customer-a',
+  };
+  const fixture = commitFixture({ sourceType:'pos_sale', existing:[exact] });
+  assert.deepEqual(await commitPricingRedemptions(fixture.c, {
+    workspaceId:'workspace-a', companyId:'company-a', snapshotId:'snapshot-a',
+    sourceType:'pos_sale', sourceId:'sale-a',
+  }, { now:'2026-11-01T00:00:00Z' }), [{ id:'prior-pos', promotionId:'promotion-a', discountSen:150 }]);
+  assert.equal(fixture.calls.some(call => call.sql.includes('pos_pricing_recovery_authorized')), false);
 });

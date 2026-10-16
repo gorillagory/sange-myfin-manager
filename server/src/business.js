@@ -34,10 +34,18 @@ import { registerCustomerOrders } from "./customer-orders.js";
 import { registerCustomerProfiles } from "./customer-profiles.js";
 import { registerStudentPrograms } from "./student-programs.js";
 import { registerMarketingCampaigns } from "./marketing-campaigns.js";
-import { registerMarketingLoyalty } from "./marketing-loyalty.js";
+import { awardLoyaltyPointsForSale, registerMarketingLoyalty } from "./marketing-loyalty.js";
+import { registerPosPricing } from "./pos-pricing.js";
+import {
+  authorizePosPricingRecovery,
+  commitPricingRedemptions,
+  loadPricingSnapshot,
+  posPricingRecoveryState,
+} from "./pricing-engine.js";
 import { registerAdvancedAnalytics } from "./advanced-analytics.js";
 import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
+import { registerPaymentGatewayStaff } from "./payment-gateways.js";
 
 const delayedReceiptReviewMs = 5 * 60 * 1000;
 const maximumHistoricalReceiptMs = 72 * 60 * 60 * 1000;
@@ -282,15 +290,83 @@ async function acceptedOrderPricing(c, companyId, orderId, sale) {
   )).rows.map(row => ({ name: row.display_name, amount: Number(row.discount_sen) / 100 }));
   return { totals: expected, discounts };
 }
+async function posSalePricing(c, companyId, who, sale, approval = null) {
+  const company = (await c.query(
+    'SELECT workspace_id FROM myfin.companies WHERE id=$1 FOR SHARE', [companyId],
+  )).rows[0];
+  if (!company) v.fail(404, 'company_not_found');
+  let customerId = '';
+  if (sale.client_id) {
+    const link = (await c.query(
+      `SELECT link.customer_id
+         FROM myfin.clients client
+         LEFT JOIN myfin.customer_company_links link
+           ON link.company_id=client.company_id AND link.client_id=client.id
+        WHERE client.company_id=$1 AND client.id=$2`,
+      [companyId, sale.client_id],
+    )).rows[0];
+    if (link) customerId = link.customer_id || '';
+    else if (sale.client_id !== `pos-${sale.id}`) v.fail(409, 'pricing_customer_changed');
+  }
+  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,37))',
+    [`${companyId}:pos-pricing:${sale.pricingSnapshotId}`]);
+  const prior = (await c.query(
+    `SELECT id FROM myfin.transactions
+      WHERE company_id=$1 AND pricing_snapshot_id=$2 ORDER BY id FOR SHARE`,
+    [companyId, sale.pricingSnapshotId],
+  )).rows;
+  if (prior.some(row => row.id !== sale.id)) v.fail(409, 'pricing_snapshot_already_used');
+  const exactReplay = prior.some(row => row.id === sale.id);
+  const snapshot = await loadPricingSnapshot(c, {
+    workspaceId: company.workspace_id,
+    companyId,
+    snapshotId: sale.pricingSnapshotId,
+    customerId,
+  }, { allowExpired: true });
+  if (snapshot.channel !== 'pos' || snapshot.issuedToStaffId !== who.id)
+    v.fail(403, 'pricing_snapshot_principal_changed');
+  if (!exactReplay) {
+    const recovery = posPricingRecoveryState(snapshot, { capturedAt:sale.date });
+    const managerRecovery = approval?.pricingExpiryResolution === 'honor_paid_tender';
+    if ((!recovery.capturedDuringTender || !recovery.recoveryActive) && !managerRecovery)
+      v.fail(409, 'receipt_review_required_pricing_expired');
+    if (managerRecovery && (!recovery.capturedDuringTender || !recovery.recoveryActive)) await authorizePosPricingRecovery(c, {
+      companyId, checkoutId:sale.id, snapshotId:sale.pricingSnapshotId,
+      approverId:approval.who.id, reason:approval.reason,
+    });
+  }
+  if (snapshot.lines.length !== sale.items.length || snapshot.lines.some((line, index) => {
+    const item = sale.items[index];
+    return item.productId !== line.productId || (item.variantId || '') !== line.variantId ||
+      Math.round(Number(item.qty) * 1000) !== line.quantityMilli ||
+      cents(item.price) !== line.unitPriceSen ||
+      Math.round(line.unitPriceSen * line.quantityMilli / 1000) !== line.grossSen;
+  })) v.fail(409, 'pricing_snapshot_cart_changed');
+  const totals = {
+    subtotal: snapshot.subtotalSen / 100,
+    discountAmount: snapshot.discountSen / 100,
+    tax: snapshot.taxSen / 100,
+    taxRate: snapshot.taxBasisPoints / 100,
+    discount: snapshot.manualDiscountBasisPoints / 100,
+    totalBeforeRounding: (snapshot.taxableSen + snapshot.taxSen) / 100,
+    rounding: snapshot.roundingSen / 100,
+    total: snapshot.totalSen / 100,
+  };
+  const discounts = snapshot.discounts.map(row => ({ name: row.name, amount: row.discountSen / 100 }));
+  return { totals, discounts, workspaceId: company.workspace_id,
+    manualDiscountAmount: snapshot.manualDiscountSen / 100 };
+}
 export async function checkout(c, who, companyId, input, approval=null, options={}) {
   const submittedSale = v.parse(v.sale, input), sale={...submittedSale};
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
-  if (sale.pricingSnapshotId && (!options.acceptedOrderQuote || !options.reservationOrderId))
-    v.fail(403, "pricing_snapshot_source_required");
+  if (sale.pricingSnapshotId && options.acceptedOrderQuote && !options.reservationOrderId)
+    v.fail(409, "customer_order_checkout_changed");
   let totals,lockedPricing=null;
   if (sale.pricingSnapshotId) {
-    lockedPricing = await acceptedOrderPricing(c, companyId, options.reservationOrderId, sale);
+    lockedPricing = options.acceptedOrderQuote
+      ? await acceptedOrderPricing(c, companyId, options.reservationOrderId, sale)
+      : await posSalePricing(c, companyId, who, sale, approval);
     totals = lockedPricing.totals;
   } else {
     try { totals=saleTotalsFor(sale); } catch { v.fail(400,"invalid_sale_rounding"); }
@@ -363,6 +439,11 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   if(!effectiveOffline){
     sale.date=serverIso;sale.businessDate=businessDate(serverIso);sale.offline=false;
   }
+  // Once the capture policy accepts the receipt, its effective sale instant is
+  // the preserved capture time for delayed/offline recovery and server time for
+  // a live checkout. Promotions, loyalty, stock and financial reporting must
+  // all use that same instant instead of the later retry/approval time.
+  const effectiveSaleIso=sale.date;
   const reviewResolution=await c.query("SELECT status FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR SHARE",[companyId,sale.id]);
   if(reviewResolution.rows[0]?.status==="dismissed")v.fail(409,"receipt_dismissed");
   const ids = [...new Set(sale.items.map((i) => i.productId))].sort();
@@ -372,7 +453,9 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     [companyId, ids],
   );
   if (rows.rowCount !== ids.length) v.fail(409, "receipt_review_required_product_changed");
-  await assertUnreservedSaleStock(c,companyId,rows.rows,sale.items,options.reservationOrderId||"");
+  const inventoryShortageApproved=approval?.inventoryShortageResolution==='record_shortage';
+  if(!inventoryShortageApproved)
+    await assertUnreservedSaleStock(c,companyId,rows.rows,sale.items,options.reservationOrderId||"");
   if(effectiveOffline){
     const boundary=await offlineRecipeBoundary(c,{companyId,items:sale.items,capturedAt:capturedIso});
     if(boundary.changed&&!approval?.inventoryRecipeResolution)v.fail(409,'receipt_review_required_recipe_timing');
@@ -389,9 +472,9 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     if(!product||(item.variantId&&!variant))v.fail(409,"receipt_review_required_product_changed");
     return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice:Number(variant?.price??product.price)};
   });
-  const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0);
-  if((!approval||approval.revalidatePolicy)&&!options.acceptedOrderQuote&&operator(who)&&(priceChanged||taxChanged||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
-  if(!approval&&!options.acceptedOrderQuote&&manager(who)&&(priceChanged||taxChanged||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
+  const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0),unlockedPricePolicy=!lockedPricing&&(priceChanged||taxChanged);
+  if((!approval||approval.revalidatePolicy)&&!options.acceptedOrderQuote&&operator(who)&&(unlockedPricePolicy||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
+  if(!approval&&!options.acceptedOrderQuote&&manager(who)&&(unlockedPricePolicy||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
   sale.items=canonicalItems.map(({catalogPrice,...item})=>item);
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");
   if(approval)Object.assign(expectedStore,sale.storeSnapshot);
@@ -441,6 +524,7 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     ...(delayedRecovery?{clientCapturedAt:capturedIso,recordingMode:'delayed_sync_recovery'}:
       sale.date!==capturedIso?{clientCapturedAt:capturedIso}:{}),
     ...(approval?.inventoryRecipeResolution?{inventoryRecipeResolution:approval.inventoryRecipeResolution}:{}),
+    ...(shortage&&inventoryShortageApproved?{inventoryShortageResolution:'record_shortage'}:{}),
     storeSnapshot:expectedStore,companySnapshot,templateSnapshot:template.settings,
     ...(lockedPricing ? { promotionDiscounts: lockedPricing.discounts } : {}),
   };
@@ -448,9 +532,35 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data,pricing_snapshot_id) VALUES($1,$2,$3,'pos',$4,$5,$6,$7)",
     [companyId, sale.id, who.id, sale.total, fingerprint, saved, sale.pricingSnapshotId || null],
   );
+  if (sale.pricingSnapshotId && !options.acceptedOrderQuote) await commitPricingRedemptions(c, {
+    workspaceId: lockedPricing.workspaceId,
+    companyId,
+    snapshotId: sale.pricingSnapshotId,
+    sourceType: 'pos_sale',
+    sourceId: sale.id,
+  }, { now: effectiveSaleIso });
+  if (!options.acceptedOrderQuote && sale.client_id) {
+    const customerId = (await c.query(
+      `SELECT customer_id FROM myfin.customer_company_links
+        WHERE company_id=$1 AND client_id=$2`,
+      [companyId, sale.client_id],
+    )).rows[0]?.customer_id;
+    if (customerId) await awardLoyaltyPointsForSale(c, {
+      companyId,
+      customerId,
+      saleId: sale.id,
+      orderId: '',
+      sourceType: 'pos_sale',
+      channel: 'pos',
+      totalSen: cents(sale.total),
+      occurredAt: effectiveSaleIso,
+      actorId: who.id,
+    });
+  }
   await assertOrderCreated(c, companyId, sale.id);
+  let recipeConsumption;
   try {
-    await consumeRecipeStock(c, {
+    recipeConsumption=await consumeRecipeStock(c, {
       companyId,
       actorId: who.id,
       saleId: sale.id,
@@ -460,11 +570,18 @@ export async function checkout(c, who, companyId, input, approval=null, options=
       reservationOrderId:options.reservationOrderId||'',
       offline:effectiveOffline,
       inventoryRecipeResolution:approval?.inventoryRecipeResolution||'',
+      inventoryShortageResolution:inventoryShortageApproved?'record_shortage':'',
     });
   } catch (error) {
     if(!options.reservationOrderId&&error?.message==='recipe_stock_unavailable')
       v.fail(409,'receipt_review_required_recipe_stock');
     throw error;
+  }
+  if(recipeConsumption?.inventoryShortage){
+    saved.recipeStockShortage=true;
+    saved.inventoryShortageResolution='record_shortage';
+    await c.query("UPDATE myfin.transactions SET data=$3 WHERE company_id=$1 AND id=$2",
+      [companyId,sale.id,saved]);
   }
   for (const p of updates) {
     p.version++;
@@ -498,13 +615,13 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     who,
     companyId,
     "POS sale",
-    `${sale.number} · ${sale.paymentMethod} · ${sale.total.toFixed(2)}${shortage ? " · Stock needs review" : ""}`,
+    `${sale.number} · ${sale.paymentMethod} · ${sale.total.toFixed(2)}${shortage||recipeConsumption?.inventoryShortage ? " · Inventory shortage recorded" : ""}`,
     sale.id,
   );
   if(approval)await audit(c,approval.who,companyId,"Approve paid receipt",sale.id+" · "+approval.reason);
   return publicTransaction(saved,who);
 }
-export function registerBusiness(app, { database: db, auth, authOptions }) {
+export function registerBusiness(app, { database: db, auth, authOptions, paymentGateway }) {
   app.decorateRequest("identity", null);
   app.decorateRequest("authSessionId", null);
   app.addHook("preHandler", async (req) => {
@@ -578,6 +695,8 @@ export function registerBusiness(app, { database: db, auth, authOptions }) {
   registerStudentPrograms(app,{scoped,audit,voucherPepper:authOptions.voucherHmacSecret});
   registerMarketingCampaigns(app,{scoped,audit});
   registerMarketingLoyalty(app,{scoped,audit});
+  registerPosPricing(app,{scoped,voucherPepper:authOptions.voucherHmacSecret});
+  registerPaymentGatewayStaff(app,{scoped,audit,runtime:paymentGateway});
   app.get("/api/companies/:company/expense-link-options",req=>scoped(req,async(c,co)=>{
     requireCapability(req.identity,"expensesRead");
     return expenseLinkOptions(c,co,req.identity);

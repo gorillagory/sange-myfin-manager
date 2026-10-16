@@ -11,7 +11,23 @@ const MAX_LINES = 500;
 const MAX_PROMOTIONS = 100;
 const DEFAULT_SNAPSHOT_TTL_SECONDS = 300;
 const MAX_SNAPSHOT_TTL_SECONDS = 900;
+// The first five minutes are customer-visible tender time. Ten additional
+// minutes cover an ambiguous network response without letting an abandoned
+// till monopolize a scarce campaign or voucher for hours.
+const POS_RECOVERY_TTL_SECONDS = 15 * 60;
 const sourceTypes = new Set(['customer_order', 'pos_sale', 'invoice']);
+
+export function posPricingRecoveryState(snapshot, { capturedAt, now = new Date() } = {}) {
+  const priced = new Date(snapshot?.pricedAt || ''), tenderExpiry = new Date(snapshot?.expiresAt || ''),
+    recoveryExpiry = new Date(snapshot?.recoveryExpiresAt || ''), captured = new Date(capturedAt || ''),
+    current = now instanceof Date ? now : new Date(now);
+  const valid = (...dates) => dates.every(date => Number.isFinite(date.getTime()));
+  return {
+    capturedDuringTender: valid(priced, tenderExpiry, captured)
+      && captured >= priced && captured < tenderExpiry,
+    recoveryActive: valid(recoveryExpiry, current) && current < recoveryExpiry,
+  };
+}
 
 function fail(statusCode, message) {
   throw Object.assign(new Error(message), { statusCode });
@@ -37,6 +53,11 @@ function text(value, { optional = false, max = 128, pattern, message = 'invalid_
 
 function positiveInteger(value, max, message = 'invalid_pricing_request') {
   if (!Number.isSafeInteger(value) || value < 1 || value > max) fail(400, message);
+  return value;
+}
+
+function basisPoints(value, message = 'invalid_pricing_request') {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 10_000) fail(400, message);
   return value;
 }
 
@@ -110,21 +131,30 @@ function dataObject(value) {
   fail(409, 'invalid_catalog_product');
 }
 
-async function catalogLines(c, companyId, requested) {
+async function catalogLines(c, companyId, requested, channel) {
   const ids = [...new Set(requested.map(line => line.productId))].sort();
   const result = await c.query(
-    `SELECT p.id,p.data,p.price AS product_price,pv.id AS variant_id,pv.price AS variant_price
+    `SELECT p.id,p.data,p.price AS product_price,pv.id AS variant_id,pv.price AS variant_price,
+            sp.online_price_sen AS product_online_price_sen,
+            spv.online_price_sen AS variant_online_price_sen
        FROM myfin.products p
        LEFT JOIN myfin.product_variants pv
          ON pv.company_id=p.company_id AND pv.product_id=p.id
+       LEFT JOIN myfin.storefront_products sp
+         ON sp.company_id=p.company_id AND sp.product_id=p.id
+       LEFT JOIN myfin.storefront_product_variants spv
+         ON spv.company_id=p.company_id AND spv.product_id=p.id AND spv.variant_id=pv.id
       WHERE p.company_id=$1 AND p.id=ANY($2::text[])
       ORDER BY p.id,pv.id FOR SHARE OF p`,
     [companyId, ids],
   );
   const byProduct = new Map();
   for (const row of result.rows) {
-    const current = byProduct.get(row.id) || { data: dataObject(row.data), price: row.product_price, variants: new Map() };
-    if (row.variant_id) current.variants.set(row.variant_id, row.variant_price);
+    const current = byProduct.get(row.id) || { data: dataObject(row.data), price: row.product_price,
+      onlinePriceSen: row.product_online_price_sen, variants: new Map() };
+    if (row.variant_id) current.variants.set(row.variant_id, {
+      price: row.variant_price, onlinePriceSen: row.variant_online_price_sen,
+    });
     byProduct.set(row.id, current);
   }
   if (byProduct.size !== ids.length) fail(409, 'catalog_item_unavailable');
@@ -144,7 +174,10 @@ async function catalogLines(c, companyId, requested) {
       category: String(product.data.category || '').trim().slice(0, 120),
       subcategory: String(product.data.subcategory || '').trim().slice(0, 120),
       description: `${productName}${variant?.name ? ` / ${String(variant.name).trim()}` : ''}`.slice(0, 500),
-      unitPriceSen: decimalToScaledInteger(variantPrice ?? product.price, 2, 'invalid_catalog_price'),
+      unitPriceSen: channel === 'storefront'
+        ? Number(variantPrice?.onlinePriceSen ?? product.onlinePriceSen
+          ?? decimalToScaledInteger(variantPrice?.price ?? product.price, 2, 'invalid_catalog_price'))
+        : decimalToScaledInteger(variantPrice?.price ?? product.price, 2, 'invalid_catalog_price'),
     };
   });
 }
@@ -230,7 +263,7 @@ async function loadVoucher(c, { workspaceId, companyId, currencyCode, customerId
   };
 }
 
-async function loadPromotions(c, { workspaceId, companyId, currencyCode, customerId, voucher, at }) {
+async function loadPromotions(c, { workspaceId, companyId, currencyCode, customerId, voucher, at, channel }) {
   const result = await c.query(
     `SELECT p.id,p.version,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
             pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
@@ -296,7 +329,7 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
   let promotions = result.rows.map(promotionFromRow);
   if (!promotions.length) return [];
   promotions = await filterCampaignEligiblePromotions(c, promotions, {
-    workspaceId, companyId, customerId, at,
+    workspaceId, companyId, customerId, at, channel,
   });
   if (voucher && !promotions.some(item => item.id === voucher.promotionId)) fail(400, 'voucher_invalid_or_unavailable');
   if (!promotions.length) return [];
@@ -338,26 +371,31 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
   return promotions.map(({ campaignLinks: _campaignLinks, ...promotion }) => promotion);
 }
 
-async function persistSnapshot(c, { workspaceId, companyId, id, expiresAt, requestDigest, priced }) {
+async function persistSnapshot(c, {
+  workspaceId, companyId, id, expiresAt, requestDigest, priced,
+  channel, issuedToStaffId, manualDiscountBasisPoints, recoveryExpiresAt,
+}) {
   await c.query(
     `INSERT INTO myfin.pricing_snapshots(
        workspace_id,company_id,id,customer_id,student_eligibility_version,currency_code,
        subtotal_sen,discount_sen,taxable_sen,tax_sen,rounding_sen,total_sen,
-       rules_digest,request_digest,priced_at,expires_at,tax_basis_points)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+       rules_digest,request_digest,priced_at,expires_at,tax_basis_points,
+       channel,issued_to_staff_id,manual_discount_basis_points,manual_discount_sen,recovery_expires_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
     [workspaceId, companyId, id, priced.customerId || null, priced.studentEligibilityVersion,
       priced.currencyCode, priced.subtotalSen, priced.discountSen, priced.taxableSen, priced.taxSen,
       priced.roundingSen, priced.totalSen, priced.rulesDigest, requestDigest, priced.pricedAt, expiresAt,
-      priced.taxBasisPoints],
+      priced.taxBasisPoints, channel, issuedToStaffId || null,
+      manualDiscountBasisPoints, priced.manualDiscountSen, recoveryExpiresAt],
   );
   for (const line of priced.lines) await c.query(
     `INSERT INTO myfin.pricing_snapshot_lines(
        workspace_id,company_id,snapshot_id,line_no,product_id,variant_id,category,subcategory,
-       description,quantity_milli,unit_price_sen,gross_sen,discount_sen,net_sen)
-     VALUES($1,$2,$3,$4,$5,nullif($6,''),$7,$8,$9,$10,$11,$12,$13,$14)`,
+       description,quantity_milli,unit_price_sen,gross_sen,discount_sen,net_sen,automatic_reward)
+     VALUES($1,$2,$3,$4,$5,nullif($6,''),$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [workspaceId, companyId, id, line.lineNo, line.productId, line.variantId, line.category,
       line.subcategory, line.description, line.quantityMilli, line.unitPriceSen, line.grossSen,
-      line.discountSen, line.netSen],
+      line.discountSen, line.netSen, Boolean(line.automaticReward)],
   );
   for (let index = 0; index < priced.applications.length; index++) {
     const application = priced.applications[index];
@@ -379,7 +417,7 @@ async function persistSnapshot(c, { workspaceId, companyId, id, expiresAt, reque
   }
 }
 
-function safeSnapshotOutput(id, expiresAt, requestDigest, priced) {
+function safeSnapshotOutput(id, expiresAt, requestDigest, priced, metadata = {}) {
   return {
     id,
     requestDigest,
@@ -388,6 +426,11 @@ function safeSnapshotOutput(id, expiresAt, requestDigest, priced) {
     pricedAt: priced.pricedAt,
     currencyCode: priced.currencyCode,
     customerId: priced.customerId,
+    channel: metadata.channel || 'storefront',
+    recoveryExpiresAt: metadata.recoveryExpiresAt || null,
+    manualDiscountBasisPoints: metadata.manualDiscountBasisPoints || 0,
+    manualDiscountSen: priced.manualDiscountSen || 0,
+    promotionDiscountSen: priced.promotionDiscountSen ?? priced.discountSen,
     studentEligibilityVersion: priced.studentEligibilityVersion,
     subtotalSen: priced.subtotalSen,
     discountSen: priced.discountSen,
@@ -408,16 +451,67 @@ function safeSnapshotOutput(id, expiresAt, requestDigest, priced) {
   };
 }
 
+function applyManualDiscount(priced, manualDiscountBasisPoints, cashRounding) {
+  const promotionDiscountSen = priced.discountSen;
+  const roundedRatio = (numerator, denominator) => {
+    const quotient = numerator / denominator;
+    return (numerator % denominator) * 2n >= denominator ? quotient + 1n : quotient;
+  };
+  const safeNumber = value => {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0 || number > MAX_SEN)
+      fail(500, 'invalid_pricing_total');
+    return number;
+  };
+  const manualDiscountSen = safeNumber(roundedRatio(
+    BigInt(priced.taxableSen) * BigInt(manualDiscountBasisPoints), 10_000n,
+  ));
+  const remaining = priced.lines.map(line => line.netSen);
+  const total = BigInt(priced.taxableSen);
+  const allocation = remaining.map((amount, index) => {
+    const numerator = BigInt(manualDiscountSen) * BigInt(amount);
+    return { index, amount: total ? numerator / total : 0n, remainder: total ? numerator % total : 0n };
+  });
+  let allocated = allocation.reduce((sum, row) => sum + row.amount, 0n);
+  allocation.sort((left, right) => left.remainder === right.remainder
+    ? left.index - right.index : left.remainder > right.remainder ? -1 : 1);
+  for (let index = 0; allocated < BigInt(manualDiscountSen); index++, allocated++)
+    allocation[index % allocation.length].amount++;
+  allocation.sort((left, right) => left.index - right.index);
+  const lines = priced.lines.map((line, index) => ({ ...line,
+    discountSen: line.discountSen + safeNumber(allocation[index].amount),
+    netSen: line.netSen - safeNumber(allocation[index].amount),
+  }));
+  const discountSen = promotionDiscountSen + manualDiscountSen;
+  const taxableSen = priced.subtotalSen - discountSen;
+  const taxSen = safeNumber(roundedRatio(BigInt(taxableSen) * BigInt(priced.taxBasisPoints), 10_000n));
+  const totalBeforeRoundingSen = taxableSen + taxSen;
+  const remainder = totalBeforeRoundingSen % 5;
+  const roundingSen = cashRounding && remainder ? (remainder <= 2 ? -remainder : 5 - remainder) : 0;
+  return { ...priced, lines, promotionDiscountSen, manualDiscountSen, discountSen, taxableSen, taxSen,
+    totalBeforeRoundingSen, roundingSen, totalSen: totalBeforeRoundingSen + roundingSen,
+    rulesDigest: digest({ promotionRulesDigest: priced.rulesDigest, manualDiscountBasisPoints, cashRounding }) };
+}
+
 /**
  * Create an authoritative, immutable quote. The supplied client must already be
  * inside a database transaction because migration 0022 defers the parent/detail
  * consistency check until commit.
  */
 export async function createPricingSnapshot(c, input, options = {}) {
-  strictKeys(input, new Set(['workspaceId', 'companyId', 'customerId', 'lines', 'voucherCode']));
+  strictKeys(input, new Set([
+    'workspaceId', 'companyId', 'customerId', 'lines', 'voucherCode',
+    'channel', 'issuedToStaffId', 'manualDiscountBasisPoints',
+  ]));
   const companyId = text(input.companyId);
   const expectedWorkspace = text(input.workspaceId, { optional: true });
   const customerId = text(input.customerId, { optional: true });
+  const channel = input.channel || 'storefront';
+  if (!['storefront', 'pos'].includes(channel)) fail(400, 'invalid_pricing_channel');
+  const issuedToStaffId = text(input.issuedToStaffId, { optional: true });
+  if ((channel === 'pos') !== Boolean(issuedToStaffId)) fail(400, 'invalid_pricing_principal');
+  const manualDiscountBasisPoints = basisPoints(input.manualDiscountBasisPoints ?? 0);
+  if (channel !== 'pos' && manualDiscountBasisPoints) fail(400, 'invalid_manual_discount_channel');
   const requested = normalizeRequestedLines(input.lines);
   const now = instant(typeof options.now === 'function' ? options.now() : (options.now || new Date()));
   const pricedAt = now.toISOString();
@@ -426,6 +520,8 @@ export async function createPricingSnapshot(c, input, options = {}) {
   if (ttl < 30) fail(500, 'invalid_snapshot_expiry');
   const cashRounding = options.cashRounding ?? true;
   if (typeof cashRounding !== 'boolean') fail(500, 'invalid_cash_rounding_policy');
+  const persist = options.persist ?? true;
+  if (typeof persist !== 'boolean') fail(500, 'invalid_snapshot_persistence');
 
   const company = (await c.query(
     'SELECT workspace_id,data FROM myfin.companies WHERE id=$1 FOR SHARE', [companyId],
@@ -448,13 +544,13 @@ export async function createPricingSnapshot(c, input, options = {}) {
     workspaceId, companyId, currencyCode, customerId, lookupDigest, at: pricedAt,
   });
   const [lines, eligibility, promotions] = await Promise.all([
-    catalogLines(c, companyId, requested),
+    catalogLines(c, companyId, requested, channel),
     customerId ? c.query(
       `SELECT status,version,valid_from,valid_until
          FROM myfin.student_eligibilities WHERE workspace_id=$1 AND customer_id=$2`,
       [workspaceId, customerId],
     ) : Promise.resolve({ rows: [] }),
-    loadPromotions(c, { workspaceId, companyId, currencyCode, customerId, voucher, at: pricedAt }),
+    loadPromotions(c, { workspaceId, companyId, currencyCode, customerId, voucher, at: pricedAt, channel }),
   ]);
   const student = eligibility.rows[0] ? {
     status: eligibility.rows[0].status,
@@ -462,23 +558,50 @@ export async function createPricingSnapshot(c, input, options = {}) {
     validFrom: eligibility.rows[0].valid_from ? new Date(eligibility.rows[0].valid_from).toISOString() : null,
     validUntil: eligibility.rows[0].valid_until ? new Date(eligibility.rows[0].valid_until).toISOString() : null,
   } : null;
-  const priced = priceWithPromotions({
+  let automaticRewards = [];
+  if (channel === 'pos') {
+    const rewardPromotions = promotions.filter(promotion => promotion.discountType === 'free_item');
+    if (rewardPromotions.length) {
+      const rewardLines = await catalogLines(c, companyId, rewardPromotions.map((promotion, index) => ({
+        lineNo: requested.length + index + 1,
+        productId: promotion.rewardProductId,
+        variantId: promotion.rewardVariantId,
+        quantityMilli: promotion.rewardQuantityMilli,
+      })), channel);
+      automaticRewards = rewardLines.map((line, index) => ({
+        promotionId: rewardPromotions[index].id,
+        productId: line.productId,
+        variantId: line.variantId,
+        category: line.category,
+        subcategory: line.subcategory,
+        description: line.description,
+        unitPriceSen: line.unitPriceSen,
+      }));
+    }
+  }
+  let priced = priceWithPromotions({
     lines, promotions, customerId, studentEligibility: student,
-    at: pricedAt, currencyCode, taxBasisPoints, cashRounding,
+    at: pricedAt, currencyCode, taxBasisPoints, cashRounding, automaticRewards,
   });
   priced.taxBasisPoints = taxBasisPoints;
+  priced = applyManualDiscount(priced, manualDiscountBasisPoints, cashRounding);
   if (priced.totalSen <= 0) fail(400, 'order_total_required');
   if (lookupDigest && !priced.applications.some(application => application.voucherId))
     fail(400, 'voucher_invalid_or_unavailable');
   const requestDigest = digest({
     workspaceId, companyId, customerId, lines: requested,
     voucherLookupDigest: lookupDigest, currencyCode, taxBasisPoints, cashRounding,
+    channel, issuedToStaffId, manualDiscountBasisPoints,
   });
   const idFactory = options.idFactory || randomUUID;
-  const id = text(idFactory(), { message: 'invalid_snapshot_id' });
-  const expiresAt = new Date(now.getTime() + ttl * 1000).toISOString();
-  await persistSnapshot(c, { workspaceId, companyId, id, expiresAt, requestDigest, priced });
-  return safeSnapshotOutput(id, expiresAt, requestDigest, priced);
+  const id = persist ? text(idFactory(), { message: 'invalid_snapshot_id' }) : '';
+  const expiresAt = persist ? new Date(now.getTime() + ttl * 1000).toISOString() : null;
+  const recoveryExpiresAt = persist && channel === 'pos'
+    ? new Date(now.getTime() + POS_RECOVERY_TTL_SECONDS * 1000).toISOString() : null;
+  if (persist) await persistSnapshot(c, { workspaceId, companyId, id, expiresAt, requestDigest, priced,
+    channel, issuedToStaffId, manualDiscountBasisPoints, recoveryExpiresAt });
+  return safeSnapshotOutput(id, expiresAt, requestDigest, priced,
+    { channel, manualDiscountBasisPoints, recoveryExpiresAt });
 }
 
 async function snapshotForCommit(c, workspaceId, companyId, snapshotId) {
@@ -524,8 +647,15 @@ export async function loadPricingSnapshot(c, input, options = {}) {
     rulesDigest: snapshot.rules_digest,
     pricedAt: new Date(snapshot.priced_at).toISOString(),
     expiresAt: snapshot.expires_at ? new Date(snapshot.expires_at).toISOString() : null,
+    recoveryExpiresAt: snapshot.recovery_expires_at
+      ? new Date(snapshot.recovery_expires_at).toISOString() : null,
     currencyCode: snapshot.currency_code,
     customerId: snapshot.customer_id || '',
+    channel: snapshot.channel || 'storefront',
+    issuedToStaffId: snapshot.issued_to_staff_id || '',
+    manualDiscountBasisPoints: Number(snapshot.manual_discount_basis_points || 0),
+    manualDiscountSen: Number(snapshot.manual_discount_sen || 0),
+    promotionDiscountSen: Number(snapshot.promotion_discount_sen ?? snapshot.discount_sen),
     studentEligibilityVersion: snapshot.student_eligibility_version === null
       ? null : Number(snapshot.student_eligibility_version),
     subtotalSen: Number(snapshot.subtotal_sen),
@@ -539,7 +669,8 @@ export async function loadPricingSnapshot(c, input, options = {}) {
       variantId: line.variant_id || '', category: line.category, subcategory: line.subcategory,
       description: line.description, quantityMilli: Number(line.quantity_milli),
       unitPriceSen: Number(line.unit_price_sen), grossSen: Number(line.gross_sen),
-      discountSen: Number(line.discount_sen), netSen: Number(line.net_sen) })),
+      discountSen: Number(line.discount_sen), netSen: Number(line.net_sen),
+      automaticReward: Boolean(line.automatic_reward) })),
     discounts: discounts.map(discount => ({ promotionId: discount.promotion_id,
       promotionVersion: Number(discount.promotion_version), name: discount.display_name,
       voucherApplied: Boolean(discount.voucher_id), discountSen: Number(discount.discount_sen),
@@ -554,6 +685,32 @@ export async function reserveOrderPromotions(c, { companyId, orderId, snapshotId
     [text(companyId), text(orderId), text(snapshotId), instant(expiresAt).toISOString()],
   );
   return Number(result.rows[0]?.count || 0);
+}
+
+export async function reservePosPromotions(c, { companyId, checkoutId, snapshotId, expiresAt }) {
+  const result = await c.query(
+    'SELECT myfin.reserve_pos_promotions($1,$2,$3,$4) AS count',
+    [text(companyId), text(checkoutId), text(snapshotId), instant(expiresAt).toISOString()],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function releasePosPromotions(c, { companyId, checkoutId, snapshotId, staffId }) {
+  const result = await c.query(
+    'SELECT myfin.release_pos_promotions($1,$2,$3,$4) AS count',
+    [text(companyId), text(checkoutId), text(snapshotId), text(staffId)],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function authorizePosPricingRecovery(c, {
+  companyId, checkoutId, snapshotId, approverId, reason,
+}) {
+  await c.query(
+    'SELECT myfin.authorize_pos_pricing_recovery($1,$2,$3,$4,$5)',
+    [text(companyId), text(checkoutId), text(snapshotId), text(approverId),
+      text(reason, { max: 1000, message: 'invalid_pricing_recovery_reason' })],
+  );
 }
 
 export async function extendOrderPromotionReservations(c, { companyId, orderId, expiresAt }) {
@@ -630,8 +787,6 @@ export async function commitPricingRedemptions(c, input, options = {}) {
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,22))',
     [`${companyId}:pricing-redemption:${sourceType}:${sourceId}`]);
   const { snapshot, discounts } = await snapshotForCommit(c, workspaceId, companyId, snapshotId);
-  if (snapshot.expires_at && occurredAt >= new Date(snapshot.expires_at).toISOString())
-    fail(409, 'pricing_snapshot_expired');
   const source = await boundSource(c, { companyId, sourceType, sourceId, snapshotId });
   if (sourceType === 'customer_order' && (source.customer_id || null) !== (snapshot.customer_id || null))
     fail(409, 'pricing_customer_changed');
@@ -646,6 +801,18 @@ export async function commitPricingRedemptions(c, input, options = {}) {
       fail(409, 'promotion_redemption_source_changed');
     return existing.map(row => ({ id: row.id, promotionId: row.promotion_id,
       discountSen: Number(row.discount_sen) }));
+  }
+  if (snapshot.expires_at && occurredAt >= new Date(snapshot.expires_at).toISOString()) {
+    let recoveryAllowed = sourceType === 'pos_sale' && snapshot.channel === 'pos'
+      && snapshot.recovery_expires_at
+      && occurredAt < new Date(snapshot.recovery_expires_at).toISOString();
+    if (!recoveryAllowed && sourceType === 'pos_sale' && snapshot.channel === 'pos') {
+      recoveryAllowed = Boolean((await c.query(
+        'SELECT myfin.pos_pricing_recovery_authorized($1,$2,$3) AS allowed',
+        [companyId, sourceId, snapshotId],
+      )).rows[0]?.allowed);
+    }
+    if (!recoveryAllowed) fail(409, 'pricing_snapshot_expired');
   }
   const idFactory = options.idFactory || randomUUID;
   const written = [];

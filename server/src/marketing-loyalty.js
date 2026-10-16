@@ -433,22 +433,54 @@ export { audienceMatchesCustomer };
 
 async function customerCampaignProfile(c, input) {
   const stats = (await c.query(
-    `SELECT count(*) FILTER(WHERE orders.payment_state='paid')::integer AS workspace_order_count,
-            coalesce(round(sum(orders.total) FILTER(WHERE orders.payment_state='paid')*100),0)::bigint AS workspace_spend_sen,
-            max(orders.created_at) FILTER(WHERE orders.payment_state='paid') AS workspace_last_purchase_at,
-            count(*) FILTER(WHERE orders.payment_state='paid' AND orders.company_id=$3)::integer AS company_order_count,
-            coalesce(round(sum(orders.total) FILTER(WHERE orders.payment_state='paid' AND orders.company_id=$3)*100),0)::bigint AS company_spend_sen,
-            max(orders.created_at) FILTER(WHERE orders.payment_state='paid' AND orders.company_id=$3) AS company_last_purchase_at
-       FROM myfin.customer_order_requests orders
-       JOIN myfin.companies company ON company.id=orders.company_id
-      WHERE company.workspace_id=$1 AND orders.customer_id=$2
-        AND ($4='' OR orders.id<>$4)`,
-    [input.workspaceId, input.customerId, input.companyId, input.orderId || ''],
+    `WITH purchases AS (
+       SELECT company.workspace_id,orders.company_id,round(orders.total*100)::bigint AS total_sen,
+              orders.created_at
+         FROM myfin.customer_order_requests orders
+         JOIN myfin.companies company ON company.id=orders.company_id
+        WHERE company.workspace_id=$1 AND orders.customer_id=$2 AND orders.payment_state='paid'
+          AND ($4='' OR orders.id<>$4)
+       UNION ALL
+       SELECT company.workspace_id,sale.company_id,round(sale.total*100)::bigint AS total_sen,
+              (sale.data->>'date')::timestamptz AS created_at
+         FROM myfin.transactions sale
+         JOIN myfin.companies company ON company.id=sale.company_id
+         JOIN myfin.customer_company_links link
+           ON link.company_id=sale.company_id AND link.client_id=sale.data->>'client_id'
+        WHERE company.workspace_id=$1 AND link.customer_id=$2 AND sale.source='pos'
+          AND ($5='' OR sale.id<>$5)
+          AND NOT EXISTS(SELECT 1 FROM myfin.customer_order_payments payment
+            WHERE payment.company_id=sale.company_id AND payment.sale_id=sale.id)
+     )
+     SELECT count(*)::integer AS workspace_order_count,
+            coalesce(sum(total_sen),0)::bigint AS workspace_spend_sen,
+            max(created_at) AS workspace_last_purchase_at,
+            count(*) FILTER(WHERE company_id=$3)::integer AS company_order_count,
+            coalesce(sum(total_sen) FILTER(WHERE company_id=$3),0)::bigint AS company_spend_sen,
+            max(created_at) FILTER(WHERE company_id=$3) AS company_last_purchase_at
+       FROM purchases`,
+    [input.workspaceId, input.customerId, input.companyId, input.orderId || '', input.saleId || ''],
   )).rows[0];
   const consents = (await c.query(
-    `SELECT DISTINCT ON(channel) channel,granted FROM myfin.customer_consent_events
-      WHERE workspace_id=$1 AND customer_id=$2 AND purpose='marketing'
-      ORDER BY channel,created_at DESC,id DESC`, [input.workspaceId, input.customerId],
+    `WITH latest_consent AS (
+       SELECT DISTINCT ON(channel) channel,granted,destination,destination_verified_at
+         FROM myfin.customer_consent_events
+        WHERE workspace_id=$1 AND customer_id=$2 AND purpose='marketing'
+        ORDER BY channel,created_at DESC,id DESC
+     )
+     SELECT consent.channel,
+            consent.granted AND consent.destination_verified_at IS NOT NULL AND
+            CASE WHEN consent.channel='email'
+              THEN account.email_verified_at IS NOT NULL AND
+                   consent.destination=account.primary_email
+              ELSE profile.phone_verified_at IS NOT NULL AND
+                   consent.destination=profile.phone
+            END AS granted
+       FROM latest_consent consent
+       JOIN myfin.customer_accounts account ON account.id=$2
+       LEFT JOIN myfin.customer_workspace_profiles profile
+         ON profile.workspace_id=$1 AND profile.customer_id=account.id`,
+    [input.workspaceId, input.customerId],
   )).rows;
   const student = (await c.query(
     `SELECT status,valid_from,valid_until FROM myfin.student_eligibilities
@@ -525,7 +557,7 @@ async function activeBonusCampaigns(c, input) {
         AND version.campaign_id=campaign.id AND version.version=campaign.version
       WHERE campaign.workspace_id=$1 AND campaign.company_id=$2 AND campaign.lifecycle='published'
         AND version.starts_at<=$3 AND (version.ends_at IS NULL OR version.ends_at>$3)
-        AND 'storefront'=ANY(version.channels)
+        AND $5=ANY(version.channels)
         AND version.offer_kind IN ('bonus_points','mixed')
         AND $4>=coalesce(version.bonus_min_spend_sen,0)
         AND (version.offer_kind='bonus_points' OR EXISTS(
@@ -534,11 +566,12 @@ async function activeBonusCampaigns(c, input) {
             ON redemption.workspace_id=link.workspace_id AND redemption.company_id=link.company_id
            AND redemption.promotion_id=link.promotion_id
            AND redemption.promotion_version=link.promotion_version
-           AND redemption.source_type='customer_order' AND redemption.source_id=$5
+           AND redemption.source_type=$6 AND redemption.source_id=$7
           WHERE link.workspace_id=campaign.workspace_id AND link.company_id=campaign.company_id
             AND link.campaign_id=campaign.id AND link.campaign_version=campaign.version))
       ORDER BY campaign.id FOR SHARE OF campaign`,
-    [input.workspaceId, input.companyId, input.occurredAt, input.totalSen, input.orderId],
+    [input.workspaceId, input.companyId, input.occurredAt, input.totalSen,
+      input.channel, input.sourceType, input.sourceType === 'customer_order' ? input.orderId : input.saleId],
   )).rows;
   if (!rows.some(row => row.audiences?.length)) return rows;
   const customer = await customerCampaignProfile(c, input);
@@ -550,9 +583,17 @@ async function activeBonusCampaigns(c, input) {
  * registered customer satisfies at least one exact audience version.
  */
 export async function awardLoyaltyPointsForSale(c, rawInput) {
+  const orderId = rawInput.orderId ? v.parse(v.id, rawInput.orderId) : '';
+  const sourceType = rawInput.sourceType || (orderId ? 'customer_order' : 'pos_sale');
+  const channel = rawInput.channel || (sourceType === 'customer_order' ? 'storefront' : 'pos');
+  if (!['customer_order', 'pos_sale'].includes(sourceType)
+      || !['storefront', 'pos'].includes(channel)
+      || (sourceType === 'customer_order') !== Boolean(orderId)
+      || (sourceType === 'customer_order' ? channel !== 'storefront' : channel !== 'pos'))
+    fail(400, 'invalid_loyalty_sale_source');
   const input = {
     companyId: v.parse(v.id, rawInput.companyId), customerId: v.parse(v.id, rawInput.customerId),
-    saleId: v.parse(v.id, rawInput.saleId), orderId: v.parse(v.id, rawInput.orderId),
+    saleId: v.parse(v.id, rawInput.saleId), orderId, sourceType, channel,
     totalSen: safeInteger(rawInput.totalSen, { max: MAX_SEN }),
     occurredAt: iso(rawInput.occurredAt || new Date()), actorId: v.parse(v.id, rawInput.actorId),
   };
@@ -571,7 +612,9 @@ export async function awardLoyaltyPointsForSale(c, rawInput) {
     [input.workspaceId, input.companyId, input.saleId],
   )).rows[0];
   if (batch) {
-    if (batch.request_digest !== sourceDigest) fail(409, 'loyalty_sale_source_changed');
+    if (batch.request_digest !== sourceDigest
+        || (batch.source_type || 'customer_order') !== input.sourceType)
+      fail(409, 'loyalty_sale_source_changed');
     const recordedSettings = loyaltySettingsOutput(await settingsVersionRow(
       c, input.workspaceId, Number(batch.program_version),
     ));
@@ -584,7 +627,7 @@ export async function awardLoyaltyPointsForSale(c, rawInput) {
     return { settings: recordedSettings,
       awards: events.map(event => ({ event: eventOutput(event), replayed: true })) };
   }
-  const source = (await c.query(
+  const source = input.sourceType === 'customer_order' ? (await c.query(
     `SELECT orders.customer_id,orders.status,orders.payment_state,
             round(orders.total*100)::bigint AS order_total_sen,
             round(sale.total*100)::bigint AS sale_total_sen
@@ -596,10 +639,21 @@ export async function awardLoyaltyPointsForSale(c, rawInput) {
          ON sale.company_id=payment.company_id AND sale.id=payment.sale_id
       WHERE orders.company_id=$1 AND orders.id=$2
       FOR SHARE OF orders,sale`, [input.companyId, input.orderId, input.saleId],
+  )).rows[0] : (await c.query(
+    `SELECT sale.source,sale.data->>'client_id' AS client_id,link.customer_id,
+            round(sale.total*100)::bigint AS sale_total_sen
+       FROM myfin.transactions sale
+       JOIN myfin.customer_company_links link
+         ON link.company_id=sale.company_id AND link.client_id=sale.data->>'client_id'
+      WHERE sale.company_id=$1 AND sale.id=$2
+      FOR SHARE OF sale`, [input.companyId, input.saleId],
   )).rows[0];
-  if (!source || source.customer_id !== input.customerId || source.status !== 'paid'
-      || source.payment_state !== 'paid' || Number(source.order_total_sen) !== input.totalSen
-      || Number(source.sale_total_sen) !== input.totalSen)
+  const validCustomerOrder = input.sourceType === 'customer_order'
+    && source?.customer_id === input.customerId && source.status === 'paid'
+    && source.payment_state === 'paid' && Number(source.order_total_sen) === input.totalSen;
+  const validPosSale = input.sourceType === 'pos_sale'
+    && source?.source === 'pos' && source.customer_id === input.customerId && Boolean(source.client_id);
+  if ((!validCustomerOrder && !validPosSale) || Number(source?.sale_total_sen) !== input.totalSen)
     fail(409, 'loyalty_sale_source_invalid');
   // A legacy stamp earn may have been migrated before award batches existed.
   // Its exact source event remains authoritative and must never be recalculated.
@@ -633,8 +687,8 @@ export async function awardLoyaltyPointsForSale(c, rawInput) {
       workspaceId: input.workspaceId, companyId: input.companyId, customerId: input.customerId,
       kind: 'earn', points: basePoints, saleId: input.saleId, orderId: input.orderId,
       programVersion: settings.version, actor: { type: 'staff', id: input.actorId },
-      reason: 'Eligible paid order', idempotencyKey: digest({ type: 'base', ...sourceStable }),
-      occurredAt: input.occurredAt, stable,
+      reason: input.sourceType === 'customer_order' ? 'Eligible paid order' : 'Eligible paid POS sale',
+      idempotencyKey: digest(stable), occurredAt: input.occurredAt, stable,
     }));
   }
   for (const campaign of campaigns) {
@@ -655,10 +709,10 @@ export async function awardLoyaltyPointsForSale(c, rawInput) {
   await c.query(
     `INSERT INTO myfin.loyalty_sale_award_batches(
        workspace_id,company_id,source_sale_id,source_order_id,customer_id,total_sen,
-       program_version,request_digest,occurred_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [input.workspaceId, input.companyId, input.saleId, input.orderId, input.customerId,
-      input.totalSen, settings.version, sourceDigest, input.occurredAt],
+       program_version,request_digest,occurred_at,source_type)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [input.workspaceId, input.companyId, input.saleId, input.orderId || null, input.customerId,
+      input.totalSen, settings.version, sourceDigest, input.occurredAt, input.sourceType],
   );
   return { settings, awards: awards.map(item => ({ event: eventOutput(item.event), replayed: item.replayed })) };
 }

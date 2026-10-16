@@ -25,6 +25,7 @@ test('every staff and administration route has a concise module page identity', 
   assert.equal(workspacePageFor('/pos').description, "Make someone's day.");
   assert.equal(workspacePageFor('/products').title, 'Inventory');
   assert.equal(workspacePageFor('/stock').title, 'Stock Records');
+  assert.equal(workspacePageFor('/storefront').title, 'Online Storefront');
   assert.equal(workspacePageFor('/expenses').title, 'Expenses');
   assert.deepEqual(WORKSPACE_MODULES.map(module => module.label), [
     'Workspace', 'Inventory', 'Finance', 'Analytics', 'Administration', 'Settings', 'User Administration',

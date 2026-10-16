@@ -185,8 +185,28 @@ const campaignSelect = `SELECT campaign.id,campaign.version,campaign.lifecycle,c
        version.name,version.description,version.objective,version.channels,version.starts_at,version.ends_at,
        version.budget_sen,version.currency_code,version.offer_kind,version.bonus_points,version.bonus_min_spend_sen,
        coalesce((SELECT jsonb_agg(jsonb_build_object('promotionId',link.promotion_id,
-         'promotionVersion',link.promotion_version) ORDER BY link.promotion_id,link.promotion_version)
+         'promotionVersion',link.promotion_version,'redemptionMode',offer.redemption_mode,
+         'voucherReady',CASE WHEN offer.redemption_mode<>'voucher' THEN true ELSE EXISTS(
+           SELECT 1 FROM myfin.promotion_vouchers voucher
+           JOIN myfin.promotion_voucher_versions voucher_version
+             ON voucher_version.workspace_id=voucher.workspace_id AND voucher_version.company_id=voucher.company_id
+            AND voucher_version.promotion_id=voucher.promotion_id AND voucher_version.voucher_id=voucher.id
+            AND voucher_version.version=voucher.version
+           LEFT JOIN myfin.promotion_voucher_usage_counters voucher_usage
+             ON voucher_usage.workspace_id=voucher.workspace_id AND voucher_usage.company_id=voucher.company_id
+            AND voucher_usage.promotion_id=voucher.promotion_id AND voucher_usage.voucher_id=voucher.id
+           WHERE voucher.workspace_id=link.workspace_id AND voucher.company_id=link.company_id
+             AND voucher.promotion_id=link.promotion_id AND voucher_version.enabled
+             AND voucher_version.valid_from<=version.starts_at
+             AND ((version.ends_at IS NULL AND voucher_version.valid_until IS NULL)
+               OR (version.ends_at IS NOT NULL AND (voucher_version.valid_until IS NULL OR voucher_version.valid_until>=version.ends_at)))
+             AND (voucher_version.max_redemptions IS NULL
+               OR coalesce(voucher_usage.redemption_count,0)<voucher_version.max_redemptions)
+         ) END) ORDER BY link.promotion_id,link.promotion_version)
          FROM myfin.marketing_campaign_version_promotions link
+         JOIN myfin.promotion_versions offer
+           ON offer.workspace_id=link.workspace_id AND offer.company_id=link.company_id
+          AND offer.promotion_id=link.promotion_id AND offer.version=link.promotion_version
         WHERE link.workspace_id=campaign.workspace_id AND link.company_id=campaign.company_id
           AND link.campaign_id=campaign.id AND link.campaign_version=campaign.version),'[]'::jsonb) AS promotion_links,
        coalesce((SELECT jsonb_agg(jsonb_build_object('audienceId',link.audience_id,
@@ -235,7 +255,8 @@ async function availablePromotions(c, workspaceId, companyId) {
       `SELECT promotion.id,promotion.version,version.name,version.enabled,version.redemption_mode,
             version.valid_from,version.valid_until,version.discount_type,version.discount_basis_points,
             version.discount_sen,version.reward_product_id,version.reward_variant_id,
-            version.reward_quantity_milli,version.requires_customer,version.requires_student
+            version.reward_quantity_milli,version.requires_customer,version.requires_student,
+            version.stackable,version.priority
        FROM myfin.promotions promotion JOIN myfin.promotion_versions version
          ON version.workspace_id=promotion.workspace_id AND version.company_id=promotion.company_id
         AND version.promotion_id=promotion.id AND version.version=promotion.version
@@ -251,7 +272,8 @@ async function availablePromotions(c, workspaceId, companyId) {
     discountSen: asNumber(row.discount_sen), rewardProductId: row.reward_product_id || null,
     rewardVariantId: row.reward_variant_id || null,
     rewardQuantityMilli: asNumber(row.reward_quantity_milli), requiresCustomer: !!row.requires_customer,
-    requiresStudent: !!row.requires_student,
+    requiresStudent: !!row.requires_student, stackable: !!row.stackable,
+    priority: Number(row.priority || 0),
   }));
 }
 
@@ -595,8 +617,11 @@ async function transitionCampaign(c, who, companyId, campaignId, action, expecte
   if (!transition.from.includes(row.lifecycle)) v.fail(409, 'invalid_campaign_transition');
   const now = new Date().toISOString();
   if (action === 'publish' && row.ends_at && asIso(row.ends_at) <= now) v.fail(409, 'campaign_schedule_ended');
-  if (action === 'publish' && !row.channels?.includes('storefront'))
-    v.fail(409, 'campaign_storefront_channel_required');
+  if (action === 'publish' && !row.channels?.some(channel => ['storefront','pos'].includes(channel)))
+    v.fail(409, 'campaign_pricing_channel_required');
+  if (action === 'publish' && row.promotion_links?.some(link =>
+    link.redemptionMode === 'voucher' && link.voucherReady !== true))
+    v.fail(409, 'campaign_enabled_voucher_required');
   if (['publish', 'pause', 'complete'].includes(action))
     return campaignOutput(await advanceCampaignLifecycle(
       c, who, workspaceId, companyId, row, action, transition,
@@ -781,7 +806,7 @@ async function campaignAnalytics(c, workspaceId, companyId, campaign, range) {
               count(*) FILTER(WHERE reservation.state='released')::bigint AS released_reservations
          FROM myfin.promotion_reservations reservation
         WHERE reservation.workspace_id=$1 AND reservation.company_id=$2
-          AND reservation.created_at >= $4::date AND reservation.created_at < $5::date
+          AND reservation.reserved_at >= $4::date AND reservation.reserved_at < $5::date
           AND EXISTS(SELECT 1 FROM campaign_links link
             WHERE link.promotion_id=reservation.promotion_id AND link.promotion_version=reservation.promotion_version)
      )

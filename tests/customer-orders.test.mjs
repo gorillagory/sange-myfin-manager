@@ -1,13 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   customerOrderActions,
   customerOrderCart,
   customerOrderCounts,
   customerOrderCustomer,
   customerOrderStatusLabel,
+  customerOrderOnlinePaymentLabel,
   customerOrderTenderMatches,
+  blocksCounterPayment,
+  canReconcileCustomerOrderPayment,
   isTenderableCustomerOrder,
+  onlinePaymentReconciliationError,
   validCustomerOrderCart,
 } from '../src/domain/customerOrders.js';
 
@@ -19,7 +24,30 @@ test('customer request state exposes only safe staff transitions', () => {
   assert.deepEqual(customerOrderActions({ status:'paid', paymentStatus:'paid' }), []);
   assert.equal(isTenderableCustomerOrder({ status:'awaiting_acceptance' }), false);
   assert.equal(isTenderableCustomerOrder({ status:'ready', paymentStatus:'unpaid' }), true);
+  assert.equal(isTenderableCustomerOrder({ status:'ready', paymentStatus:'unpaid' }, { state:'pending' }), false);
+  assert.equal(isTenderableCustomerOrder({ status:'ready', paymentStatus:'unpaid' }, { state:'confirmed_unposted' }), false);
+  assert.equal(isTenderableCustomerOrder({ status:'ready', paymentStatus:'unpaid' }, { state:'failed' }), true);
+  assert.equal(blocksCounterPayment({ state:'finalized' }), true);
+  assert.equal(blocksCounterPayment({ state:'reconciliation_required' }), true);
+  assert.equal(blocksCounterPayment({ state:'failed' }), false);
+  assert.equal(canReconcileCustomerOrderPayment({ state:'pending', paymentId:'' }), true);
+  assert.equal(canReconcileCustomerOrderPayment({ state:'reconciliation_required', paymentId:'paid-a' }), false);
+  assert.equal(canReconcileCustomerOrderPayment({ state:'reconciliation_required', providerStatus:'completed' }), true);
+  assert.equal(canReconcileCustomerOrderPayment({ state:'failed' }), false);
+  assert.equal(customerOrderOnlinePaymentLabel({ state:'confirmed_unposted' }), 'Online payment confirmed');
   assert.equal(customerOrderStatusLabel('ready'), 'Ready for collection');
+});
+
+test('provider reconciliation errors keep staff away from unsafe counter tender', () => {
+  assert.match(onlinePaymentReconciliationError('online_payment_provider_request_not_found'),
+    /Keep counter payment locked.*HitPay dashboard/i);
+  assert.match(onlinePaymentReconciliationError({ message:'online_payment_provider_response_invalid' }),
+    /could not verify.*locked/i);
+  assert.match(onlinePaymentReconciliationError({ message:'online_payment_reconciliation_unavailable' }),
+    /gateway connection.*do not take another payment/i);
+  assert.match(onlinePaymentReconciliationError({ message:'online_payment_amount_mismatch' }),
+    /does not match.*workspace owner/i);
+  assert.match(onlinePaymentReconciliationError({ message:'unexpected' }), /Keep counter payment locked/i);
 });
 
 test('counter tender must match every accepted quote total', () => {
@@ -62,4 +90,18 @@ test('staff checkout projection wins over display lines and preserves guest iden
     { productId:'coffee', variantId:'iced', desc:'Accepted coffee', variant:'Iced', unit:'cup', qty:2, price:8.5 },
   ]);
   assert.deepEqual(customerOrderCustomer(order), { id:'', name:'Counter guest', email:'counter@example.test' });
+});
+
+test('staff order review verifies provider evidence before counter tender or finalization', async () => {
+  const source = await readFile(new URL('../src/components/dashboard/OrdersTab.vue', import.meta.url), 'utf8');
+  assert.match(source, /customer-orders\$\{suffix\}/);
+  assert.match(source, /online-payment`\)\)/);
+  assert.match(source, /canTenderSelected/);
+  assert.match(source, /confirmed_unposted/);
+  assert.match(source, /online-payment\/finalize/);
+  assert.match(source, /online-payment\/reconcile/);
+  assert.match(source, /Reconcile with HitPay/);
+  assert.match(source, /onlinePaymentReconciliationError/);
+  assert.match(source, /providerStatus==='completed'/);
+  assert.match(source, /Do not collect payment again/);
 });

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
-  customerOrderMaintenanceInternals, expireStaleCustomerOrders, maintainCustomerOrders,
+  cleanupExpiredStorefrontPricingSnapshots, customerOrderMaintenanceInternals,
+  expireStaleCustomerOrders, maintainCustomerOrders,
   redactRetainedCustomerOrderContacts, runCustomerOrderMaintenance,
 } from '../src/customer-order-maintenance.js';
 import { runReportWorkerCycle, startReportWorker } from '../src/report-worker.js';
@@ -17,6 +19,8 @@ test('scheduled expiry is bounded, concurrent-safe and tenant-keyed for every ac
   const client = { async query(sql, params) {
     calls.push({ sql,params });
     if (sql.includes('SELECT o.company_id,o.id,o.status,o.version')) return { rowCount:2,rows:orders };
+    if (sql.includes('pg_advisory_xact_lock')) return { rowCount:1,rows:[{}] };
+    if (sql.includes('customer_order_online_payment_state')) return { rowCount:0,rows:[] };
     if (sql.includes("SET status='expired'")) return { rowCount:1,rows:[{ id:params[1] }] };
     if (sql.includes('UPDATE myfin.customer_order_reservations')) return { rowCount:1,rows:[] };
     if (sql.includes('UPDATE myfin.customer_order_recipe_reservations')) return { rowCount:1,rows:[] };
@@ -61,6 +65,24 @@ test('scheduled expiry is bounded, concurrent-safe and tenant-keyed for every ac
     customerOrderMaintenanceInternals.expiryRequestId(orders[0]));
 });
 
+test('scheduled expiry keeps reservations when a hosted checkout is pending', async () => {
+  const calls = [], order = { company_id:'company-a',id:'ready-a',status:'ready',version:4 };
+  const client = { async query(sql, params) {
+    calls.push({ sql,params });
+    if (sql.includes('SELECT o.company_id,o.id,o.status,o.version')) return { rowCount:1,rows:[order] };
+    if (sql.includes('pg_advisory_xact_lock')) return { rowCount:1,rows:[{}] };
+    if (sql.includes('customer_order_online_payment_state'))
+      return { rowCount:1,rows:[{ state:'pending' }] };
+    throw new Error(`Unexpected mutation: ${sql}`);
+  } };
+  assert.deepEqual(await expireStaleCustomerOrders(client, { now:at,limit:10 }),
+    { selected:1,expired:0,capped:false });
+  assert.equal(calls.some(call => /UPDATE myfin\.customer_order_requests/.test(call.sql)), false);
+  assert.equal(calls.some(call => /release_order_promotion_reservations/.test(call.sql)), false);
+  assert.deepEqual(calls.filter(call => call.sql.includes('pg_advisory_xact_lock'))[0].params,
+    ['online-payment-order:company-a:ready-a']);
+});
+
 test('tenant-wide redaction reuses the retention mutation and never exceeds the row budget', async () => {
   const calls = [];
   const client = { async query(sql, params) {
@@ -87,16 +109,41 @@ test('tenant-wide redaction reuses the retention mutation and never exceeds the 
   assert.ok(mutations.every(call => /delivery_address_snapshot=.*'\{\}'::jsonb/s.test(call.sql)));
 });
 
+test('expired storefront quote cleanup is bounded and accepts only a sane database result', async () => {
+  const calls = [];
+  const client = { async query(sql, params) {
+    calls.push({ sql,params });
+    return { rowCount:1,rows:[{ selected_count:'10',deleted_count:'8' }] };
+  } };
+  assert.deepEqual(await cleanupExpiredStorefrontPricingSnapshots(client, { limit:10 }), {
+    selected:10,deleted:8,capped:true,
+  });
+  assert.match(calls[0].sql, /cleanup_expired_unbound_storefront_pricing_snapshots\(\$1\)/);
+  assert.deepEqual(calls[0].params, [10]);
+  await assert.rejects(cleanupExpiredStorefrontPricingSnapshots({ query:async () => ({
+    rows:[{ selected_count:2,deleted_count:3 }],
+  }) }), /invalid_pricing_snapshot_cleanup_result/);
+  await assert.rejects(cleanupExpiredStorefrontPricingSnapshots({ query:async () => ({
+    rows:[],
+  }) }), /invalid_pricing_snapshot_cleanup_result/);
+  await assert.rejects(cleanupExpiredStorefrontPricingSnapshots({ query:async () => ({
+    rows:[{ selected_count:null,deleted_count:null }],
+  }) }), /invalid_pricing_snapshot_cleanup_result/);
+});
+
 test('maintenance leaves in-retention and active contact data untouched when no tenant is eligible', async () => {
   const calls = [];
   const client = { async query(sql, params) {
     calls.push({ sql,params });
     if (sql.includes('SELECT o.company_id,o.id,o.status,o.version')) return { rowCount:0,rows:[] };
     if (sql.includes('min(o.updated_at) AS oldest')) return { rowCount:0,rows:[] };
+    if (sql.includes('cleanup_expired_unbound_storefront_pricing_snapshots'))
+      return { rowCount:1,rows:[{ selected_count:0,deleted_count:0 }] };
     throw new Error(`Unexpected mutation: ${sql}`);
   } };
   assert.deepEqual(await maintainCustomerOrders(client, { now:at,limit:10 }), {
-    selected:0,expired:0,redacted:0,companies:0,hasMore:false,
+    selected:0,expired:0,redacted:0,companies:0,
+    storefrontPricingSnapshotsSelected:0,storefrontPricingSnapshotsDeleted:0,hasMore:false,
   });
   assert.equal(calls.some(call => /^\s*(?:UPDATE|INSERT)\b/.test(call.sql)), false);
 });
@@ -106,6 +153,8 @@ test('database maintenance is one rollback-safe unit and validates its bound bef
   const client = { async query(sql) {
     if (sql.includes('SELECT o.company_id,o.id,o.status,o.version')) return { rowCount:0,rows:[] };
     if (sql.includes('min(o.updated_at) AS oldest')) return { rowCount:0,rows:[] };
+    if (sql.includes('cleanup_expired_unbound_storefront_pricing_snapshots'))
+      return { rowCount:1,rows:[{ selected_count:0,deleted_count:0 }] };
     throw new Error(`Unexpected SQL: ${sql}`);
   } };
   const database = { async transaction(fn) { transactions++; return fn(client); } };
@@ -122,16 +171,21 @@ test('report cycles expose a safe maintenance failure and retry it on the next p
   const maintainOrders = async () => {
     attempts++;
     if (attempts === 1) throw new Error('postgresql://secret@host/private');
-    return { selected:1,expired:1,redacted:1,companies:1,hasMore:false };
+    return { selected:1,expired:1,redacted:1,companies:1,
+      storefrontPricingSnapshotsSelected:2,storefrontPricingSnapshotsDeleted:2,hasMore:false };
   };
   const first = await runReportWorkerCycle({}, { now:at,maintainOrders,claimRuns:emptyClaim });
   assert.deepEqual(first.maintenance, {
-    selected:0,expired:0,redacted:0,companies:0,hasMore:true,failed:true,retry:true,
+    selected:0,expired:0,redacted:0,companies:0,
+    storefrontPricingSnapshotsSelected:0,storefrontPricingSnapshotsDeleted:0,
+    hasMore:true,failed:true,retry:true,
   });
   assert.doesNotMatch(JSON.stringify(first), /secret|postgresql/);
   const retry = await runReportWorkerCycle({}, { now:at,maintainOrders,claimRuns:emptyClaim });
   assert.deepEqual(retry.maintenance, {
-    selected:1,expired:1,redacted:1,companies:1,hasMore:false,failed:false,retry:false,
+    selected:1,expired:1,redacted:1,companies:1,
+    storefrontPricingSnapshotsSelected:2,storefrontPricingSnapshotsDeleted:2,
+    hasMore:false,failed:false,retry:false,
   });
   assert.equal(attempts, 2);
 });
@@ -153,4 +207,50 @@ test('worker emits an observable redacted maintenance failure and still closes c
   ]);
   assert.deepEqual(events[0].detail, { retry:true });
   assert.equal(closed, 1);
+});
+
+test('storefront quote cleanup is referentially guarded, immutable by default and least privilege', async () => {
+  const [migration,development,production] = await Promise.all([
+    readFile(new URL('../../db/migrations/0037_pos_pricing.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../../db/grant-development-runtime.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../../db/grant-production-runtime.sql', import.meta.url), 'utf8'),
+  ]);
+  const start = migration.indexOf(
+    'CREATE FUNCTION myfin.cleanup_expired_unbound_storefront_pricing_snapshots',
+  );
+  assert.ok(start >= 0, 'cleanup function must be present in the pricing migration');
+  const cleanup = migration.slice(start);
+  assert.match(cleanup, /SECURITY DEFINER SET search_path=pg_catalog,myfin/);
+  assert.match(cleanup, /channel='storefront'/);
+  assert.doesNotMatch(cleanup, /channel\s+IN\s*\([^)]*'pos'/i,
+    'device-only paid receipts make POS snapshot expiry unsafe without a tender-start binder');
+  assert.match(cleanup, /expires_at<=statement_timestamp\(\)-interval '24 hours'/);
+  assert.match(cleanup, /LIMIT requested_limit[\s\S]*FOR UPDATE OF snapshot SKIP LOCKED/);
+  for (const reference of [
+    'customer_order_requests', 'transactions', 'promotion_redemptions',
+    'promotion_reservations', 'pos_pricing_recovery_exceptions', 'receipt_reviews',
+  ]) assert.match(cleanup, new RegExp(`NOT EXISTS\\([\\s\\S]*?myfin\\.${reference}`));
+  assert.match(migration,
+    /ADD COLUMN pricing_snapshot_id text[\s\S]*?GENERATED ALWAYS AS \(nullif\(payload->>'pricingSnapshotId',''\)\) STORED/);
+  assert.match(migration,
+    /receipt_reviews_pricing_snapshot_fkey[\s\S]*?FOREIGN KEY\(company_id,pricing_snapshot_id\)[\s\S]*?REFERENCES myfin\.pricing_snapshots\(company_id,id\) ON DELETE RESTRICT/);
+  assert.match(migration,
+    /receipt_reviews_pricing_snapshot_idx[\s\S]*?WHERE pricing_snapshot_id IS NOT NULL/);
+  const deletions = [
+    'pricing_snapshot_discount_lines', 'pricing_snapshot_discounts',
+    'pricing_snapshot_lines', 'pricing_snapshots',
+  ].map(table => cleanup.indexOf(`DELETE FROM myfin.${table}`));
+  assert.ok(deletions.every(index => index >= 0));
+  assert.deepEqual(deletions, [...deletions].sort((left, right) => left - right),
+    'pricing evidence must be removed child-first');
+  assert.match(cleanup, /REVOKE ALL ON FUNCTION myfin\.cleanup_expired_unbound_storefront_pricing_snapshots\(integer\) FROM PUBLIC/);
+  assert.match(migration, /current_setting\('myfin\.expired_pricing_snapshot_cleanup',true\)='on'/);
+  assert.match(migration, /RAISE EXCEPTION 'promotion_history_immutable'/);
+  for (const [source,role] of [[development,'myfin_dev_runtime'],[production,'myfin_prod_runtime']]) {
+    assert.match(source, new RegExp(
+      `cleanup_expired_unbound_storefront_pricing_snapshots\\(integer\\)[\\s\\S]*?TO ${role}`,
+    ));
+    assert.doesNotMatch(source,
+      new RegExp(`GRANT[^;]*DELETE[^;]*pricing_snapshots[^;]*TO ${role}`, 'i'));
+  }
 });

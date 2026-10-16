@@ -50,6 +50,19 @@ export function loadCustomerOrderStatus(code, options = {}) {
   });
 }
 
+export function loadCustomerOrderPayment(code, options = {}) {
+  return publicApi(`/order-requests/${encodeURIComponent(code)}/online-payment`, options);
+}
+
+export function startCustomerOrderPayment(code, requestId, options = {}) {
+  return publicApi(`/order-requests/${encodeURIComponent(code)}/online-payment`, {
+    ...options,
+    method: 'POST',
+    body: {},
+    headers: { ...options.headers, 'Idempotency-Key': requestId },
+  });
+}
+
 export function loadCustomerAccount(options = {}) {
   return publicApi('/customer/me', options);
 }

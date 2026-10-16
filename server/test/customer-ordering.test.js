@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { assertProductReservationFloor, assertUnreservedSaleStock } from '../src/customer-order-reservations.js';
-import { assertTenderMatches, canonicalTenderSale } from '../src/customer-orders.js';
+import { assertTenderMatches, canonicalTenderSale, registerCustomerOrders } from '../src/customer-orders.js';
 import { orderOutput, orderRequestDigest, quoteToken, storefrontRateKey, totalsWithDelivery,
   verifyQuoteToken } from '../src/storefront-public.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
@@ -227,6 +227,125 @@ test('counter tender rebuilds receipt lines and customer linkage from the accept
     { ...order, guest_name: '', guest_email: 'private@example.test' }, lines, crafted);
   assert.equal(emailOnlyGuest.customerName, 'Walk-in customer');
   assert.equal(emailOnlyGuest.customerEmail, '');
+});
+
+test('manager finalization posts a verified online payment once from authoritative order totals', async () => {
+  const app = { routes: [],
+    get(url, handler) { this.routes.push({ method:'GET', url, handler }); },
+    post(url, handler) { this.routes.push({ method:'POST', url, handler }); },
+    put(url, handler) { this.routes.push({ method:'PUT', url, handler }); } };
+  const now = '2026-10-16T02:30:00.000Z';
+  const order = { company_id:'company-a', id:'order-a', public_code:'ABC12345',
+    location_id:'counter', location_name:'Counter', fulfillment_mode:'pickup', table_label:'',
+    pickup_instructions:'', service_mode:'pickup', customer_id:null, guest_name:'Guest',
+    guest_email:'', guest_phone:'', status:'accepted', payment_state:'unpaid', version:2,
+    currency:'RM', subtotal:'19.95', discount_amount:'0', tax:'0', tax_rate:'0',
+    total_before_rounding:'19.95', rounding:'0', total:'19.95', delivery_fee_sen:0,
+    pricing_snapshot_id:'snapshot-a', promotion_discounts:[],
+    expires_at:'2026-10-16T03:30:00.000Z', created_at:now, updated_at:now,
+    sale_id:null, fulfillment_status:null };
+  const lines = [{ line_no:1, product_id:'latte', variant_id:null, variant_name:'', sku:'LATTE',
+    description:'Latte', unit:'cup', quantity:'1', unit_price:'19.95', line_total:'19.95' }];
+  const evidence = { company_id:'company-a', order_id:'order-a', intent_id:'intent-a',
+    amount_sen:'1995', currency_code:'MYR', state:'confirmed_unposted',
+    provider_payment_id:'payment-a', provider_method_code:'duitnow', provider_status:'completed',
+    confirmed_at:now, public_code_snapshot:'ABC12345', created_at:now };
+  let finalization = null, savedSale = null, checkoutCalls = 0;
+  const c = { query: async (sql, params = []) => {
+    if (/FROM myfin\.online_payment_finalizations\s+WHERE company_id=\$1 AND request_id=\$2/.test(sql))
+      return { rows: finalization && finalization.request_id === params[1] ? [finalization] : [],
+        rowCount: finalization && finalization.request_id === params[1] ? 1 : 0 };
+    if (/FROM myfin\.customer_order_requests o\s+JOIN myfin\.shop_locations/.test(sql))
+      return { rows:[order], rowCount:1 };
+    if (/pg_advisory_xact_lock/.test(sql)) return { rows:[{}], rowCount:1 };
+    if (/FROM myfin\.customer_order_online_payment_state s/.test(sql))
+      return { rows:[{ ...evidence, ...(finalization ? { state:'finalized',
+        finalized_sale_id:finalization.sale_id, finalized_at:now } : {}) }], rowCount:1 };
+    if (/FROM myfin\.online_payment_finalizations\s+WHERE company_id=\$1 AND order_id=\$2/.test(sql))
+      return { rows:finalization ? [finalization] : [], rowCount:finalization ? 1 : 0 };
+    if (/FROM myfin\.customer_order_lines/.test(sql)) return { rows:lines, rowCount:lines.length };
+    if (/SELECT name,data FROM myfin\.companies/.test(sql)) return { rows:[{ name:'Cafe', data:{
+      preferences:{ currency:'RM', taxRate:0, receiptFooter:'Thank you', paperWidth:'80' } } }], rowCount:1 };
+    if (/INSERT INTO myfin\.customer_order_payments/.test(sql)) {
+      order.sale_id = params[2]; return { rows:[], rowCount:1 };
+    }
+    if (/UPDATE myfin\.customer_order_requests SET status='paid'/.test(sql)) {
+      order.status = 'paid'; order.payment_state = 'paid'; order.version = params[2];
+      return { rows:[order], rowCount:1 };
+    }
+    if (/UPDATE myfin\.customer_order_(?:recipe_)?reservations/.test(sql)) return { rows:[], rowCount:1 };
+    if (/consume_order_promotion_reservations/.test(sql)) return { rows:[{ count:1 }], rowCount:1 };
+    if (/INSERT INTO myfin\.customer_order_events/.test(sql)) return { rows:[], rowCount:1 };
+    if (/INSERT INTO myfin\.online_payment_finalizations/.test(sql)) {
+      finalization = { intent_id:params[2], order_id:params[3], sale_id:params[4], actor_id:params[5],
+        request_id:params[6], request_digest:params[7] }; return { rows:[], rowCount:1 };
+    }
+    if (/SELECT company_id,id,data FROM myfin\.transactions/.test(sql))
+      return { rows:savedSale ? [{ company_id:'company-a', id:savedSale.id, data:savedSale }] : [],
+        rowCount:savedSale ? 1 : 0 };
+    throw new Error(`unexpected_sql:${sql}`);
+  } };
+  registerCustomerOrders(app, { scoped:(req, fn) => fn(c, req.params.company), audit:async () => {},
+    checkout:async (_c, who, companyId, sale, _approval, options) => {
+      checkoutCalls += 1;
+      assert.equal(who.id, 'manager-a'); assert.equal(companyId, 'company-a');
+      assert.equal(options.acceptedOrderQuote, true); assert.equal(options.serverNow, now);
+      assert.equal(sale.total, 19.95); assert.equal(sale.received, 19.95);
+      assert.equal(sale.paymentMethod, 'QR Pay'); assert.equal(sale.cashierId, 'manager-a');
+      assert.equal(sale.date, now); savedSale = sale; return sale;
+    } });
+  const route = app.routes.find(item => item.method === 'POST' &&
+    item.url.endsWith('/online-payment/finalize'));
+  const req = { params:{ company:'company-a', id:'order-a' }, identity:{ id:'manager-a',
+    username:'Manager', role:'manager' }, body:{ requestId:'5f851550-5083-43d8-b633-638851107ae2',
+    expectedVersion:2 } };
+  const first = await route.handler(req);
+  assert.equal(first.onlinePayment.state, 'finalized');
+  assert.equal(first.saleId, savedSale.id);
+  assert.equal(order.payment_state, 'paid');
+  assert.equal(finalization.intent_id, 'intent-a');
+  assert.equal(checkoutCalls, 1);
+  const replay = await route.handler(req);
+  assert.equal(replay.saleId, first.saleId);
+  assert.equal(checkoutCalls, 1, 'lost-response retry must reuse the exact posted sale');
+  await assert.rejects(route.handler({ ...req, identity:{ id:'operator-a', role:'operator' } }),
+    error => error.statusCode === 403 && error.message === 'manager_required');
+  await assert.rejects(route.handler({ ...req, body:{ ...req.body, amount:0.01 } }),
+    error => error.statusCode === 400 && error.message === 'invalid_input');
+});
+
+test('manager cancellation shares the payment lock and cannot release a pending hosted checkout', async () => {
+  const app = { routes:[],
+    get(url, handler) { this.routes.push({ method:'GET',url,handler }); },
+    post(url, handler) { this.routes.push({ method:'POST',url,handler }); },
+    put(url, handler) { this.routes.push({ method:'PUT',url,handler }); } };
+  const calls = [];
+  const order = { company_id:'company-a', id:'order-a', public_code:'ABC12345', status:'accepted',
+    payment_state:'unpaid', version:2, expires_at:new Date(Date.now()+600_000).toISOString(),
+    location_name:'Counter', fulfillment_mode:'pickup', table_label:'', pickup_instructions:'' };
+  const c = { query:async (sql, params = []) => {
+    calls.push({ sql,params });
+    if (/SELECT request_digest FROM myfin\.customer_order_events/.test(sql))
+      return { rows:[],rowCount:0 };
+    if (/FROM myfin\.customer_order_requests o\s+JOIN myfin\.shop_locations/.test(sql))
+      return { rows:[order],rowCount:1 };
+    if (/pg_advisory_xact_lock/.test(sql)) return { rows:[{}],rowCount:1 };
+    if (/SELECT state FROM myfin\.customer_order_online_payment_state/.test(sql))
+      return { rows:[{ state:'pending' }],rowCount:1 };
+    throw new Error(`unexpected_sql:${sql}`);
+  } };
+  registerCustomerOrders(app, { scoped:(req, fn) => fn(c, req.params.company),
+    audit:async () => {}, checkout:async () => { throw new Error('must not tender'); } });
+  const route = app.routes.find(item => item.method === 'POST' && item.url.endsWith('/transitions'));
+  await assert.rejects(route.handler({ params:{ company:'company-a',id:'order-a' },
+    identity:{ id:'manager-a',role:'manager' }, body:{
+      requestId:'4f64dc0d-f2ae-4cdf-9daf-f35acc5230e3', expectedVersion:2,
+      status:'cancelled', note:'Customer asked to cancel',
+    } }), error => error.statusCode === 409 && error.message === 'online_payment_holds_order');
+  const lock = calls.find(call => call.sql.includes('pg_advisory_xact_lock'));
+  assert.deepEqual(lock.params, ['online-payment-order:company-a:order-a']);
+  assert.equal(calls.some(call => /UPDATE myfin\.customer_order_requests/.test(call.sql)), false);
+  assert.equal(calls.some(call => /release_order_promotion_reservations/.test(call.sql)), false);
 });
 
 test('inventory edits cannot disable tracking or reduce stock below accepted reservations', async () => {

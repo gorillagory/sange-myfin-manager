@@ -5,6 +5,7 @@ const modules = [
     pages: [
       { path: '/pos', title: 'POS', description: "Make someone's day.", icon: 'bag' },
       { path: '/orders', title: 'Sales Orders', description: 'Keep every order moving.', icon: 'clock' },
+      { path: '/storefront', title: 'Online Storefront', description: 'Publish, promote, and take orders.', icon: 'spark' },
       { path: '/kitchen', title: 'Kitchen Display', description: 'Keep every station moving.', icon: 'printer' },
     ],
   },

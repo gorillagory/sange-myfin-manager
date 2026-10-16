@@ -284,6 +284,7 @@ function allocate(discount, indexes, remaining) {
 export function priceWithPromotions({
   lines, promotions = [], customerId = '', studentEligibility = null,
   at = new Date().toISOString(), currencyCode = 'MYR', taxBasisPoints = 0, cashRounding = false,
+  automaticRewards = [],
 }) {
   const pricedAt = instant(at, { message: 'invalid_pricing_time' });
   if (!Array.isArray(lines) || !lines.length || lines.length > 500) fail('invalid_pricing_lines');
@@ -301,32 +302,84 @@ export function priceWithPromotions({
       description: text(line.description || '', { min: 1, max: 500 }), quantityMilli, unitPriceSen, grossSen };
   });
   if (new Set(normalizedLines.map(line => line.lineNo)).size !== normalizedLines.length) fail('duplicate_pricing_line');
-  const subtotalSen = normalizedLines.reduce((sum, line) => safeNumber(BigInt(sum) + BigInt(line.grossSen)), 0);
+  // A reward added by the pricing engine must never make its own campaign meet
+  // a minimum-spend threshold. Keep the qualifying subtotal fixed to the
+  // products the cashier/customer actually selected.
+  const qualifyingSubtotalSen = normalizedLines.reduce(
+    (sum, line) => safeNumber(BigInt(sum) + BigInt(line.grossSen)), 0,
+  );
   const customer = customerId ? text(customerId, { min: 1 }) : '';
   const student = studentEligibilityAt(studentEligibility, pricedAt);
   const normalizedPromotions = boundedArray(promotions, 100, 'too_many_promotions').map(normalizePromotion);
   if (new Set(normalizedPromotions.map(p => p.id)).size !== normalizedPromotions.length) fail('duplicate_promotion');
   normalizedPromotions.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+  const rewardCatalog = new Map(boundedArray(automaticRewards, 100, 'too_many_automatic_rewards').map(raw => {
+    strictKeys(raw, new Set([
+      'promotionId', 'productId', 'variantId', 'category', 'subcategory', 'description', 'unitPriceSen',
+    ]), 'invalid_automatic_reward');
+    const promotionId = text(raw.promotionId, { min: 1 });
+    return [promotionId, {
+      productId: text(raw.productId, { min: 1 }),
+      variantId: text(raw.variantId || '', { max: 128 }),
+      category: text(raw.category || '', { max: 120 }),
+      subcategory: text(raw.subcategory || '', { max: 120 }),
+      description: text(raw.description || '', { min: 1, max: 500 }),
+      unitPriceSen: integer(raw.unitPriceSen, { max: MAX_SEN }),
+    }];
+  }));
+  if (rewardCatalog.size !== automaticRewards.length) fail('duplicate_automatic_reward');
   const remaining = normalizedLines.map(line => line.grossSen);
+  const remainingQuantity = normalizedLines.map(line => line.quantityMilli);
+  const automaticRewardLineNos = new Set();
   const applications = [];
   for (const promotion of normalizedPromotions) {
     if (applications.length && !promotion.stackable) continue;
-    if (!promotionActive(promotion, pricedAt, customer, student) || subtotalSen < promotion.minSubtotalSen) continue;
+    if (!promotionActive(promotion, pricedAt, customer, student)
+        || qualifyingSubtotalSen < promotion.minSubtotalSen) continue;
     const indexes = normalizedLines.map((line, index) => eligibleLine(promotion, line) && remaining[index] > 0 ? index : -1).filter(index => index >= 0);
     let discountSen;
     let lineDiscounts;
     if (promotion.discountType === 'free_item') {
       if ((promotion.productTargets.length || promotion.categoryTargets.length) && !indexes.length) continue;
-      const rewardIndex = normalizedLines.findIndex((line, index) => line.productId === promotion.rewardProductId
-        && line.variantId === promotion.rewardVariantId && remaining[index] > 0);
-      if (rewardIndex < 0) continue;
-      const rewardLine = normalizedLines[rewardIndex];
-      const rewardedQuantity = Math.min(rewardLine.quantityMilli, promotion.rewardQuantityMilli);
-      discountSen = Math.min(remaining[rewardIndex], safeNumber(roundedRatio(
-        BigInt(rewardLine.unitPriceSen) * BigInt(rewardedQuantity), 1000n,
-      )));
+      let quantityLeft = promotion.rewardQuantityMilli;
+      lineDiscounts = [];
+      for (let index = 0; index < normalizedLines.length && quantityLeft > 0; index++) {
+        const line = normalizedLines[index];
+        if (line.productId !== promotion.rewardProductId || line.variantId !== promotion.rewardVariantId
+            || remaining[index] <= 0 || remainingQuantity[index] <= 0) continue;
+        const rewardedQuantity = Math.min(remainingQuantity[index], quantityLeft);
+        const amount = Math.min(remaining[index], safeNumber(roundedRatio(
+          BigInt(remaining[index]) * BigInt(rewardedQuantity), BigInt(remainingQuantity[index]),
+        )));
+        if (amount > 0) {
+          lineDiscounts.push({ index, amount });
+          remainingQuantity[index] -= rewardedQuantity;
+          quantityLeft -= rewardedQuantity;
+        }
+      }
+      if (quantityLeft > 0 && rewardCatalog.has(promotion.id)) {
+        const reward = rewardCatalog.get(promotion.id);
+        if (reward.productId !== promotion.rewardProductId || reward.variantId !== promotion.rewardVariantId)
+          fail('invalid_automatic_reward');
+        if (normalizedLines.length >= 500) fail('too_many_pricing_lines');
+        const occupied = new Set(normalizedLines.map(line => line.lineNo));
+        let lineNo = 1;
+        while (occupied.has(lineNo) && lineNo <= 500) lineNo++;
+        if (lineNo > 500) fail('too_many_pricing_lines');
+        const quantityMilli = quantityLeft;
+        const grossSen = safeNumber(roundedRatio(
+          BigInt(reward.unitPriceSen) * BigInt(quantityMilli), 1000n,
+        ));
+        if (!grossSen) continue;
+        normalizedLines.push({ ...reward, lineNo, quantityMilli, grossSen });
+        remaining.push(grossSen);
+        remainingQuantity.push(0);
+        automaticRewardLineNos.add(lineNo);
+        lineDiscounts.push({ index: normalizedLines.length - 1, amount: grossSen });
+        quantityLeft = 0;
+      }
+      discountSen = lineDiscounts.reduce((sum, line) => safeNumber(BigInt(sum) + BigInt(line.amount)), 0);
       if (!discountSen) continue;
-      lineDiscounts = [{ index: rewardIndex, amount: discountSen }];
     } else {
       const eligibleSen = indexes.reduce((sum, index) => sum + remaining[index], 0);
       if (!eligibleSen) continue;
@@ -344,6 +397,9 @@ export function priceWithPromotions({
         .map(row => ({ lineNo: normalizedLines[row.index].lineNo, discountSen: row.amount })) });
     if (!promotion.stackable) break;
   }
+  const subtotalSen = normalizedLines.reduce(
+    (sum, line) => safeNumber(BigInt(sum) + BigInt(line.grossSen)), 0,
+  );
   const discountSen = applications.reduce((sum, item) => sum + item.discountSen, 0);
   const taxableSen = subtotalSen - discountSen;
   const taxSen = safeNumber(roundedRatio(BigInt(taxableSen) * BigInt(taxBasisPoints), 10000n));
@@ -352,12 +408,14 @@ export function priceWithPromotions({
   const roundingSen = cashRounding && remainder ? (remainder <= 2 ? -remainder : 5 - remainder) : 0;
   const totalSen = totalBeforeRoundingSen + roundingSen;
   const outputLines = normalizedLines.map((line, index) => ({ ...line,
+    automaticReward: automaticRewardLineNos.has(line.lineNo),
     discountSen: line.grossSen - remaining[index], netSen: remaining[index] }));
   const digestPromotions = normalizedPromotions.map(({ usage, voucher, ...rule }) => ({ ...rule,
     voucher: voucher ? (({ usage: voucherUsage, ...voucherRule }) => voucherRule)(voucher) : null }));
   const rulesDigest = digest({ pricedAt, currencyCode, customerId: customer,
     studentEligibilityVersion: student.eligible ? student.version : null,
-    lines: normalizedLines, promotions: digestPromotions, taxBasisPoints, cashRounding });
+    lines: outputLines.map(({ discountSen: _discountSen, netSen: _netSen, ...line }) => line),
+    promotions: digestPromotions, taxBasisPoints, cashRounding });
   return { pricedAt, currencyCode, customerId: customer, studentEligibilityVersion: student.eligible ? student.version : null,
     subtotalSen, discountSen, taxableSen, taxSen, totalBeforeRoundingSen, roundingSen, totalSen,
     lines: outputLines, applications, rulesDigest };

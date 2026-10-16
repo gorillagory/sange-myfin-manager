@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { canonical, cents } from '../../src/domain/pos.js';
+import { businessDate, canonical, cents, createSale } from '../../src/domain/pos.js';
 import { manager, owner, publicTransaction, requireCapability } from './access.js';
 import { assertUnreservedSaleStock, activeReservationQuantities, releaseOrderReservations } from './customer-order-reservations.js';
 import { expireIfNeeded, orderLines, orderOutput } from './storefront-public.js';
@@ -10,6 +10,10 @@ import { consumeOrderPromotionReservations, extendOrderPromotionReservations,
 import { reserveRecipeStock } from './inventory-recipes.js';
 import { awardLoyaltyPointsForSale, saveMarketingLoyaltySettings } from './marketing-loyalty.js';
 import * as v from './validation.js';
+import {
+  assertOrderHasNoConfirmedOnlinePayment, confirmedOnlinePaymentForOrder,
+} from './payment-gateways.js';
+import { assertOnlinePaymentAllowsRelease } from './online-payment-lock.js';
 
 const activeStatuses = ['awaiting_acceptance','accepted','preparing','ready'];
 const statuses = [...activeStatuses, 'cancelled','expired','paid'];
@@ -25,6 +29,9 @@ const transitionSchema = z.strictObject({
 });
 const tenderSchema = z.strictObject({
   requestId: z.uuid(), expectedVersion: z.number().int().positive(), sale: v.sale,
+});
+const onlinePaymentFinalizeSchema = z.strictObject({
+  requestId: z.uuid(), expectedVersion: z.number().int().positive(),
 });
 const listSchema = z.strictObject({
   view: z.enum(['active','all','submitted',...statuses]).default('active'),
@@ -187,17 +194,119 @@ async function canonicalTenderSale(c, order, lines, sale) {
   };
 }
 
-async function earnLoyalty(c, order, saleId, actorId) {
+async function earnLoyalty(c, order, saleId, actorId, occurredAt = new Date().toISOString()) {
   if (!order.customer_id) return;
   await awardLoyaltyPointsForSale(c, {
     companyId: order.company_id,
     customerId: order.customer_id,
     saleId,
     orderId: order.id,
+    sourceType: 'customer_order',
+    channel: 'storefront',
     totalSen: cents(Number(order.total)),
-    occurredAt: new Date().toISOString(),
+    occurredAt,
     actorId,
   });
+}
+
+function gatewayTenderMethod(providerMethodCode) {
+  return /card/i.test(String(providerMethodCode || '')) ? 'Card' : 'QR Pay';
+}
+
+async function onlinePaymentSale(c, order, lines, who, evidence) {
+  if (!order.pricing_snapshot_id) v.fail(409, 'online_payment_reconciliation_required');
+  if (Number(evidence.amount_sen) !== cents(Number(order.total)) || evidence.currency_code !== 'MYR')
+    v.fail(409, 'online_payment_reconciliation_required');
+  const confirmedAt = new Date(evidence.confirmed_at);
+  if (!Number.isFinite(confirmedAt.getTime())) v.fail(409, 'online_payment_reconciliation_required');
+  const companyRow = (await c.query(
+    'SELECT name,data FROM myfin.companies WHERE id=$1', [order.company_id],
+  )).rows[0];
+  if (!companyRow) v.fail(404, 'company_not_found');
+  const company = { ...(companyRow.data || {}), id: order.company_id, name: companyRow.name };
+  const items = lines.map(line => ({ productId: line.product_id, variantId: line.variant_id || '',
+    variant: line.variant_name || '', sku: line.sku || '', desc: line.description,
+    price: Number(line.unit_price), unit: line.unit, qty: Number(line.quantity) }));
+  const lockedTotals = {
+    subtotal: Number(order.subtotal), discountAmount: Number(order.discount_amount),
+    tax: Number(order.tax), taxRate: Number(order.tax_rate), discount: 0,
+    totalBeforeRounding: Number(order.total_before_rounding), rounding: Number(order.rounding),
+    total: Number(order.total),
+    ...(order.service_mode === 'delivery'
+      ? { deliveryFee: Number(order.delivery_fee_sen || 0) / 100 } : {}),
+  };
+  let generated;
+  try {
+    generated = createSale({ id: randomUUID(), items, company,
+      user: { uid: who.id, username: who.username || who.email || who.id },
+      method: gatewayTenderMethod(evidence.provider_method_code), received: Number(order.total),
+      confirmed: true, customer: { name: order.guest_name || 'Customer', email: '' },
+      lockedTotals, pricingSnapshotId: order.pricing_snapshot_id });
+  } catch { v.fail(409, 'online_payment_reconciliation_required'); }
+  const occurredAt = confirmedAt.toISOString();
+  generated.date = occurredAt;
+  generated.businessDate = businessDate(occurredAt);
+  return { sale: await canonicalTenderSale(c, order, lines, generated), occurredAt };
+}
+
+async function savedPaidOrder(c, companyId, orderId, saleId, who) {
+  const current = await findOrder(c, companyId, orderId);
+  if (current.sale_id !== saleId) v.fail(409, 'request_id_reused');
+  const saved = (await c.query(
+    'SELECT company_id,id,data FROM myfin.transactions WHERE company_id=$1 AND id=$2',
+    [companyId, saleId],
+  )).rows[0];
+  if (!saved) v.fail(409, 'request_id_reused');
+  return { order: staffOutput(current, await orderLines(c, companyId, orderId)),
+    sale: publicTransaction({ ...saved.data, id: saved.id, company_id: saved.company_id }, who), saleId };
+}
+
+async function completePaidOrder(c, { order, lines, saleInput, who, requestId, requestDigest,
+  note, occurredAt, checkout, audit, auditAction }) {
+  const sale = await checkout(c, who, order.company_id, saleInput, null,
+    { reservationOrderId: order.id, acceptedOrderQuote: true, serverNow: occurredAt });
+  await c.query(
+    `INSERT INTO myfin.customer_order_payments(company_id,order_id,sale_id,actor_id,request_id,request_digest)
+     VALUES($1,$2,$3,$4,$5,$6)`,
+    [order.company_id, order.id, saleInput.id, who.id, requestId, requestDigest],
+  );
+  const nextVersion = Number(order.version) + 1;
+  const updated = (await c.query(
+    `UPDATE myfin.customer_order_requests SET status='paid',payment_state='paid',version=$3,updated_at=now()
+      WHERE company_id=$1 AND id=$2 AND version=$4 RETURNING *`,
+    [order.company_id, order.id, nextVersion, order.version],
+  )).rows[0];
+  if (!updated) v.fail(409, 'customer_order_changed');
+  await releaseOrderReservations(c, order.company_id, order.id, 'paid');
+  await consumeOrderPromotionReservations(c, { companyId: order.company_id, orderId: order.id,
+    saleId: saleInput.id, occurredAt });
+  await c.query(
+    `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,staff_actor_id,request_id,request_digest,action,from_status,to_status,note)
+     VALUES($1,$2,$3,$4,'staff',$5,$6,$7,'paid',$8,'paid',$9)`,
+    [order.company_id, randomUUID(), order.id, nextVersion, who.id, requestId, requestDigest,
+      order.status, note],
+  );
+  const carryStatus = order.status === 'preparing' ? 'preparing' : order.status === 'ready' ? 'ready' : 'pending';
+  if (carryStatus !== 'pending') {
+    const fulfillment = (await c.query(
+      `UPDATE myfin.orders SET status=$3,version=version+1,updated_at=now()
+        WHERE company_id=$1 AND id=$2 AND status='pending' RETURNING version`,
+      [order.company_id, saleInput.id, carryStatus],
+    )).rows[0];
+    if (fulfillment) await c.query(
+      `INSERT INTO myfin.order_events(company_id,id,order_id,version,actor_id,request_id,request_digest,action,from_status,to_status,note)
+       VALUES($1,$2,$3,$4,$5,$6,$7,'status_changed','pending',$8,'Carried from unpaid customer order')`,
+      [order.company_id, randomUUID(), saleInput.id, fulfillment.version, who.id,
+        `customer:${requestId}`, hash(`customer:${requestDigest}`), carryStatus],
+    );
+  }
+  await earnLoyalty(c, order, saleInput.id, who.id, occurredAt);
+  await audit(c, who, order.company_id, auditAction,
+    `${order.public_code} · ${saleInput.number}`);
+  return { order: staffOutput({ ...updated, location_name: order.location_name,
+    fulfillment_mode: order.fulfillment_mode, table_label: order.table_label,
+    pickup_instructions: order.pickup_instructions, sale_id: saleInput.id,
+    fulfillment_status: carryStatus }, lines), sale, saleId: saleInput.id };
 }
 
 export function registerCustomerOrders(app, { scoped, audit, checkout }) {
@@ -273,6 +382,8 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     }
     let row = await findOrder(c, companyId, id, true);
     row = await expireIfNeeded(c, row);
+    if (['cancelled','expired'].includes(change.status))
+      await assertOnlinePaymentAllowsRelease(c, companyId, id);
     if (row.version !== change.expectedVersion) v.fail(409, 'customer_order_changed');
     if (!transitions[row.status]?.includes(change.status)) v.fail(409, 'invalid_customer_order_transition');
     const lines = await orderLines(c, companyId, id);
@@ -317,18 +428,10 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     )).rows[0];
     if (replay) {
       if (replay.request_digest !== requestDigest) v.fail(409, 'request_id_reused');
-      const current = await findOrder(c, companyId, id);
-      if (current.sale_id !== replay.sale_id) v.fail(409, 'request_id_reused');
-      const saved = (await c.query(
-        'SELECT company_id,id,data FROM myfin.transactions WHERE company_id=$1 AND id=$2',
-        [companyId, replay.sale_id],
-      )).rows[0];
-      if (!saved) v.fail(409, 'request_id_reused');
-      return { order: staffOutput(current, await orderLines(c, companyId, id)),
-        sale: publicTransaction({ ...saved.data, id:saved.id, company_id:saved.company_id }, req.identity),
-        saleId: replay.sale_id };
+      return savedPaidOrder(c, companyId, id, replay.sale_id, req.identity);
     }
     const order = await findOrder(c, companyId, id, true);
+    await assertOrderHasNoConfirmedOnlinePayment(c, companyId, id);
     if (order.version !== input.expectedVersion) v.fail(409, 'customer_order_changed');
     if (!['accepted','preparing','ready'].includes(order.status) || order.payment_state !== 'unpaid')
       v.fail(409, 'customer_order_not_tenderable');
@@ -336,46 +439,67 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     const lines = await orderLines(c, companyId, id);
     assertTenderMatches(order, lines, input.sale);
     const acceptedSale = await canonicalTenderSale(c, order, lines, input.sale);
-    const sale = await checkout(c, req.identity, companyId, acceptedSale, null,
-      { reservationOrderId: id, acceptedOrderQuote: true });
-    await c.query(
-      `INSERT INTO myfin.customer_order_payments(company_id,order_id,sale_id,actor_id,request_id,request_digest)
-       VALUES($1,$2,$3,$4,$5,$6)`, [companyId, id, input.sale.id, req.identity.id, input.requestId, requestDigest],
-    );
-    const nextVersion = Number(order.version) + 1;
-    const updated = (await c.query(
-      `UPDATE myfin.customer_order_requests SET status='paid',payment_state='paid',version=$3,updated_at=now()
-        WHERE company_id=$1 AND id=$2 AND version=$4 RETURNING *`, [companyId, id, nextVersion, order.version],
-    )).rows[0];
-    if (!updated) v.fail(409, 'customer_order_changed');
-    await releaseOrderReservations(c, companyId, id, 'paid');
-    await consumeOrderPromotionReservations(c, { companyId, orderId: id,
-      saleId: input.sale.id, occurredAt: new Date().toISOString() });
-    await c.query(
-      `INSERT INTO myfin.customer_order_events(company_id,id,order_id,version,actor_type,staff_actor_id,request_id,request_digest,action,from_status,to_status,note)
-       VALUES($1,$2,$3,$4,'staff',$5,$6,$7,'paid',$8,'paid','Paid at counter')`,
-      [companyId, randomUUID(), id, nextVersion, req.identity.id, input.requestId, requestDigest, order.status],
-    );
-    const carryStatus = order.status === 'preparing' ? 'preparing' : order.status === 'ready' ? 'ready' : 'pending';
-    if (carryStatus !== 'pending') {
-      const fulfillment = (await c.query(
-        `UPDATE myfin.orders SET status=$3,version=version+1,updated_at=now()
-          WHERE company_id=$1 AND id=$2 AND status='pending' RETURNING version`,
-        [companyId, input.sale.id, carryStatus],
-      )).rows[0];
-      if (fulfillment) await c.query(
-        `INSERT INTO myfin.order_events(company_id,id,order_id,version,actor_id,request_id,request_digest,action,from_status,to_status,note)
-         VALUES($1,$2,$3,$4,$5,$6,$7,'status_changed','pending',$8,'Carried from unpaid customer order')`,
-        [companyId, randomUUID(), input.sale.id, fulfillment.version, req.identity.id,
-          `customer:${input.requestId}`, hash(`customer:${requestDigest}`), carryStatus],
-      );
-    }
-    await earnLoyalty(c, order, input.sale.id, req.identity.id);
-    await audit(c, req.identity, companyId, 'Customer order paid', `${order.public_code} · ${input.sale.number}`);
-    return { order: staffOutput({ ...updated, location_name: order.location_name, fulfillment_mode: order.fulfillment_mode,
-      table_label: order.table_label, pickup_instructions: order.pickup_instructions,
-      sale_id: input.sale.id, fulfillment_status: carryStatus }, lines), sale, saleId: input.sale.id };
+    const occurredAt = new Date().toISOString();
+    return completePaidOrder(c, { order, lines, saleInput: acceptedSale, who: req.identity,
+      requestId: input.requestId, requestDigest, note: 'Paid at counter', occurredAt,
+      checkout, audit, auditAction: 'Customer order paid' });
   }));
+
+  app.post('/api/companies/:company/customer-orders/:id/online-payment/finalize', req =>
+    scoped(req, async (c, companyId) => {
+      requireCapability(req.identity, 'checkout');
+      if (!privileged(req.identity)) v.fail(403, 'manager_required');
+      const id = v.parse(v.id, req.params.id);
+      const input = v.parse(onlinePaymentFinalizeSchema, req.body);
+      const requestDigest = hash(JSON.stringify(canonical({ orderId: id, actorId: req.identity.id,
+        expectedVersion: input.expectedVersion, action: 'finalize_online_payment' })));
+      const replay = (await c.query(
+        `SELECT intent_id,order_id,sale_id,request_digest
+           FROM myfin.online_payment_finalizations
+          WHERE company_id=$1 AND request_id=$2`, [companyId, input.requestId],
+      )).rows[0];
+      if (replay) {
+        if (replay.order_id !== id || replay.request_digest !== requestDigest)
+          v.fail(409, 'request_id_reused');
+        return { ...await savedPaidOrder(c, companyId, id, replay.sale_id, req.identity),
+          onlinePayment: { state: 'finalized', intentId: replay.intent_id, saleId: replay.sale_id } };
+      }
+      const order = await findOrder(c, companyId, id, true);
+      const evidence = await confirmedOnlinePaymentForOrder(c, companyId, id);
+      const finalized = (await c.query(
+        `SELECT intent_id,sale_id FROM myfin.online_payment_finalizations
+          WHERE company_id=$1 AND order_id=$2`, [companyId, id],
+      )).rows[0];
+      if (finalized) {
+        if (!evidence || evidence.intent_id !== finalized.intent_id)
+          v.fail(409, 'online_payment_reconciliation_required');
+        return { ...await savedPaidOrder(c, companyId, id, finalized.sale_id, req.identity),
+          onlinePayment: { state: 'finalized', intentId: finalized.intent_id,
+            saleId: finalized.sale_id } };
+      }
+      if (!evidence || evidence.state !== 'confirmed_unposted')
+        v.fail(409, 'online_payment_not_confirmed');
+      if (order.version !== input.expectedVersion) v.fail(409, 'customer_order_changed');
+      if (!['accepted','preparing','ready'].includes(order.status) || order.payment_state !== 'unpaid')
+        v.fail(409, 'customer_order_not_tenderable');
+      if (evidence.public_code_snapshot !== order.public_code)
+        v.fail(409, 'online_payment_reconciliation_required');
+      const lines = await orderLines(c, companyId, id);
+      const prepared = await onlinePaymentSale(c, order, lines, req.identity, evidence);
+      const result = await completePaidOrder(c, { order, lines, saleInput: prepared.sale,
+        who: req.identity, requestId: input.requestId, requestDigest,
+        note: 'Paid online · verified HitPay webhook', occurredAt: prepared.occurredAt,
+        checkout, audit, auditAction: 'Customer order online payment finalized' });
+      await c.query(
+        `INSERT INTO myfin.online_payment_finalizations(
+           company_id,id,intent_id,order_id,sale_id,actor_id,request_id,request_digest)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [companyId, randomUUID(), evidence.intent_id, id, prepared.sale.id, req.identity.id,
+          input.requestId, requestDigest],
+      );
+      return { ...result, onlinePayment: { state: 'finalized', intentId: evidence.intent_id,
+        saleId: prepared.sale.id } };
+    }));
 
   app.get('/api/companies/:company/loyalty', req => scoped(req, async (c, companyId) => {
     if (!privileged(req.identity)) v.fail(403, 'access_denied');

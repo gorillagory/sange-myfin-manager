@@ -118,7 +118,7 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
       category: 'Beverages', subcategory: 'Coffee', unit: 'cup', price: 9.93, cost: 3.1,
       stock: 2, trackStock: true, variants: [],
     };
-    let staffId, staffCookie, customerCookie, customerId;
+    let staffId, staffCookie, customerCookie, customerCookieB, customerId;
 
     async function request(host, path, { method = 'GET', cookie = '', body, headers = {} } = {}) {
       return app.inject({
@@ -197,9 +197,10 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
       assert.equal((await request(storefrontA, `/companies/${companyA}/customer-orders`)).statusCode, 404);
     });
 
-    await t.test('one customer session crosses shops while profiles remain workspace-scoped', async () => {
+    await t.test('one Finn3 identity signs in per host while profiles remain workspace-scoped', async () => {
       const registered = await ok(storefrontA, '/public/customer/register', {
         method: 'POST', body: {
+          loginId: `customer-${tag}`,
           email: `customer-${tag}@acceptance.test`, password,
           displayName: 'Amina Acceptance', phone: '+60111111111', adultConfirmed: true,
         },
@@ -210,14 +211,29 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
       assert.equal(registration.customer.emailVerified, false);
       const duplicate = await request(storefrontB, '/public/customer/register', {
         method: 'POST', body: {
+          loginId: `customer-${tag}`,
           email: `CUSTOMER-${tag}@acceptance.test`, password,
           displayName: 'Duplicate', phone: '', adultConfirmed: true,
         },
       });
       assert.equal(duplicate.statusCode, 409);
-      assert.equal(duplicate.json().error, 'customer_account_unavailable');
+      assert.equal(duplicate.json().error, 'customer_login_unavailable');
+      const sameContact = await ok(storefrontB, '/public/customer/register', {
+        method: 'POST', body: {
+          loginId: `other-${tag}`, email: `CUSTOMER-${tag}@acceptance.test`, password,
+          displayName: 'Same unverified contact', phone: '', adultConfirmed: true,
+        },
+      }, 201);
+      assert.notEqual(sameContact.json().customer.id, customerId,
+        'an unverified contact address must not reserve global identity ownership');
 
-      const across = (await ok(storefrontB, '/public/customer/me', { cookie: customerCookie })).json();
+      const noBearerCrossing = (await ok(storefrontB, '/public/customer/me', { cookie: customerCookie })).json();
+      assert.equal(noBearerCrossing.authenticated, false);
+      const signInB = await ok(storefrontB, '/public/customer/sign-in', {
+        method: 'POST', body: { loginId: `customer-${tag}`, password },
+      });
+      customerCookieB = mergeCookies(cookiePairs(signInB));
+      const across = (await ok(storefrontB, '/public/customer/me', { cookie: customerCookieB })).json();
       assert.equal(across.authenticated, true);
       assert.equal(across.customer.id, customerId);
       assert.equal(across.profile.workspaceId, workspaceB);
@@ -227,8 +243,16 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
         method: 'PUT', cookie: customerCookie, body: { displayName: 'Amina at A', phone: '+60111111111' },
       });
       await ok(storefrontB, '/public/customer/profile', {
-        method: 'PUT', cookie: customerCookie, body: { displayName: 'Amina at B', phone: '+60222222222' },
+        method: 'PUT', cookie: customerCookieB, body: { displayName: 'Amina at B', phone: '+60222222222' },
       });
+      const unverifiedGrant = await request(storefrontA, '/public/customer/marketing-consent', {
+        method: 'POST', cookie: customerCookie, body: { channel: 'email', granted: true },
+      });
+      assert.equal(unverifiedGrant.statusCode, 409);
+      assert.equal(unverifiedGrant.json().error, 'marketing_destination_unverified');
+      await ok(storefrontA, '/public/customer/marketing-consent', {
+        method: 'POST', cookie: customerCookie, body: { channel: 'email', granted: false },
+      }, 201);
       const profiles = (await database.query(
         `SELECT workspace_id,phone FROM myfin.customer_workspace_profiles
           WHERE customer_id=$1 ORDER BY workspace_id`, [customerId],
@@ -242,7 +266,7 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
       )).rows[0].adult_confirmed_at);
 
       const failedSignIn = await request(storefrontA, '/public/customer/sign-in', {
-        method: 'POST', body: { email: `customer-${tag}@acceptance.test`, password: 'wrong password value' },
+        method: 'POST', body: { loginId: `customer-${tag}`, password: 'wrong password value' },
       });
       assert.equal(failedSignIn.statusCode, 401);
       assert.equal(failedSignIn.json().error, 'customer_authentication_failed');
@@ -250,7 +274,7 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
         'SELECT failed_attempts FROM myfin.customer_credentials WHERE customer_id=$1', [customerId],
       )).rows[0].failed_attempts), 1);
       const validSignIn = await ok(storefrontA, '/public/customer/sign-in', {
-        method: 'POST', body: { email: `customer-${tag}@acceptance.test`, password },
+        method: 'POST', body: { loginId: `customer-${tag}`, password },
       });
       assert.ok(mergeCookies(cookiePairs(validSignIn)));
       assert.equal(Number((await database.query(
@@ -399,7 +423,7 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
         ok(storefrontA, '/public/customer/orders', { cookie: customerCookie }),
       ]);
       const historyA = cleanupReads[0].json();
-      const historyB = (await ok(storefrontB, '/public/customer/orders', { cookie: customerCookie })).json();
+      const historyB = (await ok(storefrontB, '/public/customer/orders', { cookie: customerCookieB })).json();
       assert.equal(historyA.rows.length, 2);
       assert.equal(historyB.rows.length, 0);
       assert.ok(historyA.rows.every(order => order.customerId === undefined && order.guestEmail === undefined));
@@ -418,7 +442,7 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
           WHERE company_id=$1 AND id=$2`, [companyA, accepted.id],
       )).rows[0].pii_redacted_at.toISOString(), redacted.pii_redacted_at.toISOString());
       const meA = (await ok(storefrontA, '/public/customer/me', { cookie: customerCookie })).json();
-      const meB = (await ok(storefrontB, '/public/customer/me', { cookie: customerCookie })).json();
+      const meB = (await ok(storefrontB, '/public/customer/me', { cookie: customerCookieB })).json();
       assert.equal(meA.loyalty.stampBalance, 1);
       assert.equal(meB.loyalty.stampBalance, 0);
     });

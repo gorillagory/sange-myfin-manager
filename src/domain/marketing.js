@@ -7,6 +7,12 @@ const positiveInteger = (value, label, { nullable = true } = {}) => {
   if (!Number.isSafeInteger(number) || number < 1) throw new Error(`${label} must be a positive whole number.`);
   return number;
 };
+const boundedInteger = (value, label, { min, max, fallback = 0 } = {}) => {
+  const number = value === '' || value === null || value === undefined ? fallback : Number(value);
+  if (!Number.isSafeInteger(number) || number < min || number > max)
+    throw new Error(`${label} must be a whole number from ${min} to ${max}.`);
+  return number;
+};
 const iso = (value, label, { nullable = false } = {}) => {
   if (nullable && !text(value)) return null;
   const parsed = new Date(value);
@@ -168,7 +174,7 @@ export function emptyCampaign(now = new Date()) {
   const localStart = new Date(startsAt.getTime() - startsAt.getTimezoneOffset() * 60000).toISOString().slice(0,16);
   return { expectedVersion:0, name:'', goal:'acquisition', audienceId:'',
     offerMode:'new', offerType:'percentage', offerValue:'10', rewardProductId:'', rewardVariantId:'',
-    redemptionMode:'automatic', targetProductKeys:[], targetCategoryKeys:[],
+    redemptionMode:'automatic', stackable:false, priority:'0', targetProductKeys:[], targetCategoryKeys:[],
     channels:['storefront'], startsAt:localStart, endsAt:'',
     minimumSpend:'0.00', maxDiscount:'', budget:'', maxRedemptions:'', perCustomerLimit:'1',
     description:'', status:'draft', source:'campaign', promotionLinks:[], existingPromotionKey:'' };
@@ -188,8 +194,8 @@ export function campaignPayload(input = {}, { publish = false } = {}) {
   const channels = unique(input.channels || []);
   if (!channels.length) throw new Error('Choose at least one campaign channel.');
   if (channels.some(channel => !MARKETING_CHANNELS.some(item => item.id === channel))) throw new Error('Choose valid campaign channels.');
-  if (publish && !channels.includes('storefront'))
-    throw new Error('Add Online storefront before publishing this campaign.');
+  if (publish && !channels.some(channel => ['storefront','pos'].includes(channel)))
+    throw new Error('Add POS or Online storefront before publishing this campaign.');
   const offer = { type:offerType };
   if (offerType === 'bonus_points') {
     if (text(input.maxRedemptions) || text(input.perCustomerLimit))
@@ -254,6 +260,8 @@ export function campaignStepError(step, input = {}, context = {}) {
       if (input.offerType === 'bonus_points'
           && (text(input.maxRedemptions) || text(input.perCustomerLimit)))
         return 'Bonus-point award caps are not available in this release.';
+      if (input.offerType !== 'bonus_points')
+        boundedInteger(input.priority, 'Offer priority', { min:-1_000_000, max:1_000_000 });
       positiveInteger(input.maxRedemptions, 'Maximum redemptions');
       positiveInteger(input.perCustomerLimit, 'Per-customer limit');
       senFromRinggit(input.minimumSpend || '0', 'Minimum spend');
@@ -294,6 +302,7 @@ export function campaignToForm(row = {}, offers = [], audiences = []) {
     offerMode:bonus ? 'new' : 'existing', offerType, offerValue,
     rewardProductId:linkedOffer?.rewardProductId || '', rewardVariantId:linkedOffer?.rewardVariantId || '',
     redemptionMode:linkedOffer?.redemptionMode || 'automatic',
+    stackable:Boolean(linkedOffer?.stackable), priority:String(Number(linkedOffer?.priority || 0)),
     targetProductKeys:(linkedOffer?.productTargets || []).map(target => JSON.stringify([target.productId,target.variantId || ''])),
     targetCategoryKeys:(linkedOffer?.categoryTargets || []).map(target => JSON.stringify([target.category,target.subcategory || ''])),
     minimumSpend:bonus ? ringgit(row.bonusMinimumSpendSen || 0) : ringgit(linkedOffer?.minSubtotalSen || 0),
@@ -372,8 +381,8 @@ export function legacyPromotionPayload(campaign, { publish = false } = {}) {
     perCustomerLimit:positiveInteger(campaign.perCustomerLimit, 'Per-customer limit'),
     requiresCustomer:Boolean(text(campaign.audienceId)),
     requiresStudent:false,
-    stackable:false,
-    priority:0,
+    stackable:Boolean(campaign.stackable),
+    priority:boundedInteger(campaign.priority, 'Offer priority', { min:-1_000_000, max:1_000_000 }),
     productTargets, categoryTargets, customerTargets:[],
   };
   if (offerType !== 'free_item') return promotionPayload(base);
@@ -382,9 +391,43 @@ export function legacyPromotionPayload(campaign, { publish = false } = {}) {
     rewardQuantityMilli:1000 };
 }
 
+function voucherCoversCampaign(voucher, startsAt, endsAt) {
+  if (!voucher?.enabled) return false;
+  const voucherStart = new Date(voucher.validFrom).getTime();
+  const campaignStart = new Date(startsAt).getTime();
+  if (!Number.isFinite(voucherStart) || voucherStart > campaignStart) return false;
+  if (endsAt) {
+    const campaignEnd = new Date(endsAt).getTime();
+    const voucherEnd = voucher.validUntil ? new Date(voucher.validUntil).getTime() : Infinity;
+    if (!Number.isFinite(campaignEnd) || voucherEnd < campaignEnd) return false;
+  } else if (voucher.validUntil) return false;
+  return voucher.maxRedemptions == null || Number(voucher.redeemedCount || 0) < Number(voucher.maxRedemptions);
+}
+
+export function campaignPublishError(input = {}, offers = []) {
+  if (!unique(input.channels || []).some(channel => ['storefront','pos'].includes(channel)))
+    return 'Add POS or Online storefront before publishing this campaign.';
+  if (text(input.offerType) === 'bonus_points') return '';
+  const chosen = input.offerMode === 'existing' && input.offerChanged !== true
+    ? offers.find(row => `${row.id}:${row.version}` === input.existingPromotionKey)
+    : null;
+  const redemptionMode = chosen?.redemptionMode || text(input.redemptionMode || 'automatic');
+  if (redemptionMode !== 'voucher') return '';
+  if (!chosen) return 'Save this voucher campaign as a draft, then create and enable its code in Offers & vouchers before publishing.';
+  const startsAt = iso(input.startsAt, 'Campaign start');
+  const endsAt = iso(input.endsAt, 'Campaign end', { nullable:true });
+  if (!(chosen.vouchers || []).some(voucher => voucherCoversCampaign(voucher, startsAt, endsAt)))
+    return 'Create and enable a voucher code that covers the full campaign schedule before publishing.';
+  return '';
+}
+
 export async function saveMarketingCampaign(request, companyId, form, { publish = false } = {}) {
   const paths = marketingPaths(companyId);
   const id = text(form.id), campaignForm = { ...form };
+  if (publish) {
+    const issue = campaignPublishError(campaignForm, form.availableOffers || []);
+    if (issue) throw new Error(issue);
+  }
   let offerBody = null;
   if (campaignForm.offerType !== 'bonus_points') {
     const chosen = form.offerMode === 'existing' && form.offerChanged !== true

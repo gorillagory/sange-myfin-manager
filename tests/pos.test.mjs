@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc';
-import { cents, totalsFor, roundToFiveSen, checkoutTotalsFor, saleTotalsFor, normalizeProduct, cartItem, createSale, deductItems, isPaid, businessDate, expenseRecords, limitsSaleQuantity, sellableQuantity } from '../src/domain/pos.js';
+import { bindPosPricingQuote, cents, totalsFor, roundToFiveSen, checkoutTotalsFor, saleTotalsFor, normalizeProduct, cartItem, createSale, deductItems, isPaid, businessDate, expenseRecords, limitsSaleQuantity, posPricingQuoteMatchesCheckout, pricingQuoteTenderState, sellableQuantity } from '../src/domain/pos.js';
 const company={id:'shop',name:'Shop',preferences:{tax:6,currency:'RM'}},user={uid:'cashier',username:'Cashier'};
 const product=normalizeProduct({id:'coffee',name:'Coffee',sku:'COF-1',price:0.1,stock:3,trackStock:true});
 const posFilename=new URL('../src/components/dashboard/EditionPos.vue',import.meta.url);
@@ -39,6 +39,16 @@ test('snapshot-backed sales preserve fixed discounts without inventing a percent
    lockedTotals:{...lockedTotals,discountAmount:1.24},pricingSnapshotId:'snapshot-a'}),/accepted quote totals are invalid/);
  assert.throws(()=>createSale({id:'missing-snapshot',items,company,user,method:'Cash',received:20,
    lockedTotals}),/accepted quote is incomplete/);
+});
+test('snapshot-backed POS sales preserve a separately disclosed discretionary percentage',()=>{
+ const items=[cartItem({...product,price:20})];
+ const lockedTotals={subtotal:20,discountAmount:2.15,tax:1.07,taxRate:6,discount:5,
+   promotionDiscountAmount:1.25,manualDiscountAmount:.90,totalBeforeRounding:18.92,rounding:-.02,total:18.90};
+ const sale=createSale({id:'combined-discount-sale',items,company,user,method:'Cash',received:20,
+   lockedTotals,pricingSnapshotId:'snapshot-combined'});
+ assert.equal(sale.discount,5);assert.equal(sale.discountAmount,2.15);assert.equal(sale.change,1.10);
+ assert.deepEqual(saleTotalsFor(sale),{subtotal:20,discountAmount:2.15,tax:1.07,taxRate:6,
+   totalBeforeRounding:18.92,rounding:-.02,total:18.90,discount:5});
 });
 test('snapshot-backed fractional quantities use the server integer-sen rounding boundary',()=>{
  const items=[{...cartItem({...product,price:.25}),qty:.58}];
@@ -94,6 +104,74 @@ test('staff POS compiles and applies the shared availability guard across cart c
  assert.match(posSource,/limitsSaleQuantity\(p,v\)&&item\.qty>available/);
  assert.match(posSource,/p\.variants\.every\(v=>limitsSaleQuantity\(p,v\)&&available/);
  assert.match(posSource,/limitsSaleQuantity\(variantProduct,v\)&&available/);
+});
+test('staff POS previews automatic promotions without writes and locks the authoritative quote at payment',()=>{
+ assert.match(posSource,/watch\(\[cart,customerId,discount,voucherCode,sourceRequest\],schedulePricing/);
+ assert.match(posSource,/lock:required/);
+ assert.match(posSource,/checkoutId:saleId\.value/);
+ assert.match(posSource,/required&&!force&&lockedPricingReady\(\)/);
+ assert.match(posSource,/pricingQuote\?\.discounts/);
+ assert.match(posSource,/Discretionary discount/);
+ assert.match(posSource,/Voucher code/);
+ assert.match(posSource,/<s v-if="pricingLine\(i\)\?\.savings">/);
+ assert.match(posSource,/Automatic reward/);
+ assert.match(posSource,/quotedSaleItems\(activeQuote\)/);
+ assert.match(posSource,/line\.automaticReward/);
+ assert.match(posSource,/quoteStockError\(currentLockedPricingQuote\(\)\)/);
+ assert.match(posSource,/serverClockOffsetMs/);
+ assert.match(posSource,/pos\/quote\/release/);
+ assert.match(posSource,/pricingBusy\|\|!ready/);
+});
+test('a delayed locked quote pauses tender before server expiry',()=>{
+ const quote={pricingSnapshotId:'snapshot-a',expiresAt:'2026-10-16T10:05:00.000Z'};
+ assert.deepEqual(pricingQuoteTenderState(quote,new Date('2026-10-16T10:00:00.000Z')),
+  {remainingMs:300000,secondsRemaining:300,ready:true});
+ assert.equal(pricingQuoteTenderState(quote,new Date('2026-10-16T10:04:00.000Z')).ready,false);
+ assert.equal(pricingQuoteTenderState({...quote,pricingSnapshotId:''},new Date('2026-10-16T10:00:00.000Z')).ready,false);
+ assert.deepEqual(pricingQuoteTenderState({...quote,serverClockOffsetMs:120000},new Date('2026-10-16T09:58:00.000Z')),
+  {remainingMs:300000,secondsRemaining:300,ready:true},'the countdown follows server time despite a slow device clock');
+ assert.match(posSource,/if\(pricingHoldRequired\.value&&!lockedPricingReady\(\)\)/);
+ assert.match(posSource,/Price hold paused before expiry\. Do not collect or confirm payment/);
+ assert.match(posSource,/:disabled="busy\|\|!!tenderRetry\|\|!pricingTenderReady"/);
+ assert.match(posSource,/@click="refreshPaymentPricing"/);
+});
+test('an offline POS quote stays usable only for the exact locked checkout and principal',()=>{
+ const checkout={companyId:'company-a',staffId:'cashier-a',checkoutId:'sale-a',
+  lines:[{productId:'latte',variantId:'large',quantityMilli:2000},{productId:'cake',variantId:'',quantityMilli:1000}],
+  clientId:'client-a',voucherCode:' SAVE10 ',manualDiscountBasisPoints:250};
+ const quote=bindPosPricingQuote({pricingSnapshotId:'snapshot-a',expiresAt:'2026-10-16T10:05:00.000Z'},checkout);
+ assert.equal(posPricingQuoteMatchesCheckout(quote,checkout),true);
+ const changes=[
+  {companyId:'company-b'},{staffId:'cashier-b'},{checkoutId:'sale-b'},{clientId:'client-b'},
+  {voucherCode:'SAVE20'},{manualDiscountBasisPoints:251},
+  {lines:[...checkout.lines].reverse()},
+  {lines:[{...checkout.lines[0],quantityMilli:1000},checkout.lines[1]]},
+ ];
+ for(const change of changes)assert.equal(posPricingQuoteMatchesCheckout(quote,{...checkout,...change}),false);
+ assert.equal(posPricingQuoteMatchesCheckout({...quote,pricingSnapshotId:''},checkout),false);
+ assert.match(posSource,/pricingQuote:pricingQuote\.value\?\.pricingSnapshotId\?pricingQuote\.value:null/);
+ assert.match(posSource,/function currentLockedPricingQuote\(\)\{return posPricingQuoteMatchesCheckout/);
+ assert.match(posSource,/if\(pricingHoldRequired\.value&&!lockedPricingReady\(\)\)/);
+ assert.doesNotMatch(posSource,/if\(activeQuote&&!sourceRequest\.value&&\(!Store\.state\.online\|\|Store\.state\.fromCache\)\)/);
+ assert.match(posSource,/if\(sourceRequest\.value&&\(!Store\.state\.online\|\|Store\.state\.fromCache\)\)return Store\.notify\('Reconnect before taking payment for an online order request\.'/);
+ assert.match(posSource,/sourceRequest\.value\?\(Store\.state\.online&&!Store\.state\.fromCache\):pricingTender\.value\.ready/);
+ assert.match(posSource,/modal\.value!=='payment'&&pricingQuote\.value\?\.pricingSnapshotId&&!lockedPricingReady\(\)/);
+ assert.match(posSource,/if\(!Store\.state\.online\|\|Store\.state\.fromCache\)\{error\.value='Reconnect to refresh and lock promotional pricing before collecting payment\.'/);
+ assert.match(posSource,/let sale=tenderRetry\.value\?\.sale/,'an already-paid interrupted tender still bypasses new quote creation');
+});
+test('a server-aligned capture instant is recorded for an online locked tender',()=>{
+ const occurredAt='2026-10-16T10:01:02.000Z',sale=createSale({id:'server-clock',items:[cartItem(product)],company,user,
+  method:'Cash',received:1,occurredAt});
+ assert.equal(sale.date,occurredAt);
+ assert.equal(sale.businessDate,'2026-10-16');
+ assert.throws(()=>createSale({id:'bad-clock',items:[cartItem(product)],company,user,method:'Cash',received:1,
+  occurredAt:'not-a-time'}),/payment time is invalid/i);
+});
+test('staff POS verifies online-payment evidence before loading a customer order',()=>{
+ assert.match(posSource,/Promise\.all\(\[api\(orderPath\),api\(`\$\{orderPath\}\/online-payment`\)\]\)/);
+ assert.match(posSource,/isTenderableCustomerOrder\(detail\.order,onlinePayment\)/);
+ assert.match(posSource,/blocksCounterPayment\(onlinePayment\)/);
+ assert.match(posSource,/Do not collect payment again\. Review the provider evidence in Sales Orders\./);
 });
 test('deduction aggregates quantities, isolates variants and rejects overselling',()=>{const p=normalizeProduct({id:'v',name:'Cup',trackStock:true,variants:[{id:'a',name:'A',price:10,stock:2},{id:'b',name:'B',price:10,stock:4}]});const result=deductItems([p],[{...cartItem(p,p.variants[0]),qty:2}]);assert.equal(result.updates[0].variants[0].stock,0);assert.equal(result.updates[0].variants[1].stock,4);assert.equal(p.variants[0].stock,2);assert.throws(()=>deductItems([product],[{...cartItem(product),qty:4}]));});
 test('accepted offline sale preserves stock shortage for review',()=>{const result=deductItems([product],[{...cartItem(product),qty:4}],true);assert.equal(result.updates[0].stock,-1);assert.equal(result.shortage,true);});

@@ -124,7 +124,7 @@ async function activeRecipeReservationQuantities(c,companyId,stockItemIds,exclud
   return new Map(rows.map(row=>[row.stock_item_id,micro(row.quantity)]));
 }
 
-async function stockForPlan(c,companyId,plan,{lock='update',excludedOrderId=''}={}){
+async function stockForPlan(c,companyId,plan,{lock='update',excludedOrderId='',allowShortage=false}={}){
   const stockIds=plan.consumptions.map(row=>row.stockItemId);
   if(!stockIds.length)return {rows:[],reserved:new Map()};
   const clause=lock==='share'?'FOR SHARE':'FOR UPDATE';
@@ -138,7 +138,7 @@ async function stockForPlan(c,companyId,plan,{lock='update',excludedOrderId=''}=
     if(stock.tracking_mode==='count'&&consumption.contributions.some(row=>BigInt(row.quantityMicro)%1000000n!==0n))
       v.fail(409,'recipe_count_requires_whole_units');
     const available=micro(stock.on_hand)-(reserved.get(stock.id)||0n);
-    if(available<consumption.quantityMicro)v.fail(409,'recipe_stock_unavailable');
+    if(!allowShortage&&available<consumption.quantityMicro)v.fail(409,'recipe_stock_unavailable');
   }
   return {rows,reserved};
 }
@@ -341,7 +341,8 @@ export function registerInventoryRecipes(app,{scoped,audit}){
 // locks. Offline captured time is evidence only unless a manager explicitly
 // reconciles a recipe-boundary review to the captured recipe.
 export async function consumeRecipeStock(c,{companyId,actorId,saleId,serverOccurredAt,occurredAt,
-  capturedAt,items,reservationOrderId='',offline=false,inventoryRecipeResolution=''}){
+  capturedAt,items,reservationOrderId='',offline=false,inventoryRecipeResolution='',
+  inventoryShortageResolution=''}){
   const serverTime=new Date(serverOccurredAt||occurredAt),capturedTime=new Date(capturedAt||serverOccurredAt||occurredAt);
   if(!companyId||!actorId||!saleId||!Number.isFinite(serverTime.getTime())||!Number.isFinite(capturedTime.getTime())||
       !Array.isArray(items)||!items.length)v.fail(400,'invalid_recipe_sale');
@@ -350,16 +351,16 @@ export async function consumeRecipeStock(c,{companyId,actorId,saleId,serverOccur
     variantId:String(item.variantId||''),qty:Number(item.qty)}));
   const selectedResolution=inventoryRecipeResolution||'current_recipe';
   if(!['current_recipe','captured_recipe'].includes(selectedResolution))v.fail(400,'invalid_inventory_recipe_resolution');
+  if(!['','record_shortage'].includes(inventoryShortageResolution))v.fail(400,'invalid_inventory_shortage_resolution');
   const requestDigest=digest({companyId,actorId,saleId,capturedAt:capturedIso,items:saleItems,
-    reservationOrderId,resolution:selectedResolution});
+    reservationOrderId,resolution:selectedResolution,inventoryShortageResolution});
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,22))',[sourceKey(companyId,saleId)]);
   const prior=(await c.query(`SELECT request_digest,details FROM myfin.inventory_source_effects
     WHERE company_id=$1 AND source_type='pos_sale' AND source_id=$2 FOR UPDATE`,[companyId,saleId])).rows[0];
   if(prior){
     if(prior.request_digest!==requestDigest)v.fail(409,'inventory_source_payload_changed');
     const rows=(await c.query(`SELECT * FROM myfin.stock_ledger WHERE company_id=$1 AND source_type='pos_sale' AND source_id=$2 ORDER BY item_id`,[companyId,saleId])).rows;
-    return {duplicate:true,matchedLines:Number(prior.details?.matchedLines||0),
-      unconfiguredLines:Number(prior.details?.unconfiguredLines||0),movements:rows.map(ledgerOutput)};
+    return {duplicate:true,...prior.details,movements:rows.map(ledgerOutput)};
   }
 
   const productIds=[...new Set(saleItems.map(item=>item.productId))].filter(Boolean).sort();
@@ -380,12 +381,29 @@ export async function consumeRecipeStock(c,{companyId,actorId,saleId,serverOccur
     plan=offline&&selectedResolution==='captured_recipe'?capturedPlan:currentPlan;
     mode=offline?selectedResolution:'current_recipe';
   }
-  const {rows:stockRows}=await stockForPlan(c,companyId,plan,{lock:'update',excludedOrderId:reservationOrderId});
+  const {rows:stockRows,reserved}=await stockForPlan(c,companyId,plan,{lock:'update',excludedOrderId:reservationOrderId,
+    allowShortage:inventoryShortageResolution==='record_shortage'});
   const planned=plan.consumptions.map(consumption=>{
-    const stock=stockRows.find(row=>row.id===consumption.stockItemId),afterMicro=micro(stock.on_hand)-consumption.quantityMicro;
-    if(afterMicro<0n)v.fail(409,'recipe_stock_unavailable');
-    return {consumption,stock,after:formatScaled(afterMicro)};
+    const stock=stockRows.find(row=>row.id===consumption.stockItemId),onHandMicro=micro(stock.on_hand),
+      availableMicro=onHandMicro-(reserved.get(stock.id)||0n),afterAvailableMicro=availableMicro-consumption.quantityMicro,
+      afterMicro=onHandMicro-consumption.quantityMicro;
+    return {consumption,stock,availableMicro,afterAvailableMicro,afterMicro,after:formatScaled(afterMicro)};
   });
+  const shortages=planned.filter(row=>row.afterAvailableMicro<0n).map(row=>({
+    stockItemId:row.stock.id,requiredQuantity:formatScaled(row.consumption.quantityMicro),
+    availableQuantity:formatScaled(row.availableMicro),shortageQuantity:formatScaled(-row.afterAvailableMicro),
+  }));
+  if(shortages.length&&!inventoryShortageResolution)v.fail(409,'recipe_stock_unavailable');
+  if(shortages.length){
+    const details={serverOccurredAt:serverIso,capturedAt:capturedIso,
+      mode:`${mode}_financial_only`,reservationOrderId:reservationOrderId||'',
+      recipePlanDigest:planDigest(plan),matchedLines:plan.matchedLines,
+      unconfiguredLines:saleItems.length-plan.matchedLines,stockItemCount:0,
+      inventoryShortage:true,inventoryShortageResolution,shortages};
+    await c.query(`INSERT INTO myfin.inventory_source_effects(company_id,source_type,source_id,actor_id,request_digest,details)
+      VALUES($1,'pos_sale',$2,$3,$4,$5)`,[companyId,saleId,actorId,requestDigest,details]);
+    return {duplicate:false,...details,movements:[]};
+  }
   if(reservationOrderId&&plan.reservationCount){
     const changed=await c.query(`UPDATE myfin.customer_order_recipe_reservations
       SET state='consumed',consumed_at=$3,updated_at=now()

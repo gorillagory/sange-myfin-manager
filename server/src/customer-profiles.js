@@ -13,6 +13,8 @@ const allowed = who => owner(who) || manager(who);
 const literalLike = value => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
 function profileOutput(row) {
+  const currentDestination = channel => channel === 'email' ? row.primary_email || '' : row.profile_phone || '';
+  const destinationVerified = channel => channel === 'email' ? !!row.email_verified : !!row.phone_verified;
   return {
     customerId: row.id,
     displayName: row.profile_name || row.account_name || 'Customer',
@@ -31,8 +33,11 @@ function profileOutput(row) {
     loyaltyAccountVersion: Number(row.loyalty_account_version || 0),
     marketingConsent: Object.fromEntries(['email','sms','whatsapp'].map(channel => {
       const consent = row.consents?.[channel];
-      return [channel, consent ? { granted: !!consent.granted, noticeVersion: consent.noticeVersion,
-        source: consent.source, updatedAt: consent.updatedAt } : null];
+      const exactVerified = Boolean(consent?.destinationVerifiedAt && destinationVerified(channel) &&
+        currentDestination(channel) && consent.destination === currentDestination(channel));
+      return [channel, consent ? { granted: !!consent.granted && exactVerified,
+        recordedGranted: !!consent.granted, destinationVerified: exactVerified,
+        noticeVersion: consent.noticeVersion, source: consent.source, updatedAt: consent.updatedAt } : null];
     })),
   };
 }
@@ -58,17 +63,20 @@ export function registerCustomerProfiles(app, { scoped }) {
            FROM myfin.customer_order_requests
           WHERE company_id=$1 AND customer_id IS NOT NULL GROUP BY customer_id
        ), latest_consents AS (
-         SELECT DISTINCT ON(customer_id,channel) customer_id,channel,granted,notice_version,source,created_at
+         SELECT DISTINCT ON(customer_id,channel) customer_id,channel,granted,notice_version,source,created_at,
+                destination,destination_verified_at
            FROM myfin.customer_consent_events
           WHERE workspace_id=$2 AND purpose='marketing'
           ORDER BY customer_id,channel,created_at DESC,id DESC
        ), consent_map AS (
          SELECT customer_id,jsonb_object_agg(channel,jsonb_build_object(
-           'granted',granted,'noticeVersion',notice_version,'source',source,'updatedAt',created_at)) AS consents
+           'granted',granted,'noticeVersion',notice_version,'source',source,'updatedAt',created_at,
+           'destination',destination,'destinationVerifiedAt',destination_verified_at)) AS consents
            FROM latest_consents GROUP BY customer_id
        )
        SELECT a.id,a.display_name AS account_name,a.primary_email,a.email_verified_at IS NOT NULL AS email_verified,
               a.disabled_at,p.display_name AS profile_name,p.phone AS profile_phone,
+              p.phone_verified_at IS NOT NULL AS phone_verified,
               s.order_count,s.paid_order_count,s.paid_spend,s.first_order_at,s.last_order_at,
               coalesce(l.stamp_balance,0) AS stamp_balance,coalesce(l.reserved_points,0) AS reserved_points,
               coalesce(l.version,0) AS loyalty_account_version,coalesce(cm.consents,'{}'::jsonb) AS consents

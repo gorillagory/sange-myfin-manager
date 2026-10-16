@@ -142,7 +142,7 @@ test('recipe timing approval requires, applies, persists and exposes an inventor
    if(review.reason_code!=='receipt_review_required_recipe_timing'&&approval?.inventoryRecipeResolution)
     throw Object.assign(Error('inventory_recipe_resolution_not_applicable'),{statusCode:400});
    checkoutCalls++;assert.deepEqual(actor,{...cashier,role:'operator',company_id:companyId});assert.equal(co,companyId);
-   assert.equal(payload,review.payload);assert.deepEqual(approval,{who:manager,reason:'Use the current kitchen recipe',inventoryRecipeResolution:'current_recipe'});
+   assert.equal(payload,review.payload);assert.deepEqual(approval,{who:manager,reason:'Use the current kitchen recipe',inventoryRecipeResolution:'current_recipe',inventoryShortageResolution:'record_shortage'});
    return payload;
   },audit:async()=>{}});
  const approve=routes.get('POST /api/companies/:company/receipt-reviews/:id/approve'),request=body=>approve({
@@ -171,10 +171,11 @@ test('recipe timing approval requires, applies, persists and exposes an inventor
  assert.equal(checkoutCalls,1);
 });
 
-test('a delayed online receipt can preserve captured-time recipe evidence during approval',async()=>{
+test('a delayed snapshot-backed receipt preserves capture evidence and remains recoverable after pricing expiry',async()=>{
  const manager={id:'manager-delayed',role:'manager'},cashier={id:'cashier-delayed',username:'Cashier'},companyId='company-delayed';
  const review={id:'delayed-sale',company_id:companyId,actor_id:cashier.id,status:'pending',
-  payload:{id:'delayed-sale',company_id:companyId,cashierId:cashier.id,items:[],offline:false},
+   payload:{id:'delayed-sale',company_id:companyId,cashierId:cashier.id,items:[],offline:false,
+    pricingSnapshotId:'snapshot-delayed'},
   reason_code:'receipt_review_required_delayed_sync',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
  let updated=false;
  const client={query:async(sql,args=[])=>{
@@ -194,6 +195,8 @@ test('a delayed online receipt can preserve captured-time recipe evidence during
   checkout:async(_client,actor,co,payload,approval)=>{
    assert.deepEqual(actor,{...cashier,role:'operator',company_id:companyId});assert.equal(co,companyId);
    assert.equal(payload,review.payload);assert.equal(approval.inventoryRecipeResolution,'captured_recipe');
+   assert.equal(approval.pricingExpiryResolution,'honor_paid_tender');
+   assert.equal(approval.inventoryShortageResolution,'record_shortage');
    return {...payload,date:'2026-10-11T08:00:00.000Z',businessDate:'2026-10-11'};
   }});
  const approve=routes.get('/api/companies/:company/receipt-reviews/:id/approve');
@@ -202,12 +205,12 @@ test('a delayed online receipt can preserve captured-time recipe evidence during
  assert.equal(result.status,'approved');assert.equal(result.receipt.businessDate,'2026-10-11');assert.equal(updated,true);
 });
 
-test('recipe shortage stays pending until replenished, then approves and replays exactly once',async()=>{
+test('individual approval resolves a paid recipe shortage with an audited financial-only inventory decision',async()=>{
  const cashier={id:'cashier-stock',role:'operator',username:'Cashier'},manager={id:'manager-stock',role:'manager'},
   company={id:'company-stock',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};
  const sale=stripConfidential(createSale({id:'recipe-shortage',items:[cartItem({id:'latte',name:'Latte',price:10,
   stock:0,trackStock:false})],company,user:{uid:cashier.id,username:cashier.username},method:'Cash',received:10,offline:true}));
- let review=null,stockAvailable=false,recipeChanged=false,checkoutCalls=0,posts=0,updates=0;
+ let review=null,checkoutCalls=0,posts=0,updates=0;
  const client={query:async(sql,args=[])=>{
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-stock'}]};
   if(sql.includes('pg_advisory_xact_lock')||/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))
@@ -227,11 +230,10 @@ test('recipe shortage stays pending until replenished, then approves and replays
  }};
  const routes=new Map(),app={post:(path,handler)=>routes.set(`POST ${path}`,handler),
   get:(path,handler)=>routes.set(`GET ${path}`,handler)};
- const shortage=()=>Object.assign(Error('receipt_review_required_recipe_stock'),{statusCode:409});
- const timing=()=>Object.assign(Error('receipt_review_required_recipe_timing'),{statusCode:409});
  registerReceiptReviews(app,{db:{transaction:async fn=>fn(client)},authorize:async()=>{},audit:async()=>{},
-  checkout:async(_client,_actor,_company,_sale,approval)=>{checkoutCalls++;if(!stockAvailable)throw shortage();
-   if(recipeChanged&&!approval?.inventoryRecipeResolution)throw timing();
+  checkout:async(_client,_actor,_company,_sale,approval)=>{checkoutCalls++;
+   if(!review)throw Object.assign(Error('receipt_review_required_recipe_stock'),{statusCode:409});
+   assert.equal(approval?.inventoryShortageResolution,'record_shortage');
    if(!review.posted){review.posted=true;posts++;}return sale;}});
  const context={params:{company:company.id},identity:cashier,authLevel:'password',authSessionId:'session-stock'};
  const submit=routes.get('POST /api/companies/:company/receipt-reviews');
@@ -241,19 +243,12 @@ test('recipe shortage stays pending until replenished, then approves and replays
   params:{company:company.id,id:sale.id},identity:manager,authLevel:'password',authSessionId:'session-stock',
   body:{reason:'Inventory was checked and replenished'},
  };
- await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_stock');
- await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_stock');
- assert.equal(review.status,'pending');assert.equal(updates,0);assert.equal(posts,0);
- stockAvailable=true;recipeChanged=true;
- await assert.rejects(approve(approval),error=>error.statusCode===409&&error.message==='receipt_review_required_recipe_timing');
- assert.equal(review.status,'pending');assert.equal(updates,0);assert.equal(posts,0);
- approval.body.inventoryRecipeResolution='current_recipe';
  const approved=await approve(approval);
  assert.equal(approved.status,'approved');assert.equal(review.status,'approved');assert.equal(updates,1);assert.equal(posts,1);
- assert.equal(review.inventory_recipe_resolution,'current_recipe');
+ assert.equal(review.inventory_recipe_resolution,null);
  const replay=await approve(approval);
  assert.equal(replay.status,'approved');assert.equal(updates,1);assert.equal(posts,1);
- assert.equal(checkoutCalls,6);
+ assert.equal(checkoutCalls,3);
 });
 
 test('managers, workspace owners and super admins list reviews from another cashier',async()=>{

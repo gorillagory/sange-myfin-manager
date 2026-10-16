@@ -31,8 +31,8 @@ function fixture({ authenticated = true } = {}) {
   registerCustomerOrderHistory(app, { db: { transaction: fn => fn(client) },
     authOptions: { publicProxyAddresses: [] } });
   return { handler: routes.get('/api/public/customer/orders'), calls,
-    req: { tenant: { surface: 'storefront', company_id: 'company-a' }, query: { limit: '20' },
-      headers: authenticated ? { cookie: `__Secure-myfin_customer_session=${'A'.repeat(43)}` } : {},
+    req: { tenant: { surface: 'storefront', hostname: 'order-a.example.test', company_id: 'company-a' }, query: { limit: '20' },
+      headers: authenticated ? { cookie: `__Host-myfin_customer_session=${'A'.repeat(43)}` } : {},
       socket: { remoteAddress: '127.0.0.1' }, ip: '127.0.0.1' } };
 }
 

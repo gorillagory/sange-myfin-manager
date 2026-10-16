@@ -4,6 +4,42 @@ export const cents = value => Math.round((Number(value) + Number.EPSILON) * 100)
 export const lineTotal = item => Math.round(cents(item.price) * Number(item.qty)) / 100;
 export const money = (value, currency = 'RM') => `${currency} ${Number(value || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const isPaid = tx => tx.type === 'Invoice' && ['Paid', 'Cleared'].includes(tx.status);
+export function pricingQuoteTenderState(quote, now = Date.now(), safetyMs = 60_000) {
+  const expiresAt = new Date(quote?.expiresAt || '').getTime();
+  const localCurrent = now instanceof Date ? now.getTime() : Number(now);
+  const clockOffsetMs = Number(quote?.serverClockOffsetMs || 0);
+  const current = Number.isFinite(localCurrent) && Number.isFinite(clockOffsetMs)
+    ? localCurrent + clockOffsetMs : Number.NaN;
+  const remainingMs = Number.isFinite(expiresAt) && Number.isFinite(current)
+    ? Math.max(0, expiresAt - current) : 0;
+  return {
+    remainingMs,
+    secondsRemaining: Math.ceil(remainingMs / 1000),
+    ready: Boolean(quote?.pricingSnapshotId) && remainingMs > safetyMs,
+  };
+}
+export function posPricingCheckoutBinding(value = {}) {
+  return JSON.stringify({
+    companyId: String(value.companyId || ''),
+    staffId: String(value.staffId || ''),
+    checkoutId: String(value.checkoutId || ''),
+    lines: (value.lines || []).map(line => ({
+      productId: String(line.productId || ''),
+      variantId: String(line.variantId || ''),
+      quantityMilli: Number(line.quantityMilli),
+    })),
+    clientId: String(value.clientId || ''),
+    voucherCode: String(value.voucherCode || '').trim(),
+    manualDiscountBasisPoints: Number(value.manualDiscountBasisPoints),
+  });
+}
+export function bindPosPricingQuote(quote, checkout) {
+  return { ...quote, checkoutBinding: posPricingCheckoutBinding(checkout) };
+}
+export function posPricingQuoteMatchesCheckout(quote, checkout) {
+  return Boolean(quote?.pricingSnapshotId) &&
+    quote.checkoutBinding === posPricingCheckoutBinding(checkout);
+}
 export const expenseRecords = state => [...state.expenses.map(e => ({ ...e, origin: 'expenses' })), ...state.transactions.filter(t => ['Expense', 'Payment Voucher'].includes(t.type) && String(t.status || '').toLowerCase() !== 'voided').map(t => ({ ...t, amount: t.amount ?? t.total ?? 0, description: t.description || t.payee || t.number || t.type, origin: 'transactions' }))];
 export function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -103,9 +139,11 @@ function lockedCheckoutTotals(items, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The accepted quote is incomplete.');
   const required = ['subtotal','discountAmount','tax','taxRate','totalBeforeRounding','rounding','total'];
   const totals = Object.fromEntries(required.map(key => [key, Number(value[key])]));
+  const discount = Number(value.discount ?? 0);
   if (required.some(key => !Number.isFinite(totals[key])) || totals.subtotal < 0 || totals.discountAmount < 0 ||
       totals.discountAmount > totals.subtotal || totals.tax < 0 || totals.taxRate < 0 || totals.taxRate > 100 ||
-      totals.totalBeforeRounding < 0 || totals.total <= 0 || Math.abs(totals.rounding) > 0.02)
+      totals.totalBeforeRounding < 0 || totals.total <= 0 || Math.abs(totals.rounding) > 0.02 ||
+      !Number.isFinite(discount) || discount < 0 || discount > 100)
     throw new Error('The accepted quote totals are invalid.');
   const moneyFields = ['subtotal','discountAmount','tax','totalBeforeRounding','rounding','total'];
   if (moneyFields.some(key => Math.abs(totals[key] * 100 - cents(totals[key])) >= 1e-6))
@@ -117,9 +155,9 @@ function lockedCheckoutTotals(items, value) {
       cents(totals.subtotal) - cents(totals.discountAmount) + cents(totals.tax) + feeCents !== cents(totals.totalBeforeRounding) ||
       cents(totals.totalBeforeRounding) + cents(totals.rounding) !== cents(totals.total))
     throw new Error('The accepted quote totals are invalid.');
-  return { ...totals, discount: 0, ...(deliveryFee === undefined ? {} : { deliveryFee }) };
+  return { ...totals, discount, ...(deliveryFee === undefined ? {} : { deliveryFee }) };
 }
-export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, deliveryFee, lockedTotals, pricingSnapshotId = '', overrideReason = "" }) {
+export function createSale({ id, items, company, user, method, received, confirmed, customer, offline = false, discount = 0, deliveryFee, lockedTotals, pricingSnapshotId = '', overrideReason = "", occurredAt = null }) {
   if (!items.length) throw new Error('Add an item to this order first.');
   if (overrideReason.trim() && (overrideReason.trim().length < 3 || overrideReason.trim().length > 1000)) throw new Error('Use 3 to 1,000 characters for the manager override reason.');
   if (!company?.id || !user?.uid) throw new Error('Sign in and choose a store first.');
@@ -135,7 +173,9 @@ export function createSale({ id, items, company, user, method, received, confirm
   const customerEmail = String(customer?.email || '').trim();
   if (!validEmail(customerEmail)) throw new Error('Enter a valid customer email.');
   const customerId = customer?.id || (customerEmail ? `pos-${id}` : '');
-  const date = new Date().toISOString();
+  const captured = occurredAt ? new Date(occurredAt) : new Date();
+  if (!Number.isFinite(captured.getTime())) throw new Error('The payment time is invalid.');
+  const date = captured.toISOString();
   return { id, schemaVersion: 3, source: 'pos', company_id: company.id, cashierId: user.uid, cashierName: user.username || user.email, date, businessDate: businessDate(date), type: 'Invoice', number: `POS-${id.toUpperCase()}`, status: 'Paid', items: JSON.parse(JSON.stringify(items)), ...totals, ...(pricingSnapshotId ? { pricingSnapshotId } : {}), paymentMethod: method, received: tender / 100, change: (tender - cents(totals.total)) / 100, client_id: customerId, customerName: customer?.name || customerEmail || 'Walk-in customer', customerEmail, offline, receiptTemplateId:company.receiptTemplate?.id||'', receiptTemplateVersion:Number(company.receiptTemplate?.version||0), ...(overrideReason.trim()?{overrideReason:overrideReason.trim()}:{}), storeSnapshot: { name: company.name || '', address: company.address || '', phone: company.phone || '', registration: company.registration || '', currency: company.preferences?.currency || 'RM', footer: company.preferences?.receiptFooter || 'Thank you for shopping with us.', paperWidth: company.preferences?.paperWidth || '80' } };
 }
 export function deductItems(products, items, allowShortage = false) {

@@ -93,6 +93,13 @@ test('a free-item reward discounts only the still-payable reward amount after an
   assert.deepEqual(result.applications.map(item => [item.promotionId, item.discountSen]),
     [['first', 375], ['reward-a', 375]]);
   assert.equal(result.totalSen, 0);
+
+  const twoItems = priceWithPromotions({ at: AT, cashRounding: false,
+    lines: [line({ quantityMilli: 2000 })], promotions: [percentage, offer()] });
+  assert.deepEqual(twoItems.applications.map(item => [item.promotionId, item.discountSen]),
+    [['first', 750], ['reward-a', 375]],
+    'one free unit discounts its proportional payable share instead of both discounted units');
+  assert.equal(twoItems.totalSen, 375);
 });
 
 const eligibleCustomer = (patch = {}) => ({
@@ -143,12 +150,16 @@ test('campaign-linked pricing excludes guests and mismatched audiences while leg
     workspaceId: 'workspace-a', companyId: 'company-a', customerId: '', at: AT,
   })).map(item => item.id), ['legacy', 'public-campaign']);
 
+  let consentSql = '', verifiedConsent = true;
   const c = { query: async sql => {
     if (sql.includes('FROM myfin.customer_order_requests orders')) return { rows: [{
       workspace_order_count: '5', workspace_spend_sen: '10000', workspace_last_purchase_at: '2026-10-01T00:00:00Z',
       company_order_count: '3', company_spend_sen: '6000', company_last_purchase_at: '2026-10-05T00:00:00Z',
     }] };
-    if (sql.includes('FROM myfin.customer_consent_events')) return { rows: [{ channel: 'email', granted: true }] };
+    if (sql.includes('FROM myfin.customer_consent_events')) {
+      consentSql = sql;
+      return { rows: [{ channel: 'email', granted: verifiedConsent }] };
+    }
     if (sql.includes('FROM myfin.student_eligibilities')) return { rows: [{
       status: 'verified', valid_from: '2026-01-01T00:00:00Z', valid_until: '2027-01-01T00:00:00Z',
     }] };
@@ -158,6 +169,15 @@ test('campaign-linked pricing excludes guests and mismatched audiences while leg
   assert.deepEqual((await filterCampaignEligiblePromotions(c, promotions, {
     workspaceId: 'workspace-a', companyId: 'company-a', customerId: 'customer-a', at: AT,
   })).map(item => item.id), ['legacy', 'public-campaign', 'targeted']);
+  assert.match(consentSql, /destination_verified_at IS NOT NULL/);
+  assert.match(consentSql, /account\.email_verified_at IS NOT NULL/);
+  assert.match(consentSql, /consent\.destination=account\.primary_email/);
+  assert.match(consentSql, /profile\.phone_verified_at IS NOT NULL/);
+  assert.match(consentSql, /consent\.destination=profile\.phone/);
+  verifiedConsent = false;
+  assert.deepEqual((await filterCampaignEligiblePromotions(c, promotions, {
+    workspaceId: 'workspace-a', companyId: 'company-a', customerId: 'customer-a', at: AT,
+  })).map(item => item.id), ['legacy', 'public-campaign']);
 });
 
 function awardFixture() {
@@ -166,9 +186,11 @@ function awardFixture() {
       reserved_points: 0, version: 1 },
     currentSettings: settingsRow(), settingsVersions: new Map([[1, settingsRow()]]),
     events: [], campaigns: [], batch: null, accountUpdates: 0, waiters: [], saleLocked: false,
+    posSource: null, calls: [],
   };
   const releaseSale = () => { state.saleLocked = false; state.waiters.shift()?.(); };
   const client = () => ({ query: async (sql, params = []) => {
+    state.calls.push({ sql, params });
     if (sql.includes("hashtextextended($1,30)") && String(params[0]).includes(':loyalty-sale:')) {
       while (state.saleLocked) await new Promise(resolve => state.waiters.push(resolve));
       state.saleLocked = true;
@@ -182,6 +204,8 @@ function awardFixture() {
         order_total_sen: '1000', sale_total_sen: '1000' }], rowCount: 1 }
         : { rows: [], rowCount: 0 };
     }
+    if (sql.includes("sale.data->>'client_id' AS client_id") && sql.includes('FOR SHARE OF sale'))
+      return state.posSource ? { rows: [state.posSource], rowCount: 1 } : { rows: [], rowCount: 0 };
     if (sql.includes('FROM myfin.loyalty_sale_award_batches')) {
       const result = { rows: state.batch ? [state.batch] : [], rowCount: state.batch ? 1 : 0 };
       // The real advisory lock is transaction scoped. A replay is read-only,
@@ -240,7 +264,8 @@ function awardFixture() {
     if (sql.startsWith('INSERT INTO myfin.loyalty_sale_award_batches')) {
       state.batch = { workspace_id: params[0], company_id: params[1], source_sale_id: params[2],
         source_order_id: params[3], customer_id: params[4], total_sen: params[5],
-        program_version: params[6], request_digest: params[7], occurred_at: params[8] };
+        program_version: params[6], request_digest: params[7], occurred_at: params[8],
+        source_type: params[9] };
       releaseSale();
       return { rows: [], rowCount: 1 };
     }
@@ -262,6 +287,7 @@ test('concurrent paid-sale awards are exact-once and retries use the recorded pr
   assert.equal(fixture.state.events.length, 2);
   assert.deepEqual(fixture.state.events.map(event => [event.kind, event.points, event.campaign_version]),
     [['earn', 2, null], ['bonus', 5, 3]]);
+  assert.match(fixture.state.events.find(event => event.kind === 'earn').idempotency_key, /^[0-9a-f]{64}$/);
   assert.deepEqual([first.awards[0].replayed, concurrent.awards[0].replayed].sort(), [false, true]);
 
   fixture.state.currentSettings = settingsRow({ version: '2', points_per_order: '50' });
@@ -312,6 +338,52 @@ test('a sale cannot qualify its own bonus audience by crossing the loyalty thres
   assert.deepEqual(result.awards.map(item => item.event.kind), ['earn']);
   assert.equal(result.awards[0].event.balanceAfter, 21);
   assert.equal(fixture.state.events.some(event => event.kind === 'bonus'), false);
+});
+
+test('linked-customer POS awards validate the posted sale and apply only POS-channel bonuses', async () => {
+  const fixture = awardFixture();
+  fixture.state.posSource = { source: 'pos', client_id: 'client-a', customer_id: 'customer-a',
+    sale_total_sen: '1000' };
+  fixture.state.campaigns = [{ id: 'pos-bonus', version: '4', bonus_points: '7', audiences: [] }];
+  const result = await awardLoyaltyPointsForSale(fixture.client(), {
+    companyId: 'company-a', customerId: 'customer-a', saleId: 'sale-a', orderId: '',
+    sourceType: 'pos_sale', channel: 'pos', totalSen: 1000, occurredAt: AT, actorId: 'staff-a',
+  });
+  assert.deepEqual(result.awards.map(item => [item.event.kind, item.event.points]),
+    [['earn', 2], ['bonus', 7]]);
+  assert.match(fixture.state.events.find(event => event.kind === 'earn').idempotency_key, /^[0-9a-f]{64}$/);
+  assert.equal(fixture.state.batch.source_order_id, null);
+  assert.equal(fixture.state.batch.source_type, 'pos_sale');
+  const campaignQuery = fixture.state.calls.find(call => call.sql.includes('FROM myfin.marketing_campaigns campaign'));
+  assert.deepEqual(campaignQuery.params.slice(4), ['pos', 'pos_sale', 'sale-a']);
+  const profileQuery = fixture.state.calls.find(call => call.sql.includes('WITH purchases AS'));
+  assert.equal(profileQuery, undefined, 'an untargeted campaign must not query customer history');
+
+  const changedCustomer = awardFixture();
+  changedCustomer.state.posSource = { ...fixture.state.posSource, customer_id: 'customer-b' };
+  await assert.rejects(awardLoyaltyPointsForSale(changedCustomer.client(), {
+    companyId: 'company-a', customerId: 'customer-a', saleId: 'sale-a', orderId: '',
+    sourceType: 'pos_sale', channel: 'pos', totalSen: 1000, occurredAt: AT, actorId: 'staff-a',
+  }), error => error.statusCode === 409 && error.message === 'loyalty_sale_source_invalid');
+});
+
+test('the current POS sale and its newly earned points cannot qualify their own audience', async () => {
+  const fixture = awardFixture();
+  fixture.state.posSource = { source: 'pos', client_id: 'client-a', customer_id: 'customer-a',
+    sale_total_sen: '1000' };
+  fixture.state.campaigns = [{ id: 'future-customer', version: '1', bonus_points: '9',
+    audiences: [{ ...audience({ consent: { required: false, channels: [] },
+      eligibility: { studentStatus: 'any' }, customer: {
+        ...audience().customer, minOrderCount: 0, minSpendSen: 0, minLoyaltyPoints: 2,
+        lastPurchaseWithinDays: null, includeCustomerIds: [],
+      } }) }] }];
+  const result = await awardLoyaltyPointsForSale(fixture.client(), {
+    companyId: 'company-a', customerId: 'customer-a', saleId: 'sale-a', orderId: '',
+    sourceType: 'pos_sale', channel: 'pos', totalSen: 1000, occurredAt: AT, actorId: 'staff-a',
+  });
+  assert.deepEqual(result.awards.map(item => item.event.kind), ['earn']);
+  const profile = fixture.state.calls.find(call => call.sql.includes('WITH purchases AS'));
+  assert.deepEqual(profile.params.slice(3), ['', 'sale-a']);
 });
 
 function balanceFixture() {
@@ -522,8 +594,9 @@ test('staff loyalty routes deny operators and require an adjustment reason befor
 });
 
 test('migration keeps legacy projections, immutable exact-source history and least-privilege runtime grants', async () => {
-  const [sql, development, production] = await Promise.all([
+  const [sql, posSql, development, production] = await Promise.all([
     readFile(new URL('../../db/migrations/0030_marketing_rewards_loyalty.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../../db/migrations/0037_pos_pricing.sql', import.meta.url), 'utf8'),
     readFile(new URL('../../db/grant-development-runtime.sql', import.meta.url), 'utf8'),
     readFile(new URL('../../db/grant-production-runtime.sql', import.meta.url), 'utf8'),
   ]);
@@ -531,6 +604,9 @@ test('migration keeps legacy projections, immutable exact-source history and lea
   assert.match(sql, /discount_type='free_item'/);
   assert.match(sql, /validate_free_item_redemption/);
   assert.match(sql, /reward_line_count<>1/);
+  assert.match(posSql, /CREATE OR REPLACE FUNCTION myfin\.validate_free_item_redemption/);
+  assert.match(posSql, /remaining_quantities\[reward_line\.line_no\]/);
+  assert.match(posSql, /quantity_left<>0 OR expected_discount<>NEW\.discount_sen/);
   assert.match(sql, /CREATE TABLE myfin\.workspace_loyalty_setting_versions/);
   assert.match(sql, /CREATE TABLE myfin\.loyalty_point_events/);
   assert.match(sql, /CREATE TABLE myfin\.loyalty_sale_award_batches/);
@@ -557,6 +633,9 @@ test('migration keeps legacy projections, immutable exact-source history and lea
   assert.match(sql, /INSERT INTO myfin\.loyalty_point_events[\s\S]*FROM myfin\.customer_loyalty_events/);
   assert.match(sql, /REVOKE ALL ON myfin\.workspace_loyalty_setting_versions/);
   assert.match(sql, /REVOKE ALL ON FUNCTION myfin\.enforce_loyalty_reserved_total\(\) FROM PUBLIC/);
+  assert.match(posSql, /ALTER COLUMN source_order_id DROP NOT NULL/);
+  assert.match(posSql, /source_type IN \('customer_order','pos_sale'\)/);
+  assert.match(posSql, /\(source_type='customer_order'\)=\(source_order_id IS NOT NULL\)/);
   for (const grants of [development, production]) {
     assert.match(grants, /SELECT,INSERT ON myfin\.workspace_loyalty_setting_versions,myfin\.loyalty_point_events/);
     assert.match(grants, /SELECT,INSERT,UPDATE ON myfin\.loyalty_point_reservations/);

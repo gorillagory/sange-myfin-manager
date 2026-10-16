@@ -185,37 +185,53 @@ Customer identity is separate from staff authentication and six-digit POS
 access. The global account contains the customer ID, display name, email,
 adult confirmation and disabled state. A workspace profile contains the
 display name and phone used in that workspace. Workspace-scoped loyalty and
-consent records follow the same boundary, so one login can visit multiple
-`finn3.com` shops without sharing one workspace's balance or marketing choice
+consent records follow the same boundary, so one Finn3 identity can visit
+multiple shops without sharing one workspace's balance or marketing choice
 with another.
 
-The initial login method is email and password. Registration requires an
-explicit 18-or-older confirmation and a password of 12 to 128 characters.
+The initial login method is a global Finn3 ID and password. An email-shaped ID
+continues to work for accounts created before the handle migration. A supplied
+email remains unverified contact data and does not claim account ownership.
+Registration requires an explicit 18-or-older confirmation and a password of
+12 to 128 characters.
 Passwords use randomized scrypt verifiers with `N=65536`, `r=8`, `p=1`.
 Expensive KDF work is bounded to two concurrent operations and eight queued
 operations. Five failed attempts lock the credential for 15 minutes.
 
 Sessions use 32-byte opaque tokens, store only SHA-256 digests, expire after 30
-days and retain at most ten active sessions per account. With
-`PUBLIC_ROOT_DOMAIN=finn3.com`, a matching storefront receives a shared
-`__Secure-myfin_customer_session` cookie for one-login behavior across those
-hosts. An unrelated development domain receives a host-only
-`__Host-myfin_customer_session` cookie. Both are secure, HTTP-only and
-`SameSite=Lax`.
+days and retain at most ten active sessions per account. Every storefront now
+receives only a host-bound `__Host-myfin_customer_session` cookie with Secure,
+HTTP-only and `SameSite=Strict`; the database session is also bound to that
+exact hostname, so copying the bearer to a sibling storefront is rejected. The
+API ignores the previous parent-domain
+bearer and clears it during the next sign-in or sign-out. The same Finn3 ID and
+password work across participating shops, but the customer signs in separately
+at each host.
+
+Seamless cross-host session transfer requires a dedicated identity origin such
+as `id.finn3.com`. That service must own its host-only identity cookie and issue
+single-use, short-lived codes bound to the exact destination origin. The target
+storefront would exchange the code for its own `__Host-` session. DNS, an exact
+host allowlist, return-URL validation, replay protection and browser acceptance
+are prerequisites; no parent-domain bearer is retained as a shortcut.
 
 The customer account panel supports registration, sign-in/out, workspace
 profile editing, recent company-order history, loyalty balance and independent
-email, SMS and WhatsApp marketing choices. The latest choice for each channel
-is derived from an append-only consent history and can be withdrawn at any
-time. Registration, profile edits and consent writes require a published
+email, SMS and WhatsApp marketing choices. A grant records the exact destination
+and its verification timestamp. It is effective only while that same current
+email or workspace phone remains verified; changing the phone clears its
+verification. Existing grants without this evidence fail closed. A withdrawal
+is always accepted, including when the destination is missing or unverified.
+Registration, profile edits and consent writes require a published
 storefront with a complete privacy configuration. Sign-in, session lookup and
 sign-out remain available so an unpublished shop cannot trap an existing
 session.
 
-Accounts currently record email as unverified. The schema has an
+Accounts currently record email and phone as unverified. The schema has an
 issuer/subject identity map for future external providers, but no email
-verification, magic-link, Google, Apple or other OIDC provider is active. The
-UI states that verification and external single sign-on are pending. Existing
+or phone challenge, magic-link, Google, Apple or other OIDC provider is active.
+Consequently a new account cannot enable outbound marketing yet. The UI states
+that verification and external provider sign-in are pending. Existing
 staff contacts and matching email strings never create or claim a customer
 account.
 
@@ -239,7 +255,9 @@ this release creates only `earn` entries. There is no automatic reward,
 redemption, discount, expiry or refund reversal workflow yet.
 
 Service messages and marketing permission are separate. Marketing choices are
-initially off and are recorded per workspace, channel and notice version.
+initially off and are recorded per workspace, channel, notice version and exact
+verified destination. Consent consumers re-check that evidence rather than
+trusting the latest boolean alone.
 This release records and displays choices only: it does not send campaigns,
 transactional messages, emails, SMS or WhatsApp messages, and it does not run
 automated profiling or segmentation.
@@ -298,8 +316,9 @@ remain a migrator responsibility.
 
 - Payment is at the counter. There is no payment-gateway adapter, webhook or
   online refund flow.
-- Email verification and external SSO are prepared at the data-model boundary
-  but are not active.
+- Email/phone verification and external provider sign-in are prepared at the
+  data-model boundary but are not active. Seamless Finn3 cross-host session
+  transfer also awaits the dedicated identity-host exchange described above.
 - Marketing preferences are recorded, but outbound messaging and campaign
   management are not active.
 - Loyalty earns stamps only. Redemption, adjustments in the UI, reward issue,

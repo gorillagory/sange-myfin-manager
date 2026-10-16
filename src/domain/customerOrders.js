@@ -13,7 +13,45 @@ const ACTIVE = new Set(['awaiting_acceptance', 'submitted', 'accepted', 'prepari
 
 export const customerOrderStatusLabel = status => STATUS_LABELS[status] || 'Order request';
 export const isActiveCustomerOrder = order => ACTIVE.has(order?.status);
-export const isTenderableCustomerOrder = order => ['accepted', 'preparing', 'ready'].includes(order?.status) && order?.paymentStatus !== 'paid';
+const COUNTER_PAYMENT_BLOCKED = new Set([
+  'creating', 'pending', 'reconciliation_required', 'confirmed', 'confirmed_unposted', 'finalized', 'posted',
+]);
+
+export const customerOrderOnlinePaymentLabel = payment => ({
+  creating: 'Opening secure checkout',
+  pending: 'Secure checkout in progress',
+  reconciliation_required: 'Provider reconciliation required',
+  failed: 'Online payment failed',
+  confirmed: 'Online payment confirmed',
+  confirmed_unposted: 'Online payment confirmed',
+  finalized: 'Online payment posted',
+  posted: 'Online payment posted',
+}[payment?.state] || 'No online payment started');
+
+export const blocksCounterPayment = payment => COUNTER_PAYMENT_BLOCKED.has(payment?.state);
+
+export const canReconcileCustomerOrderPayment = payment =>
+  ['creating','pending','reconciliation_required'].includes(payment?.state) &&
+  !payment?.paymentId;
+
+export function onlinePaymentReconciliationError(error) {
+  const code = typeof error === 'string' ? error : error?.message;
+  if (code === 'online_payment_provider_request_not_found')
+    return 'HitPay did not return one exact request for this reference. Keep counter payment locked and check the HitPay dashboard before retrying reconciliation.';
+  if (code === 'online_payment_provider_response_invalid')
+    return 'HitPay returned a response MyFin could not verify. Keep this order locked and retry after checking the provider service status.';
+  if (code === 'online_payment_reconciliation_unavailable')
+    return 'MyFin could not reach the configured HitPay account. Check the gateway connection, then retry; do not take another payment.';
+  if (['online_payment_reference_mismatch','online_payment_amount_mismatch',
+    'online_payment_currency_mismatch','online_payment_request_mismatch',
+    'online_payment_request_conflict','online_payment_changed'].includes(code))
+    return 'The provider record does not match this order or changed during review. Keep payment locked and escalate this evidence to the workspace owner.';
+  return 'HitPay reconciliation could not be completed. Keep counter payment locked and retry from this order.';
+}
+
+export const isTenderableCustomerOrder = (order, payment = null) =>
+  ['accepted', 'preparing', 'ready'].includes(order?.status) &&
+  order?.paymentStatus !== 'paid' && !blocksCounterPayment(payment || { state:order?.onlinePaymentState });
 
 export function customerOrderActions(order) {
   if (!order || order.paymentStatus === 'paid') return [];

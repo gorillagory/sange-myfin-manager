@@ -21,17 +21,27 @@ const dummySalt = Buffer.from('AAAAAAAAAAAAAAAAAAAAAA', 'base64url');
 const dummyHash = Buffer.from('WXPLnTOvPfDYqb3uz0CdliKtVQWCNwvKSgLupRtx5VEl3o0_PRNDYBi2N71XfwplJOCTgWw3Xc2KKNLUB_LACA', 'base64url');
 
 const emailSchema = z.email().max(254).transform(value => value.trim().toLowerCase());
+const newLoginIdSchema = z.string().trim().toLowerCase().min(3).max(32)
+  .regex(/^[a-z0-9][a-z0-9._-]*$/);
+const loginIdSchema = z.string().trim().toLowerCase().min(3).max(254)
+  .regex(/^[a-z0-9][a-z0-9._+@-]*$/);
 const passwordSchema = z.string().min(12).max(128);
 const phoneSchema = z.string().trim().max(24).refine(value => value === '' ||
   (value.length >= 7 && /^\+?[0-9 ()-]+$/.test(value) && /\d/.test(value)), 'invalid_phone').default('');
 const registrationSchema = z.strictObject({
+  loginId: newLoginIdSchema,
   email: emailSchema,
   password: passwordSchema,
   displayName: z.string().trim().min(1).max(120),
   phone: phoneSchema,
   adultConfirmed: z.literal(true),
 });
-const signInSchema = z.strictObject({ email: emailSchema, password: passwordSchema });
+const signInSchema = z.union([
+  z.strictObject({ loginId: loginIdSchema, password: passwordSchema }),
+  // Compatibility for a cached pre-release customer shell. Existing accounts
+  // were migrated with their email-shaped identifier.
+  z.strictObject({ email: emailSchema, password: passwordSchema })
+]).transform(value => ({ loginId: value.loginId || value.email, password: value.password }));
 const profileSchema = z.strictObject({
   displayName: z.string().trim().min(1).max(120),
   phone: phoneSchema,
@@ -83,23 +93,36 @@ function cookieValues(header) {
     const at = part.indexOf('=');
     if (at < 0) continue;
     const name = part.slice(0, at).trim();
-    if (name !== sharedCookieName && name !== hostCookieName) continue;
+    if (name !== hostCookieName) continue;
     try { values[name] = decodeURIComponent(part.slice(at + 1).trim()); } catch { values[name] = ''; }
   }
-  return [...new Set([values[sharedCookieName], values[hostCookieName]].filter(Boolean))];
+  return [...new Set([values[hostCookieName]].filter(Boolean))];
 }
 
 export function customerCookieDomain(hostname, rootDomain) {
-  const host = normalizeHostname(hostname);
-  const root = normalizeHostname(rootDomain);
-  if (!host || !root || isIP(root) || root === 'localhost' || root.split('.').length < 2) return '';
-  return host === root || host.endsWith(`.${root}`) ? root : '';
+  // Durable customer bearers are deliberately host-only. A future central
+  // identity host may exchange one-time, audience-bound codes, but a parent
+  // domain cookie must never substitute for that broker.
+  void hostname; void rootDomain;
+  return '';
 }
 
 export function customerCookieHeader(token, hostname, rootDomain, maxAge = sessionSeconds) {
-  const domain = customerCookieDomain(hostname, rootDomain);
-  const name = domain ? sharedCookieName : hostCookieName;
-  return `${name}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax${domain ? `; Domain=${domain}` : ''}`;
+  void hostname; void rootDomain;
+  return `${hostCookieName}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
+}
+
+function legacySharedCookieHeader(rootDomain) {
+  const root = normalizeHostname(rootDomain);
+  if (!root || isIP(root) || root === 'localhost' || root.split('.').length < 2) return '';
+  return `${sharedCookieName}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict; Domain=${root}`;
+}
+
+function setCustomerCookie(reply, token, context, authOptions, maxAge = sessionSeconds) {
+  const headers = [customerCookieHeader(token, context.hostname, authOptions.rootDomain, maxAge)];
+  const legacy = legacySharedCookieHeader(authOptions.rootDomain);
+  if (legacy) headers.push(legacy);
+  reply.header('Set-Cookie', headers);
 }
 
 export async function hashCustomerPassword(password) {
@@ -124,12 +147,12 @@ export async function verifyCustomerPassword(password, encoded) {
   return parametersValid && timingSafeEqual(actual, expected);
 }
 
-async function createSession(c, customerId) {
+async function createSession(c, customerId, hostname) {
   const token = randomBytes(32).toString('base64url');
   const tokenHash = sessionDigest(token);
   await c.query(
-    `INSERT INTO myfin.customer_sessions(token_digest,customer_id,expires_at)
-     VALUES($1,$2,now()+interval '30 days')`, [tokenHash, customerId],
+    `INSERT INTO myfin.customer_sessions(token_digest,customer_id,hostname,expires_at)
+     VALUES($1,$2,$3,now()+interval '30 days')`, [tokenHash, customerId, normalizeHostname(hostname)],
   );
   await c.query(
     `UPDATE myfin.customer_sessions SET revoked_at=coalesce(revoked_at,now())
@@ -143,18 +166,21 @@ async function createSession(c, customerId) {
 }
 
 export async function customerSession(c, req, touch = true) {
+  const hostname = normalizeHostname(req.tenant?.hostname || '');
+  if (!hostname) return null;
   const tokenHashes = cookieValues(req.headers.cookie)
     .filter(token => /^[A-Za-z0-9_-]{43}$/.test(token)).map(sessionDigest);
   if (!tokenHashes.length) return null;
   const row = (await c.query(
-    `SELECT s.token_digest,s.customer_id,s.expires_at,a.display_name,a.primary_email,a.email_verified_at,
+    `SELECT s.token_digest,s.customer_id,s.expires_at,a.login_id,a.display_name,a.primary_email,a.email_verified_at,
             a.adult_confirmed_at
        FROM myfin.customer_sessions s
        JOIN myfin.customer_accounts a ON a.id=s.customer_id
-      WHERE s.token_digest=ANY($1::text[]) AND s.revoked_at IS NULL AND s.expires_at>now()
+      WHERE s.token_digest=ANY($1::text[]) AND s.hostname=$2
+        AND s.revoked_at IS NULL AND s.expires_at>now()
         AND a.disabled_at IS NULL
       ORDER BY array_position($1::text[],s.token_digest) LIMIT 1`,
-    [tokenHashes],
+    [tokenHashes, hostname],
   )).rows[0];
   if (!row) return null;
   if (touch) await c.query(
@@ -162,9 +188,28 @@ export async function customerSession(c, req, touch = true) {
       WHERE token_digest=$1 AND last_seen_at<now()-interval '5 minutes'`, [row.token_digest],
   );
   return {
-    digest: row.token_digest, customerId: row.customer_id, displayName: row.display_name || '',
+    digest: row.token_digest, customerId: row.customer_id, loginId: row.login_id || '', displayName: row.display_name || '',
     email: row.primary_email || '', emailVerified: Boolean(row.email_verified_at),
+    emailVerifiedAt: row.email_verified_at || null,
     adultConfirmed: Boolean(row.adult_confirmed_at), expiresAt: row.expires_at,
+  };
+}
+
+export function customerMarketingChannelState(channel, contact = {}, event = {}) {
+  const isEmail = channel === 'email';
+  const destination = String(isEmail ? contact.email || '' : contact.phone || '').trim();
+  const verifiedAt = isEmail ? contact.emailVerifiedAt || null : contact.phoneVerifiedAt || null;
+  const recordedGranted = Boolean(event.granted);
+  const exactDestination = Boolean(destination && verifiedAt && event.destination_verified_at &&
+    String(event.destination || '').trim() === destination);
+  return {
+    granted: recordedGranted && exactDestination,
+    recordedGranted,
+    canGrant: Boolean(destination && verifiedAt),
+    destination,
+    destinationVerified: Boolean(destination && verifiedAt),
+    noticeVersion: event.notice_version || '',
+    updatedAt: event.created_at || null,
   };
 }
 
@@ -183,7 +228,7 @@ async function mePayload(c, context, session) {
     workspaceId: context.workspace_id, customerId: session.customerId, limit: 100,
   });
   const profile = (await c.query(
-    `SELECT display_name,phone FROM myfin.customer_workspace_profiles
+    `SELECT display_name,phone,phone_verified_at FROM myfin.customer_workspace_profiles
       WHERE workspace_id=$1 AND customer_id=$2`, [context.workspace_id, session.customerId],
   )).rows[0];
   const settings = (await c.query(
@@ -198,19 +243,20 @@ async function mePayload(c, context, session) {
       WHERE workspace_id=$1 AND customer_id=$2`, [context.workspace_id, session.customerId],
   )).rows[0];
   const consentRows = (await c.query(
-    `SELECT DISTINCT ON (channel) channel,granted,notice_version,created_at
+    `SELECT DISTINCT ON (channel) channel,granted,notice_version,created_at,
+            destination,destination_verified_at
        FROM myfin.customer_consent_events
       WHERE workspace_id=$1 AND customer_id=$2 AND purpose='marketing'
       ORDER BY channel,created_at DESC,id DESC`, [context.workspace_id, session.customerId],
   )).rows;
-  const consent = Object.fromEntries(['email','sms','whatsapp'].map(channel => {
-    const row = consentRows.find(item => item.channel === channel);
-    return [channel, { granted: Boolean(row?.granted), noticeVersion: row?.notice_version || '',
-      updatedAt: row?.created_at || null }];
-  }));
+  const contact = { email: session.email, emailVerifiedAt: session.emailVerifiedAt,
+    phone: profile?.phone || '', phoneVerifiedAt: profile?.phone_verified_at || null };
+  const consent = Object.fromEntries(['email','sms','whatsapp'].map(channel =>
+    [channel, customerMarketingChannelState(channel, contact,
+      consentRows.find(item => item.channel === channel) || {})]));
   return {
     authenticated: true,
-    customer: { id: session.customerId, displayName: session.displayName,
+    customer: { id: session.customerId, loginId: session.loginId || '', displayName: session.displayName,
       email: session.email, emailVerified: session.emailVerified,
       adultConfirmed: session.adultConfirmed !== false },
     profile: { workspaceId: context.workspace_id,
@@ -240,14 +286,14 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
     const context = publicContext(req), input = v.parse(registrationSchema, req.body);
     return db.transaction(async c => {
       await requirePublishedStorefrontPrivacy(c, context.company_id);
-      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,19))', [`customer-email:${input.email}`]);
-      if ((await c.query('SELECT 1 FROM myfin.customer_accounts WHERE lower(primary_email)=$1', [input.email])).rowCount)
-        v.fail(409, 'customer_account_unavailable');
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,19))', [`customer-login:${input.loginId}`]);
+      if ((await c.query('SELECT 1 FROM myfin.customer_accounts WHERE lower(login_id)=$1', [input.loginId])).rowCount)
+        v.fail(409, 'customer_login_unavailable');
       const customerId = randomUUID(), passwordHash = await hashCustomerPassword(input.password);
       await c.query(
-        `INSERT INTO myfin.customer_accounts(id,display_name,primary_email,adult_confirmed_at)
-         VALUES($1,$2,$3,now())`,
-        [customerId, input.displayName, input.email],
+        `INSERT INTO myfin.customer_accounts(id,login_id,display_name,primary_email,adult_confirmed_at)
+         VALUES($1,$2,$3,$4,now())`,
+        [customerId, input.loginId, input.displayName, input.email],
       );
       await c.query(
         `INSERT INTO myfin.customer_credentials(customer_id,password_hash) VALUES($1,$2)`,
@@ -261,11 +307,11 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
         `INSERT INTO myfin.customer_workspace_profiles(workspace_id,customer_id,display_name,phone)
          VALUES($1,$2,$3,$4)`, [context.workspace_id, customerId, input.displayName, input.phone],
       );
-      const token = await createSession(c, customerId);
-      reply.header('Set-Cookie', customerCookieHeader(token, context.hostname, authOptions.rootDomain));
+      const token = await createSession(c, customerId, context.hostname);
+      setCustomerCookie(reply, token, context, authOptions);
       reply.code(201);
-      return mePayload(c, context, { customerId, displayName: input.displayName,
-        email: input.email, emailVerified: false, adultConfirmed: true });
+      return mePayload(c, context, { customerId, loginId: input.loginId, displayName: input.displayName,
+        email: input.email, emailVerified: false, emailVerifiedAt: null, adultConfirmed: true });
     });
   });
 
@@ -277,7 +323,7 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
                 x.password_hash,x.failed_attempts,x.locked_until
            FROM myfin.customer_accounts a
            JOIN myfin.customer_credentials x ON x.customer_id=a.id
-          WHERE lower(a.primary_email)=$1 FOR UPDATE OF x`, [input.email],
+          WHERE lower(a.login_id)=$1 FOR UPDATE OF x`, [input.loginId],
       )).rows[0];
       const validPassword = await verifyCustomerPassword(input.password, row?.password_hash);
       const locked = row?.locked_until && new Date(row.locked_until) > new Date();
@@ -297,13 +343,14 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
         `UPDATE myfin.customer_credentials SET failed_attempts=0,locked_until=NULL,last_used_at=now(),updated_at=now()
           WHERE customer_id=$1`, [row.id],
       );
-      const token = await createSession(c, row.id);
-      return { token, payload: await mePayload(c, context, { customerId: row.id, displayName: row.display_name || '',
+      const token = await createSession(c, row.id, context.hostname);
+      return { token, payload: await mePayload(c, context, { customerId: row.id, loginId: input.loginId, displayName: row.display_name || '',
         email: row.primary_email || '', emailVerified: Boolean(row.email_verified_at),
+        emailVerifiedAt: row.email_verified_at || null,
         adultConfirmed: Boolean(row.adult_confirmed_at) }) };
     });
     if (result.authenticationFailed) v.fail(401, 'customer_authentication_failed');
-    reply.header('Set-Cookie', customerCookieHeader(result.token, context.hostname, authOptions.rootDomain));
+    setCustomerCookie(reply, result.token, context, authOptions);
     return result.payload;
   });
 
@@ -317,7 +364,7 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
           WHERE token_digest=ANY($1::text[])`, [tokenHashes],
       );
     });
-    reply.header('Set-Cookie', customerCookieHeader('', context.hostname, authOptions.rootDomain, 0));
+    setCustomerCookie(reply, '', context, authOptions, 0);
     return { ok: true };
   });
 
@@ -335,12 +382,15 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
       await requirePublishedStorefrontPrivacy(c, context.company_id);
       const session = await customerSession(c, req);
       if (!session) v.fail(401, 'customer_session_required');
-      await c.query(`UPDATE myfin.customer_accounts SET display_name=$2,updated_at=now() WHERE id=$1`,
-        [session.customerId, input.displayName]);
       await c.query(
         `INSERT INTO myfin.customer_workspace_profiles(workspace_id,customer_id,display_name,phone)
          VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,customer_id) DO UPDATE SET
-         display_name=EXCLUDED.display_name,phone=EXCLUDED.phone,updated_at=now()`,
+         display_name=EXCLUDED.display_name,phone=EXCLUDED.phone,
+         phone_verified_at=CASE
+           WHEN customer_workspace_profiles.phone=EXCLUDED.phone
+             THEN customer_workspace_profiles.phone_verified_at
+           ELSE NULL END,
+         updated_at=now()`,
         [context.workspace_id, session.customerId, input.displayName, input.phone],
       );
       return mePayload(c, context, { ...session, displayName: input.displayName });
@@ -353,10 +403,23 @@ export function registerCustomerAccounts(app, { db, authOptions }) {
       await requirePublishedStorefrontPrivacy(c, context.company_id);
       const session = await customerSession(c, req);
       if (!session) v.fail(401, 'customer_session_required');
+      const profile = (await c.query(
+        `SELECT phone,phone_verified_at FROM myfin.customer_workspace_profiles
+          WHERE workspace_id=$1 AND customer_id=$2 FOR UPDATE`,
+        [context.workspace_id, session.customerId],
+      )).rows[0];
+      const destination = input.channel === 'email' ? session.email : profile?.phone || '';
+      const destinationVerifiedAt = input.channel === 'email'
+        ? session.emailVerifiedAt : profile?.phone_verified_at || null;
+      if (input.granted && (!destination || !destinationVerifiedAt))
+        v.fail(409, 'marketing_destination_unverified');
       await c.query(
-        `INSERT INTO myfin.customer_consent_events(workspace_id,id,customer_id,purpose,channel,granted,notice_version,source)
-         VALUES($1,$2,$3,'marketing',$4,$5,$6,'customer_storefront')`,
-        [context.workspace_id, randomUUID(), session.customerId, input.channel, input.granted, marketingNoticeVersion],
+        `INSERT INTO myfin.customer_consent_events(
+           workspace_id,id,customer_id,purpose,channel,granted,notice_version,source,
+           destination,destination_verified_at)
+         VALUES($1,$2,$3,'marketing',$4,$5,$6,'customer_storefront',$7,$8)`,
+        [context.workspace_id, randomUUID(), session.customerId, input.channel, input.granted,
+          marketingNoticeVersion, destination || null, destinationVerifiedAt],
       );
       reply.code(201);
       return mePayload(c, context, session);
@@ -368,5 +431,5 @@ const customerPasswordPolicy = Object.freeze({ N: scryptParameters.N, r: scryptP
   p: scryptParameters.p, maxConcurrentKdfs, maxQueuedKdfs });
 export { hostCookieName as customerHostCookieName, sharedCookieName as customerSharedCookieName,
   customerPasswordPolicy, marketingNoticeVersion, phoneSchema as customerPhoneSchema,
-  registrationSchema as customerRegistrationSchema,
+  newLoginIdSchema as customerNewLoginIdSchema, registrationSchema as customerRegistrationSchema,
   sessionDigest as customerSessionDigest };

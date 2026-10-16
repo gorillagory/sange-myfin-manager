@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { loadConfig } from './config.js';
 import { createDatabase } from './database.js';
 import { runCustomerOrderMaintenance } from './customer-order-maintenance.js';
+import { createPaymentGatewayRuntime } from './payment-gateways.js';
+import { runOnlinePaymentReconciliation } from './payment-gateway-maintenance.js';
 import { companyReport, companyRows } from './reporting.js';
 import {
   nextScheduledAt, reportAutomationInternals, reportRetryDelayMs, reportRunKey, reportWindowForRun,
@@ -319,6 +321,7 @@ export async function runReportWorkerCycle(database, {
   workerId = `report-worker-${randomUUID()}`, now = new Date(), limit = 5, leaseMs = 120000,
   clock = () => new Date(), maintenanceLimit = 100,
   maintainOrders = runCustomerOrderMaintenance, claimRuns = claimDueReportRuns,
+  paymentGateway = null, reconcilePayments = runOnlinePaymentReconciliation,
 } = {}) {
   let maintenance;
   try {
@@ -326,7 +329,21 @@ export async function runReportWorkerCycle(database, {
   } catch {
     // The next poll retries the same database-derived work. Do not include raw
     // errors because driver messages can contain connection or schema details.
-    maintenance = { selected:0,expired:0,redacted:0,companies:0,hasMore:true,failed:true,retry:true };
+    maintenance = { selected:0,expired:0,redacted:0,companies:0,
+      storefrontPricingSnapshotsSelected:0,storefrontPricingSnapshotsDeleted:0,
+      hasMore:true,failed:true,retry:true };
+  }
+  let paymentMaintenance;
+  try {
+    paymentMaintenance = { ...await reconcilePayments(database,paymentGateway,{
+      now,limit:Math.min(maintenanceLimit,5),workerId,
+    }),failed:false,retry:false };
+  } catch {
+    // Provider and database details stay out of worker logs. Persisted jobs and
+    // immutable observations make the next cycle safe to retry.
+    paymentMaintenance = { enabled:Boolean(paymentGateway?.enabled),seeded:0,closed:0,claimed:0,
+      observed:0,pending:0,terminalUnpaid:0,expiredOrders:0,retrying:0,escalated:0,
+      openEscalations:0,hasMore:true,failed:true,retry:true };
   }
   const claimed = await claimRuns(database, { workerId,now,limit,leaseMs });
   let completed = 0, failed = 0;
@@ -340,13 +357,14 @@ export async function runReportWorkerCycle(database, {
       failed++;
     }
   }
-  return { maintenance,cancelled:claimed.cancelled, exhausted:claimed.exhausted,
+  return { maintenance,paymentMaintenance,cancelled:claimed.cancelled, exhausted:claimed.exhausted,
     due:claimed.due, enqueued:claimed.enqueued, claimed:claimed.runs.length, completed, failed };
 }
 
 export async function startReportWorker(database, {
   workerId = `report-worker-${randomUUID()}`, pollMs = 30000, limit = 5, leaseMs = 120000,
   maintenanceLimit = 100, signals = process, onEvent = () => {}, runCycle = runReportWorkerCycle,
+  paymentGateway = null,
 } = {}) {
   if (!Number.isInteger(pollMs) || pollMs < 1000 || pollMs > 300000) throw new TypeError('invalid_worker_poll');
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(String(workerId || ''))) throw new TypeError('invalid_worker_id');
@@ -360,8 +378,16 @@ export async function startReportWorker(database, {
   try {
     while (!stopping) {
       try {
-        const result = await runCycle(database, { workerId,limit,leaseMs,maintenanceLimit });
+        const result = await runCycle(database, {
+          workerId,limit,leaseMs,maintenanceLimit,paymentGateway,
+        });
         if (result.maintenance?.failed) onEvent('customer_order_maintenance_failed', { retry:true });
+        if (result.paymentMaintenance?.failed)
+          onEvent('payment_reconciliation_maintenance_failed', { retry:true });
+        if (result.paymentMaintenance?.openEscalations)
+          onEvent('payment_reconciliation_operator_escalations', {
+            count:result.paymentMaintenance.openEscalations,
+          });
         onEvent('report_worker_cycle', result);
       }
       catch { onEvent('report_worker_cycle_failed'); }
@@ -386,9 +412,12 @@ async function main() {
     const workerId = processWorkerIdentity(process.env.REPORT_WORKER_ID || 'report-worker');
     const pollMs = Number(process.env.REPORT_WORKER_POLL_MS || 30000);
     const maintenanceLimit = Number(process.env.CUSTOMER_ORDER_MAINTENANCE_BATCH_LIMIT || 100);
-    await startReportWorker(database, { workerId,pollMs,maintenanceLimit,
+    const paymentGateway = createPaymentGatewayRuntime(process.env);
+    await startReportWorker(database, { workerId,pollMs,maintenanceLimit,paymentGateway,
       onEvent:event => {
-        if (['report_worker_cycle_failed','customer_order_maintenance_failed'].includes(event))
+        if (['report_worker_cycle_failed','customer_order_maintenance_failed',
+          'payment_reconciliation_maintenance_failed',
+          'payment_reconciliation_operator_escalations'].includes(event))
           process.stderr.write(`${event}\n`);
       },
     });

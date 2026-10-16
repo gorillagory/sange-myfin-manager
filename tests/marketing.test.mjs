@@ -4,7 +4,7 @@ import test from 'node:test';
 import { compileScript, compileStyle, compileTemplate, parse } from '@vue/compiler-sfc';
 import {
   ATTRIBUTION_NOTICE, CAMPAIGN_GOALS, MARKETING_CHANNELS, attributedMetricCards,
-  audiencePayload, campaignPayload, campaignStepError, campaignToForm, emptyCampaign, loadMarketingWorkspace, normalizeMarketingWorkspace,
+  audiencePayload, campaignPayload, campaignPublishError, campaignStepError, campaignToForm, emptyCampaign, loadMarketingWorkspace, normalizeMarketingWorkspace,
   legacyPromotionPayload, saveMarketingCampaign,
 } from '../src/domain/marketing.js';
 import { permissionsFor } from '../src/domain/permissions.js';
@@ -79,6 +79,7 @@ test('campaign edit form restores the exact linked offer and its schedule contro
     offerKind:'promotion',promotionLinks:[{promotionId:'offer-1',promotionVersion:3}],audienceLinks:[]},[{
       id:'offer-1',version:3,discountType:'free_item',rewardProductId:'product-1',rewardVariantId:'variant-1',
       redemptionMode:'voucher',minSubtotalSen:1200,maxDiscountSen:null,maxTotalRedemptions:100,perCustomerLimit:1,
+      stackable:true,priority:75,
       productTargets:[{productId:'product-2',variantId:''}],categoryTargets:[{category:'menu',subcategory:'beverages'}],
     }]);
   assert.equal(form.existingPromotionKey,'offer-1:3');
@@ -89,6 +90,8 @@ test('campaign edit form restores the exact linked offer and its schedule contro
   assert.equal(form.minimumSpend,'12.00');
   assert.equal(form.maxRedemptions,'100');
   assert.equal(form.perCustomerLimit,'1');
+  assert.equal(form.stackable,true);
+  assert.equal(form.priority,'75');
   assert.deepEqual(form.targetProductKeys,[JSON.stringify(['product-2',''])]);
   assert.deepEqual(form.targetCategoryKeys,[JSON.stringify(['menu','beverages'])]);
 });
@@ -96,10 +99,13 @@ test('campaign edit form restores the exact linked offer and its schedule contro
 test('campaign offer payload accepts picker-backed targets and voucher mode', () => {
   const payload=legacyPromotionPayload({...emptyCampaign(new Date('2026-10-10T00:00:00Z')),
     name:'Pastry return',offerType:'fixed',offerValue:'5.00',redemptionMode:'voucher',
+    stackable:true,priority:'90',
     startsAt:'2026-10-11T10:00:00+08:00',targetProductKeys:[JSON.stringify(['product-1','variant-2'])],
     targetCategoryKeys:[JSON.stringify(['menu','pastry'])]});
   assert.equal(payload.enabled,false);
   assert.equal(payload.redemptionMode,'voucher');
+  assert.equal(payload.stackable,true);
+  assert.equal(payload.priority,90);
   assert.deepEqual(payload.productTargets,[{productId:'product-1',variantId:'variant-2'}]);
   assert.deepEqual(payload.categoryTargets,[{category:'menu',subcategory:'pastry'}]);
 });
@@ -116,14 +122,33 @@ test('free-item campaign validation requires an exact option for a product with 
   }]}),'');
 });
 
+test('voucher campaigns cannot publish until an enabled unexhausted code covers the schedule', async () => {
+  const base={...emptyCampaign(new Date('2026-10-10T00:00:00Z')),name:'Voucher launch',
+    offerMode:'new',offerType:'percentage',redemptionMode:'voucher',startsAt:'2026-10-11T10:00:00+08:00',
+    endsAt:'2026-10-31T22:00:00+08:00',availableOffers:[]};
+  assert.match(campaignPublishError(base,[]),/Save this voucher campaign as a draft/);
+  const calls=[];
+  await assert.rejects(saveMarketingCampaign(async(...args)=>{calls.push(args);},'company-1',base,{publish:true}),
+    /Save this voucher campaign as a draft/);
+  assert.equal(calls.length,0,'publish preflight must not leave an orphan offer or campaign');
+  const offer={id:'offer-v',version:2,redemptionMode:'voucher',vouchers:[{
+    enabled:true,validFrom:'2026-10-01T00:00:00Z',validUntil:'2026-11-01T00:00:00Z',
+    maxRedemptions:100,redeemedCount:99,
+  }]};
+  const existing={...base,offerMode:'existing',offerChanged:false,existingPromotionKey:'offer-v:2'};
+  assert.equal(campaignPublishError(existing,[offer]),'');
+  assert.match(campaignPublishError(existing,[{...offer,vouchers:[{...offer.vouchers[0],redeemedCount:100}]}]),
+    /Create and enable a voucher code/);
+});
+
 test('bonus-point campaigns do not imply unsupported award caps', () => {
   const input={...emptyCampaign(new Date('2026-10-10T00:00:00Z')),name:'Bonus visit',
     offerType:'bonus_points',offerValue:'25',maxRedemptions:'100',perCustomerLimit:'1'};
   assert.equal(campaignStepError(4,input),
     'Bonus-point award caps are not available in this release.');
   assert.throws(()=>campaignPayload(input),/award caps are not available/);
-  assert.throws(()=>campaignPayload({...input,maxRedemptions:'',perCustomerLimit:'',channels:['pos']},{publish:true,
-  }),/Add Online storefront/, 'publish requires the one live channel');
+  assert.throws(()=>campaignPayload({...input,maxRedemptions:'',perCustomerLimit:'',channels:['email']},{publish:true,
+  }),/Add POS or Online storefront/, 'publish requires a live pricing channel');
 });
 
 test('audience payload sends complete strict criteria and preserves workspace scope', () => {
@@ -171,15 +196,20 @@ test('published campaign creates a disabled offer first then lets the campaign t
   assert.deepEqual(calls[2].options.body,{expectedVersion:1});
 });
 
-test('campaign and offer are fully validated before a new offer is persisted', async () => {
+test('POS-only campaign is valid and persists its linked offer before publishing', async () => {
   const calls=[];
-  const request=async(path,options={})=>{calls.push({path,options});return{id:'unexpected',version:1};};
+  const request=async(path,options={})=>{calls.push({path,options});if(path.endsWith('/student-promotions'))return{id:'offer-pos',version:1};if(path.endsWith('/marketing/campaigns'))return{id:'campaign-pos',version:1};return{id:'campaign-pos',version:2,lifecycle:'published'};};
   const form={...emptyCampaign(new Date('2026-10-10T00:00:00Z')),name:'POS launch',
     offerType:'percentage',offerValue:'10',channels:['pos'],
     startsAt:'2026-10-11T10:00:00+08:00',endsAt:'',availableOffers:[],availableAudiences:[]};
-  await assert.rejects(saveMarketingCampaign(request,'company-1',form,{publish:true}),
-    /Add Online storefront/);
-  assert.deepEqual(calls,[], 'late campaign validation must not leave an unlinked offer');
+  const saved=await saveMarketingCampaign(request,'company-1',form,{publish:true});
+  assert.equal(saved.lifecycle,'published');
+  assert.deepEqual(calls.map(call=>call.path),[
+    '/companies/company-1/student-promotions',
+    '/companies/company-1/marketing/campaigns',
+    '/companies/company-1/marketing/campaigns/campaign-pos/publish',
+  ]);
+  assert.deepEqual(calls[1].options.body.channels,['pos']);
 });
 
 test('bonus-point campaign is native and does not create a monetary promotion', async () => {
@@ -232,6 +262,9 @@ test('marketing hub and all panels compile and expose the renamed navigation', a
   const campaigns=await readFile(new URL('../src/components/dashboard/marketing/MarketingCampaigns.vue',import.meta.url),'utf8');
   assert.doesNotMatch(`${wizard}\n${campaigns}`,/cannot be published|draft-only|enforcement is available/i);
   assert.match(wizard,/v-if="canPublish"/);
+  assert.match(wizard,/Higher priority offers are evaluated first/);
+  assert.match(wizard,/Eligible POS baskets receive this reward automatically/);
+  assert.match(wizard,/online storefront, the shopper must add the reward product/);
   assert.equal(wizard.match(/products:props\.products/g)?.length,2,
     'both step and submit validation must receive the product variants');
 });

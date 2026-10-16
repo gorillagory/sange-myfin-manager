@@ -4,14 +4,16 @@ import { z } from 'zod';
 import { canonical } from '../../src/domain/pos.js';
 import { activeReservationQuantities, releaseOrderReservations } from './customer-order-reservations.js';
 import { customerOrderDefaults, customerPhoneSchema, customerSession } from './customer-auth.js';
-import { createPricingSnapshot, loadPricingSnapshot, releaseOrderPromotionReservations,
+import { createPricingSnapshot, decimalToScaledInteger, loadPricingSnapshot, releaseOrderPromotionReservations,
   reserveOrderPromotions } from './pricing-engine.js';
 import { assertRecipeAvailability, recipeAvailabilityForProducts } from './inventory-recipes.js';
 import { redactExpiredOrderContacts, requirePublishedStorefrontPrivacy,
   storefrontPrivacyComplete, storefrontPrivacyOutput } from './storefront-privacy.js';
+import { onlinePaymentReleaseBlocker } from './online-payment-lock.js';
 import * as v from './validation.js';
 
 const cookieName = '__Host-myfin_guest_order';
+const anonymousPromotionHoldMs = 5 * 60 * 1000;
 const itemSchema = z.strictObject({
   productId: v.id,
   variantId: z.union([v.id, z.literal('')]).default(''),
@@ -54,7 +56,10 @@ const parseCookies = header => Object.fromEntries(String(header || '').split(';'
   const at = part.indexOf('=');
   return at < 0 ? ['', ''] : [part.slice(0, at).trim(), part.slice(at + 1).trim()];
 }).filter(([key]) => key));
-const safeImage = value => /^https:\/\/\S+$/.test(value || '') ? value : '';
+const safeImage = value => typeof value === 'string' && value.length <= 2048 && /^https:\/\/\S+$/.test(value) ? value : '';
+const safeAction = value => typeof value === 'string' && value.length <= 2048 && (/^https:\/\/\S+$/i.test(value) ||
+  (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(value) && !value.startsWith('//'))) ? value : '';
+const boundedText = (value, max) => String(value || '').trim().slice(0, max);
 const lineKey = item => `${item.productId}\u0000${item.variantId || ''}`;
 const normalizedIp = value => String(value || '').replace(/^::ffff:/, '');
 export function storefrontRateKey(req, authOptions = {}) {
@@ -154,6 +159,123 @@ function verifyQuoteToken(secret, token, context, input, quote = null, binding =
 
 function principalDigest(customer, session) {
   return digest(customer?.customerId ? `customer:${customer.customerId}` : `guest:${session?.digest || ''}`);
+}
+
+const normalizedPromotionPhone = value => String(value || '').replace(/[^0-9]/g, '');
+const promotionGuardDigest = (secret, kind, value) => createHmac('sha256', secret)
+  .update(`myfin-promotion-hold:${kind}:${value}`).digest('hex');
+
+function scarceHoldExpiry(configuredExpiry, guard, customerId, now = Date.now()) {
+  const configured = new Date(configuredExpiry);
+  if (customerId || !guard.limitedPromotionCount) return configured;
+  return new Date(Math.min(configured.getTime(), now + anonymousPromotionHoldMs));
+}
+
+// Promotion capacity is globally serialized by reserve_order_promotions. These
+// additional advisory locks serialize the durable principals an attacker cannot
+// change merely by rotating IP addresses. Contact values never enter lock keys
+// or logs: only secret-keyed digests are used for serialization.
+async function assessPromotionHold(c, { workspaceId, companyId, snapshotId, customerId = '',
+  guestSessionDigest, guestEmail = '', guestPhone = '', secret }) {
+  const applications = (await c.query(
+    `SELECT d.promotion_id,d.voucher_id,p.max_total_redemptions,
+            vv.max_redemptions AS voucher_max_redemptions
+       FROM myfin.pricing_snapshot_discounts d
+       JOIN myfin.promotion_versions p
+         ON p.workspace_id=d.workspace_id AND p.company_id=d.company_id
+        AND p.promotion_id=d.promotion_id AND p.version=d.promotion_version
+       LEFT JOIN myfin.promotion_voucher_versions vv
+         ON vv.workspace_id=d.workspace_id AND vv.company_id=d.company_id
+        AND vv.promotion_id=d.promotion_id AND vv.voucher_id=d.voucher_id
+        AND vv.version=d.voucher_version
+      WHERE d.workspace_id=$1 AND d.company_id=$2 AND d.snapshot_id=$3
+        AND (p.max_total_redemptions IS NOT NULL OR vv.max_redemptions IS NOT NULL)
+      ORDER BY d.promotion_id`, [workspaceId, companyId, snapshotId],
+  )).rows;
+  if (!applications.length) return { allowed: true, limitedPromotionCount: 0, hasVoucher: false };
+
+  // Authenticated customers are bound only to their durable customer identity.
+  // Treating caller-supplied contact text as another principal would let an
+  // anonymous order using somebody else's address block that customer's cart.
+  const email = customerId ? '' : String(guestEmail || '').trim().toLowerCase();
+  const phone = customerId ? '' : normalizedPromotionPhone(guestPhone);
+  const principals = [
+    ['guest_session', guestSessionDigest],
+    ...(customerId ? [['customer', customerId]] : []),
+    ...(!customerId && email ? [['contact_email', email]] : []),
+    ...(!customerId && phone ? [['contact_phone', phone]] : []),
+  ];
+  // Fail closed if a caller ever reaches this guard without the durable guest
+  // session that quote and submit are already required to share.
+  if (!guestSessionDigest || typeof secret !== 'string' || secret.length < 32)
+    return { allowed: false, reason: 'principal_unavailable', limitedPromotionCount: applications.length,
+      hasVoucher: applications.some(row => Boolean(row.voucher_id)) };
+
+  const locks = new Set();
+  for (const [kind, value] of principals)
+    locks.add(promotionGuardDigest(secret, `${companyId}:${kind}`, value));
+  // One company-wide anonymous lock keeps fresh-cookie and fresh-contact attempts
+  // from racing the shared campaign/voucher budget. Registered customers use
+  // their stable customer principal while SQL promotion-row locks protect the
+  // ordinary global redemption counters.
+  if (!customerId) locks.add(promotionGuardDigest(secret, 'anonymous_company', companyId));
+  for (const key of [...locks].sort())
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,41))', [key]);
+  const countRows = (await c.query(
+    `WITH guard AS (
+       SELECT * FROM jsonb_to_recordset($7::jsonb) AS x(promotion_id text,voucher_id text)
+     )
+     SELECT g.promotion_id,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND
+         o.guest_session_digest=$2)::integer AS session_holds,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND
+         $3::text<>'' AND o.customer_id=$3)::integer AS customer_holds,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND
+         $4::text<>'' AND lower(o.guest_email)=$4)::integer AS email_holds,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND $5::text<>'' AND
+         regexp_replace(o.guest_phone,'[^0-9]','','g')=$5)::integer AS phone_holds,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND
+         o.customer_id IS NULL)::integer AS anonymous_campaign_holds,
+       count(DISTINCT r.order_id) FILTER (WHERE o.id IS NOT NULL AND
+         o.customer_id IS NULL AND g.voucher_id<>'' AND
+         r.voucher_id=g.voucher_id)::integer AS anonymous_voucher_holds
+      FROM guard g
+      LEFT JOIN myfin.promotion_reservations r
+        ON r.company_id=$1 AND r.workspace_id=$6 AND r.promotion_id=g.promotion_id
+       AND r.source_type='customer_order' AND r.state='active' AND r.expires_at>now()
+      LEFT JOIN myfin.customer_order_requests o
+        ON o.company_id=r.company_id AND o.id=r.order_id AND o.payment_state='unpaid'
+       AND o.status IN ('awaiting_acceptance','accepted','preparing','ready')
+     GROUP BY g.promotion_id`,
+    [companyId, guestSessionDigest, customerId, email, phone, workspaceId,
+      JSON.stringify(applications.map(row => ({ promotion_id: row.promotion_id,
+        voucher_id: row.voucher_id || '' })))],
+  )).rows;
+  const countsByPromotion = new Map(countRows.map(row => [row.promotion_id, row]));
+
+  for (const row of applications) {
+    const counts = countsByPromotion.get(row.promotion_id) || {};
+    if (Number(counts.session_holds) > 0 || Number(counts.customer_holds) > 0 ||
+        Number(counts.email_holds) > 0 || Number(counts.phone_holds) > 0)
+      return { allowed: false, reason: 'principal_active_hold', limitedPromotionCount: applications.length,
+        hasVoucher: applications.some(item => Boolean(item.voucher_id)) };
+    if (!customerId && row.max_total_redemptions !== null) {
+      const capacity = Number(row.max_total_redemptions);
+      const budget = Math.max(1, Math.min(10, Math.floor(capacity / 4)));
+      if (Number(counts.anonymous_campaign_holds) >= budget)
+        return { allowed: false, reason: 'anonymous_campaign_budget', limitedPromotionCount: applications.length,
+          hasVoucher: applications.some(item => Boolean(item.voucher_id)) };
+    }
+    if (!customerId && row.voucher_id && row.voucher_max_redemptions !== null) {
+      const capacity = Number(row.voucher_max_redemptions);
+      const budget = Math.max(1, Math.min(10, Math.floor(capacity / 4)));
+      if (Number(counts.anonymous_voucher_holds) >= budget)
+        return { allowed: false, reason: 'anonymous_voucher_budget', limitedPromotionCount: applications.length,
+          hasVoucher: true };
+    }
+  }
+  return { allowed: true, limitedPromotionCount: applications.length,
+    hasVoucher: applications.some(row => Boolean(row.voucher_id)) };
 }
 
 async function publishedCart(c, companyId, input, snapshot = null) {
@@ -382,6 +504,7 @@ async function guestSession(c, req, reply, hostname, create = false) {
 
 async function expireIfNeeded(c, order) {
   if (!['awaiting_acceptance','accepted','preparing','ready'].includes(order.status) || new Date(order.expires_at) > new Date()) return order;
+  if (await onlinePaymentReleaseBlocker(c, order.company_id, order.id)) return order;
   const nextVersion = Number(order.version) + 1;
   const updated = (await c.query(
     `UPDATE myfin.customer_order_requests SET status='expired',version=$3,updated_at=now()
@@ -423,16 +546,25 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
            FROM myfin.storefront_delivery_zones WHERE company_id=$1 AND enabled ORDER BY created_at,id`,
         [context.company_id],
       )).rows : [];
+      const slides = (await c.query(
+        `SELECT id,badge,title,description,image_url,background_color,cta_label,cta_url
+           FROM myfin.storefront_carousel_slides WHERE company_id=$1 AND published ORDER BY sort_order,id`,
+        [context.company_id],
+      )).rows;
       const products = (await c.query(
-        `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sort_order,sp.sold_out
+        `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sort_order,sp.sold_out,
+                sp.online_price_sen
            FROM myfin.products p JOIN myfin.storefront_products sp
              ON sp.company_id=p.company_id AND sp.product_id=p.id
           WHERE p.company_id=$1 AND sp.published ORDER BY sp.sort_order,p.id FOR SHARE OF p`, [context.company_id],
       )).rows;
       const ids = products.map(row => row.id);
       const variantRows = ids.length ? (await c.query(
-        `SELECT product_id,variant_id,published,sold_out,sort_order FROM myfin.storefront_product_variants
-          WHERE company_id=$1 AND product_id=ANY($2::text[])`, [context.company_id, ids],
+        `SELECT spv.product_id,spv.variant_id,spv.published,spv.sold_out,spv.sort_order,
+                spv.online_price_sen,pv.price AS store_price
+           FROM myfin.storefront_product_variants spv JOIN myfin.product_variants pv
+             ON pv.company_id=spv.company_id AND pv.product_id=spv.product_id AND pv.id=spv.variant_id
+          WHERE spv.company_id=$1 AND spv.product_id=ANY($2::text[])`, [context.company_id, ids],
       )).rows : [];
       const cap = Number(config.max_item_quantity);
       const reserved = await activeReservationQuantities(c, context.company_id, ids);
@@ -448,23 +580,50 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         const variants = (product.variants || []).map(variant => {
           const publication = variantRows.find(entry => entry.product_id === row.id && entry.variant_id === variant.id);
           const maxQuantity = publication?.sold_out ? 0 : availability(variant);
-          return publication?.published ? { id: variant.id, name: variant.name, price: Number(variant.price),
+          const storePriceSen = publication ? decimalToScaledInteger(publication.store_price, 2, 'invalid_catalog_price') : 0;
+          const onlinePriceSen = publication?.online_price_sen === null || publication?.online_price_sen === undefined
+            ? (row.online_price_sen === null || row.online_price_sen === undefined ? storePriceSen : Number(row.online_price_sen))
+            : Number(publication.online_price_sen);
+          return publication?.published ? { id: variant.id, name: boundedText(variant.name, 120),
+            storePrice: storePriceSen / 100, onlinePrice: onlinePriceSen / 100, price: onlinePriceSen / 100,
+            hasOnlinePriceOverride: onlinePriceSen !== storePriceSen,
             available: maxQuantity > 0, maxQuantity, sortOrder: publication.sort_order } : null;
         }).filter(Boolean).sort((a, b) => a.sortOrder - b.sortOrder);
         const maxQuantity = row.sold_out || (product.variants?.length && !variants.some(item => item.available)) ? 0 : availability(product);
+        const storePriceSen = decimalToScaledInteger(row.price, 2, 'invalid_catalog_price');
+        const onlinePriceSen = row.online_price_sen === null || row.online_price_sen === undefined
+          ? storePriceSen : Number(row.online_price_sen);
         return {
-          id: row.id, name: row.display_name || product.name, description: row.description || product.description || '',
-          category: product.category || 'Menu', subcategory: product.subcategory || '', imageUrl: safeImage(product.imageUrl),
-          unit: product.unit || 'pcs', price: Number(row.price), available: maxQuantity > 0,
+          id: row.id, name: boundedText(row.display_name || product.name, 120),
+          description: boundedText(row.description || product.description, 2000),
+          category: boundedText(product.category || 'Menu', 120), subcategory: boundedText(product.subcategory, 120),
+          imageUrl: safeImage(product.imageUrl), unit: boundedText(product.unit || 'pcs', 40),
+          storePrice: storePriceSen / 100, onlinePrice: onlinePriceSen / 100,
+          price: onlinePriceSen / 100, hasOnlinePriceOverride: onlinePriceSen !== storePriceSen, available: maxQuantity > 0,
           maxQuantity: product.variants?.length ? undefined : maxQuantity, variants,
         };
       });
       const preferences = config.company_data?.preferences || {};
       return {
-        storefront: { companyId: context.company_id, name: config.display_name || config.company_name,
-          description: config.description, currency: preferences.currency || 'RM',
-          taxRate: Number(preferences.taxRate ?? preferences.tax ?? 0), pickupInstructions: config.pickup_instructions,
+        storefront: { companyId: context.company_id,
+          name: boundedText(config.display_name || config.company_name, 120),
+          description: boundedText(config.description, 2000), currency: boundedText(preferences.currency || 'RM', 8),
+          taxRate: Number(preferences.taxRate ?? preferences.tax ?? 0),
+          pickupInstructions: boundedText(config.pickup_instructions, 2000),
+          logoUrl: safeImage(config.logo_url),
+          theme: { primaryColor: config.theme_primary_color, accentColor: config.theme_accent_color,
+            backgroundColor: config.theme_background_color, textColor: config.theme_text_color,
+            fontFamily: config.theme_font_family },
+          hero: { eyebrow: boundedText(config.hero_eyebrow, 80),
+            title: boundedText(config.hero_title || config.display_name || config.company_name, 160),
+            description: boundedText(config.hero_description || config.description, 1000),
+            imageUrl: safeImage(config.hero_image_url) },
+          carouselIntervalSeconds: Number(config.carousel_interval_seconds),
           privacy: storefrontPrivacyOutput(config) },
+        slides: slides.slice(0, 12).map(row => ({ id: row.id, badge: boundedText(row.badge, 80),
+          title: boundedText(row.title, 160), description: boundedText(row.description, 1000),
+          imageUrl: safeImage(row.image_url), backgroundColor: row.background_color,
+          ctaLabel: boundedText(row.cta_label, 60), ctaUrl: safeAction(row.cta_url) })),
         locations: locations.map(row => ({ id: row.id, name: row.name, fulfillmentMode: row.fulfillment_mode,
           pickupInstructions: row.pickup_instructions })),
         deliveryZones: deliveryZones.map(row => ({ id: row.id, name: row.name,
@@ -539,6 +698,20 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
       const delivery = await deliveryFor(c, context.company_id, input, priced);
       const quote = quoteFor(input, location, priced, delivery);
       verifyQuoteToken(authOptions.secret, input.quoteToken, context, input, quote, binding);
+      const promotionGuard = await assessPromotionHold(c, {
+        workspaceId: context.workspace_id, companyId: context.company_id,
+        snapshotId: priced.snapshot.id, customerId: customer?.customerId || '',
+        guestSessionDigest: session.digest, guestEmail: guest.email, guestPhone: guest.phone,
+        secret: authOptions.secret,
+      });
+      if (!promotionGuard.allowed) {
+        req.log?.warn({ event: 'storefront_promotion_hold_blocked',
+          reason: promotionGuard.reason, authenticatedCustomer: Boolean(customer),
+          hasVoucher: promotionGuard.hasVoucher,
+          limitedPromotionCount: promotionGuard.limitedPromotionCount },
+        'Storefront promotion hold blocked');
+        v.fail(409, 'promotion_unavailable');
+      }
       const orderId = randomUUID();
       let code;
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -548,7 +721,8 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         code = '';
       }
       if (!code) v.fail(503, 'order_code_unavailable');
-      const expiresAt = new Date(Date.now() + Number(priced.config.order_expiry_minutes) * 60000);
+      const configuredExpiry = new Date(Date.now() + Number(priced.config.order_expiry_minutes) * 60000);
+      const expiresAt = scarceHoldExpiry(configuredExpiry, promotionGuard, customer?.customerId || '');
       const row = (await c.query(
         `INSERT INTO myfin.customer_order_requests(
           company_id,id,public_code,location_id,customer_id,guest_name,guest_email,guest_phone,notes,currency,
@@ -634,4 +808,4 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
 }
 
 export { orderOutput, orderLines, expireIfNeeded, orderRequestDigest, pricedCart, quoteToken,
-  totalsFromSnapshot, totalsWithDelivery, verifyQuoteToken };
+  assessPromotionHold, scarceHoldExpiry, totalsFromSnapshot, totalsWithDelivery, verifyQuoteToken };

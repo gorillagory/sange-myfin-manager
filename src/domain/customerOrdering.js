@@ -1,6 +1,65 @@
 const text = value => String(value ?? '').trim();
 
-export const CUSTOMER_SURFACE_PATHS = ['/shop', '/menu', '/order', '/privacy'];
+export const CUSTOMER_SURFACE_PATHS = ['/shop', '/menu', '/display', '/order', '/privacy'];
+
+const safeColor = (value, fallback) => /^#[0-9a-f]{6}$/i.test(text(value)) ? text(value) : fallback;
+const safeHttps = value => text(value).length <= 2048 && /^https:\/\/\S+$/i.test(text(value)) ? text(value) : '';
+const safeAction = value => text(value).length <= 2048 && (/^https:\/\/\S+$/i.test(text(value)) ||
+  (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(text(value)) && !text(value).startsWith('//'))) ? text(value) : '';
+const safeMoney = (value, fallback = 0) => value !== null && value !== undefined && value !== '' &&
+  Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback;
+
+const FONT_STACKS = Object.freeze({
+  geist: "'Geist Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  system: "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  serif: "Georgia, 'Times New Roman', ui-serif, serif",
+});
+
+export function storefrontFontStack(value = 'geist') {
+  return FONT_STACKS[text(value)] || FONT_STACKS.geist;
+}
+
+function colorChannels(value) {
+  const color = safeColor(value, '#000000').slice(1);
+  return [0,2,4].map(index => Number.parseInt(color.slice(index,index + 2),16) / 255);
+}
+
+export function storefrontContrastRatio(foreground, background) {
+  const luminance = value => {
+    const channels = colorChannels(value).map(channel => channel <= 0.04045
+      ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  const left = luminance(foreground), right = luminance(background);
+  return (Math.max(left,right) + 0.05) / (Math.min(left,right) + 0.05);
+}
+
+export function accessibleStorefrontText(background, preferred = '#ffffff') {
+  if (storefrontContrastRatio(preferred,background) >= 4.5) return safeColor(preferred,'#ffffff');
+  return storefrontContrastRatio('#ffffff',background) >= storefrontContrastRatio('#111111',background)
+    ? '#ffffff' : '#111111';
+}
+
+export function storefrontContrastIssues(theme = {}, slides = []) {
+  const issues = [];
+  if (storefrontContrastRatio(theme.textColor || '#15382c',theme.backgroundColor || '#fbfcf8') < 4.5)
+    issues.push('Text and background colors need stronger contrast.');
+  if (storefrontContrastRatio('#ffffff',theme.primaryColor || '#17624d') < 4.5)
+    issues.push('Primary color must be dark enough for white button labels.');
+  for (const [index,slide] of slides.entries()) if (
+    storefrontContrastRatio('#ffffff',slide.backgroundColor || '#17624d') < 4.5
+  ) issues.push(`Slide ${index + 1} background must be dark enough for white text.`);
+  return issues;
+}
+
+export function customerProductDisplayPrice(product = {}, key = 'onlinePrice') {
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+  const orderable = variants.filter(variant => variant.available !== false);
+  const options = orderable.length ? orderable : variants.length ? variants : [product];
+  const advertised = options.reduce((lowest, item) => Number(item.onlinePrice ?? item.price ?? 0) <
+    Number(lowest.onlinePrice ?? lowest.price ?? 0) ? item : lowest, options[0] || product);
+  return Number(advertised?.[key] ?? advertised?.price ?? 0);
+}
 
 export function isCustomerSurfacePath(pathname = '') {
   const path = String(pathname).split('?')[0].replace(/\/+$/, '') || '/';
@@ -27,32 +86,54 @@ export function normalizeStorefront(payload = {}) {
   })).filter(zone => zone.id && zone.name && Number.isFinite(zone.fee) && zone.fee >= 0 &&
     Number.isFinite(zone.minimumOrder) && zone.minimumOrder >= 0 &&
     Number.isInteger(zone.leadTimeMinutes) && zone.leadTimeMinutes >= 5 && zone.leadTimeMinutes <= 1440);
-  const products = (payload.products || []).map(product => ({
-    id: text(product.id),
-    name: text(product.name),
-    description: text(product.description),
-    category: text(product.category) || 'Menu',
-    subcategory: text(product.subcategory),
-    imageUrl: text(product.imageUrl),
-    unit: text(product.unit) || 'item',
-    price: Number(product.price || 0),
-    available: product.available !== false,
-    maxQuantity: Math.max(0, Math.floor(Number(product.maxQuantity ?? 20) || 0)),
-    variants: (product.variants || []).map(variant => ({
-      id: text(variant.id),
-      name: text(variant.name),
-      price: Number(variant.price ?? product.price ?? 0),
-      available: variant.available !== false,
-      maxQuantity: Math.max(0, Math.floor(Number(variant.maxQuantity ?? product.maxQuantity ?? 20) || 0)),
-    })).filter(variant => variant.id && variant.name),
-  })).filter(product => product.id && product.name && Number.isFinite(product.price) && product.price >= 0);
+  const products = (payload.products || []).map(product => {
+    const storePrice = safeMoney(product.storePrice, safeMoney(product.price));
+    const onlinePrice = safeMoney(product.onlinePrice, safeMoney(product.price, storePrice));
+    return {
+      id: text(product.id).slice(0, 128), name: text(product.name).slice(0, 120),
+      description: text(product.description).slice(0, 2000),
+      category: text(product.category).slice(0, 120) || 'Menu', subcategory: text(product.subcategory).slice(0, 120),
+      imageUrl: safeHttps(product.imageUrl), unit: text(product.unit).slice(0, 40) || 'item',
+      storePrice, onlinePrice, price: onlinePrice,
+      hasOnlinePriceOverride: onlinePrice !== storePrice,
+      available: product.available !== false,
+      maxQuantity: Math.max(0, Math.floor(Number(product.maxQuantity ?? 20) || 0)),
+      variants: (product.variants || []).map(variant => {
+        const variantStorePrice = safeMoney(variant.storePrice, safeMoney(variant.price, storePrice));
+        const variantOnlinePrice = safeMoney(variant.onlinePrice, safeMoney(variant.price, variantStorePrice));
+        return { id: text(variant.id).slice(0, 128), name: text(variant.name).slice(0, 120), storePrice: variantStorePrice,
+          onlinePrice: variantOnlinePrice, price: variantOnlinePrice,
+          hasOnlinePriceOverride: variantOnlinePrice !== variantStorePrice,
+          available: variant.available !== false,
+          maxQuantity: Math.max(0, Math.floor(Number(variant.maxQuantity ?? product.maxQuantity ?? 20) || 0)) };
+      }).filter(variant => variant.id && variant.name),
+    };
+  }).filter(product => product.id && product.name && Number.isFinite(product.price) && product.price >= 0);
+  const theme = storefront.theme || {};
+  const hero = storefront.hero || {};
+  const slides = (payload.slides || []).slice(0, 12).map(slide => ({
+    id: text(slide.id), badge: text(slide.badge).slice(0, 80), title: text(slide.title).slice(0, 160),
+    description: text(slide.description).slice(0, 1000), imageUrl: safeHttps(slide.imageUrl),
+    backgroundColor: safeColor(slide.backgroundColor, '#17624d'),
+    ctaLabel: text(slide.ctaLabel).slice(0, 60), ctaUrl: safeAction(slide.ctaUrl),
+  })).filter(slide => slide.id && slide.title && Boolean(slide.ctaLabel) === Boolean(slide.ctaUrl));
   return {
     storefront: {
       companyId: text(storefront.companyId),
-      name: text(storefront.name) || 'Online ordering',
-      description: text(storefront.description),
-      currency,
-      pickupInstructions: text(storefront.pickupInstructions),
+      name: text(storefront.name).slice(0, 120) || 'Online ordering',
+      description: text(storefront.description).slice(0, 2000),
+      currency: currency.slice(0, 8),
+      pickupInstructions: text(storefront.pickupInstructions).slice(0, 2000),
+      logoUrl: safeHttps(storefront.logoUrl),
+      theme: { primaryColor: safeColor(theme.primaryColor, '#17624d'),
+        accentColor: safeColor(theme.accentColor, '#d7a43b'),
+        backgroundColor: safeColor(theme.backgroundColor, '#fbfcf8'),
+        textColor: safeColor(theme.textColor, '#15382c'),
+        fontFamily: ['geist','system','serif'].includes(text(theme.fontFamily)) ? text(theme.fontFamily) : 'geist' },
+      hero: { eyebrow: text(hero.eyebrow).slice(0, 80), title: text(hero.title).slice(0, 160),
+        description: text(hero.description).slice(0, 1000), imageUrl: safeHttps(hero.imageUrl) },
+      carouselIntervalSeconds: Math.max(3, Math.min(30,
+        Math.floor(Number(storefront.carouselIntervalSeconds) || 7))),
       privacy: {
         controllerName: text(privacy.controllerName),
         controllerContact: text(privacy.controllerContact),
@@ -63,6 +144,7 @@ export function normalizeStorefront(payload = {}) {
           Math.floor(Number(privacy.guestContactRetentionDays) || 90))),
       },
     },
+    slides,
     locations,
     deliveryZones,
     location: payload.location ? {

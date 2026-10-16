@@ -6,10 +6,12 @@ function fixture(role = 'manager') {
   const routes = new Map(), calls = [];
   const app = { get(path, handler) { routes.set(path, handler); } };
   const row = { id: 'customer-a', account_name: 'Account name', profile_name: 'Amina', profile_phone: '0123',
-    primary_email: 'amina@example.test', email_verified: true, disabled_at: null,
+    primary_email: 'amina@example.test', email_verified: true, phone_verified: false, disabled_at: null,
     order_count: 4, paid_order_count: 3, paid_spend: '59.70', first_order_at: new Date('2026-01-01'),
     last_order_at: new Date('2026-02-01'), stamp_balance: 3, reserved_points: 1, loyalty_account_version: 4,
-    consents: { email: { granted: true, noticeVersion: 'v1', source: 'profile', updatedAt: '2026-02-01T00:00:00Z' } } };
+    consents: { email: { granted: true, destination: 'amina@example.test',
+      destinationVerifiedAt: '2026-01-31T00:00:00Z', noticeVersion: 'v1', source: 'profile',
+      updatedAt: '2026-02-01T00:00:00Z' } } };
   const client = { async query(sql, params) {
     calls.push({ sql, params });
     if (sql.startsWith('SELECT workspace_id')) return { rowCount: 1, rows: [{ workspace_id: 'workspace-a' }] };
@@ -41,7 +43,8 @@ test('manager sees only company-order customers with workspace loyalty and lates
     emailVerified: true, active: true, orderCount: 4, paidOrderCount: 3, paidSpend: 59.7,
     firstOrderAt: new Date('2026-01-01'), lastOrderAt: new Date('2026-02-01'), loyaltyBalance: 3,
     loyaltyReserved: 1, loyaltyAvailable: 2, loyaltyAccountVersion: 4,
-    marketingConsent: { email: { granted: true, noticeVersion: 'v1', source: 'profile', updatedAt: '2026-02-01T00:00:00Z' },
+    marketingConsent: { email: { granted: true, recordedGranted: true, destinationVerified: true,
+      noticeVersion: 'v1', source: 'profile', updatedAt: '2026-02-01T00:00:00Z' },
       sms: null, whatsapp: null },
   });
   const sql = calls.find(call => call.sql.includes('WITH order_stats')).sql;

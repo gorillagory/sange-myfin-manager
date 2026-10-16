@@ -218,3 +218,21 @@ test('POS recipe shortage rejects before balances or source markers change',asyn
   assert.equal(db.ledger.length,0);
   assert.equal(db.effect,null);
 });
+
+test('an individually approved paid receipt records a financial-only recipe shortage exactly once',async()=>{
+  const db=new RecipeDatabase({milk:500,beans:40});
+  const approved={...request,saleId:'approved-shortage',inventoryShortageResolution:'record_shortage'};
+  const first=await consumeRecipeStock(db,approved);
+  assert.equal(first.duplicate,false);
+  assert.equal(first.inventoryShortage,true);
+  assert.equal(first.mode,'current_recipe_financial_only');
+  assert.deepEqual(first.shortages.map(row=>row.stockItemId),['beans','milk']);
+  assert.deepEqual(db.updates,[]);
+  assert.deepEqual(db.ledger,[]);
+  assert.equal(db.stock.get('beans').on_hand,40);
+  assert.equal(db.stock.get('milk').on_hand,500);
+  const replay=await consumeRecipeStock(db,approved);
+  assert.equal(replay.duplicate,true);
+  assert.equal(replay.inventoryShortage,true);
+  assert.deepEqual(replay.movements,[]);
+});

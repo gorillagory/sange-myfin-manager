@@ -207,7 +207,7 @@ test('all customer-order terminal paths share the guarded recipe release lifecyc
     read('../src/customer-orders.js'),read('../src/customer-order-maintenance.js'),read('../src/storefront-public.js'),
   ]);
   assert.match(orders,/\['cancelled','expired'\][\s\S]*releaseOrderReservations\(c, companyId, id, change\.status\)/);
-  assert.match(orders,/releaseOrderReservations\(c, companyId, id, 'paid'\)/);
+  assert.match(orders,/releaseOrderReservations\(c, order\.company_id, order\.id, 'paid'\)/);
   assert.match(maintenance,/releaseOrderReservations\(c, order\.company_id, order\.id, 'expired'\)/);
   assert.match(storefront,/releaseOrderReservations\(c, order\.company_id, order\.id, 'expired'\)/);
 });

@@ -9,6 +9,9 @@ import { registerHandoffPublic } from './session-handoff.js';
 import { registerStorefrontPublic } from './storefront-public.js';
 import { registerCustomerAccounts } from './customer-auth.js';
 import { registerCustomerOrderHistory } from './customer-order-history.js';
+import {
+  createPaymentGatewayRuntime, paymentGatewayWebhookRequest, registerPaymentGatewayPublic,
+} from './payment-gateways.js';
 
 const safeErrorClass = error => {
   try {
@@ -21,7 +24,8 @@ const safeSqlstate = error => {
   catch { return null; }
 };
 
-export function buildApp({ database = null, logger = false, auth = null, authOptions = null, uploadDir = null } = {}) {
+export function buildApp({ database = null, logger = false, auth = null, authOptions = null,
+  uploadDir = null, paymentGateway = createPaymentGatewayRuntime({}) } = {}) {
   const app = Fastify({
     logger, logController: new LogController({ disableRequestLogging: true }), trustProxy: false,
     bodyLimit: 2 * 1024 * 1024, requestTimeout: 10000, connectionTimeout: 10000,
@@ -32,14 +36,19 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
   app.addHook('onClose', async () => { await database?.close(); });
   app.addHook('preClose', async () => { closing = true; });
   app.setErrorHandler((error, request, reply) => {
-    const status = error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : ['23505','23503','23514'].includes(error.code) ? 409 : 500;
+    const safeGatewayUnavailable = error.statusCode === 503 && error.message === 'online_payment_unavailable';
+    const status = safeGatewayUnavailable ? 503 : error.statusCode >= 400 && error.statusCode < 500
+      ? error.statusCode : ['23505','23503','23514'].includes(error.code) ? 409 : 500;
     if (status === 500) request.log.error({
       method: request.method,
       route: request.routeOptions?.url ?? null,
       errorClass: safeErrorClass(error),
       sqlstate: safeSqlstate(error)
     });
-    reply.code(status).send({ error: status === 500 ? 'internal_error' : error.code?.startsWith('FST_') ? (status === 413 ? 'payload_too_large' : 'invalid_request') : error.statusCode ? error.message : 'record_conflict' });
+    reply.code(status).send({ error: status === 500 ? 'internal_error' : safeGatewayUnavailable
+      ? 'online_payment_unavailable' : error.code?.startsWith('FST_')
+        ? (status === 413 ? 'payload_too_large' : 'invalid_request')
+        : error.statusCode ? error.message : 'record_conflict' });
   });
   app.addHook('onRequest', async (req, reply) => {
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options','nosniff').header('X-Request-ID',req.id);
@@ -51,7 +60,9 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
       return reply.code(404).send({error:'not_found'});
     if(req.tenant?.redirect_to&&!['GET','HEAD','OPTIONS'].includes(req.method))return reply.code(409).send({error:'canonical_host_required',redirectTo:`${authOptions.protocol}//${req.tenant.redirect_to}`});
     const origin=authOptions.enforceTenantHosts?requestOrigin(req,authOptions):authOptions.origin;
-    if (!['GET','HEAD','OPTIONS'].includes(req.method) && (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site')) return reply.code(403).send({error:'origin_required'});
+    if (!['GET','HEAD','OPTIONS'].includes(req.method) && !paymentGatewayWebhookRequest(req) &&
+        (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site'))
+      return reply.code(403).send({error:'origin_required'});
   });
   if (auth) {
     app.register(rateLimit, {max:300,timeWindow:60000});
@@ -60,6 +71,7 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
       return publicTenant(req.tenant);
     });
     registerStorefrontPublic(app,{db:database,authOptions});
+    registerPaymentGatewayPublic(app,{db:database,authOptions,runtime:paymentGateway});
     registerCustomerAccounts(app,{db:database,authOptions});
     registerCustomerOrderHistory(app,{db:database,authOptions});
     registerPosAuth(app,{db:database,authOptions});
@@ -78,7 +90,7 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
       if(response.status>=400)return reply.send({error:'authentication_failed'});
       return reply.send(response.body?await response.text():null);
     }});
-    registerBusiness(app,{database,auth,authOptions});
+    registerBusiness(app,{database,auth,authOptions,paymentGateway});
     if(uploadDir)app.register(async scoped=>registerFiles(scoped,{database,uploadDir}));
   }
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'not_found' }));

@@ -290,10 +290,32 @@ test('marketing and loyalty migrations enforce their PostgreSQL invariants', asy
         workspace_id,company_id,snapshot_id,discount_sequence,line_no,discount_sen)
         VALUES($1,$2,$3,1,1,500)`, [fixture.workspace, fixture.companyA, snapshotId]);
     });
+    const createSplitRewardSnapshot = snapshotId => transaction(migrator, async client => {
+      await client.query(`INSERT INTO myfin.pricing_snapshots(
+        workspace_id,company_id,id,currency_code,subtotal_sen,discount_sen,taxable_sen,
+        tax_sen,rounding_sen,total_sen,rules_digest,request_digest,priced_at,expires_at)
+        VALUES($1,$2,$3,'MYR',500,500,0,0,0,0,$4,$5,now(),now()+interval '1 hour')`,
+      [fixture.workspace, fixture.companyA, snapshotId, digest(`rules:${snapshotId}`),
+        digest(`snapshot:${snapshotId}`)]);
+      await client.query(`INSERT INTO myfin.pricing_snapshot_lines(
+        workspace_id,company_id,snapshot_id,line_no,product_id,variant_id,description,
+        quantity_milli,unit_price_sen,gross_sen,discount_sen,net_sen,automatic_reward)
+        VALUES($1,$2,$3,1,$4,$5,'Existing partial reward',500,500,250,250,0,false),
+              ($1,$2,$3,2,$4,$5,'Automatic reward remainder',500,500,250,250,0,true)`,
+      [fixture.workspace, fixture.companyA, snapshotId, fixture.rewardProduct, fixture.rewardVariant]);
+      await client.query(`INSERT INTO myfin.pricing_snapshot_discounts(
+        workspace_id,company_id,snapshot_id,sequence,promotion_id,promotion_version,
+        display_name,discount_sen) VALUES($1,$2,$3,1,$4,1,'Free exact variant',500)`,
+      [fixture.workspace, fixture.companyA, snapshotId, fixture.promotion]);
+      await client.query(`INSERT INTO myfin.pricing_snapshot_discount_lines(
+        workspace_id,company_id,snapshot_id,discount_sequence,line_no,discount_sen)
+        VALUES($1,$2,$3,1,1,250),($1,$2,$3,1,2,250)`,
+      [fixture.workspace, fixture.companyA, snapshotId]);
+    });
     const redeemSnapshot = snapshotId => migrator.query(`INSERT INTO myfin.promotion_redemptions(
       workspace_id,company_id,id,promotion_id,promotion_version,pricing_snapshot_id,
       source_type,source_id,idempotency_key,request_digest,discount_sen,occurred_at)
-      VALUES($1,$2,$3,$4,1,$5,'pos_sale',$6,$7,$8,500,now())`, [fixture.workspace,
+      VALUES($1,$2,$3,$4,1,$5,'invoice',$6,$7,$8,500,now())`, [fixture.workspace,
       fixture.companyA, `redemption-${snapshotId}`, fixture.promotion, snapshotId,
       `source-${snapshotId}`, `idem-${snapshotId}`, digest(`redemption:${snapshotId}`)]);
 
@@ -315,10 +337,13 @@ test('marketing and loyalty migrations enforce their PostgreSQL invariants', asy
       await expectPgError(redeemSnapshot(wrongSnapshot), '23514', 'free_item_pricing_changed');
       await createSnapshot(exactSnapshot, fixture.rewardVariant);
       await redeemSnapshot(exactSnapshot);
+      const splitSnapshot = `snapshot-split-${suffix}`;
+      await createSplitRewardSnapshot(splitSnapshot);
+      await redeemSnapshot(splitSnapshot);
       assert.equal((await migrator.query(`SELECT redemption_count::integer AS count
         FROM myfin.promotion_usage_counters
         WHERE workspace_id=$1 AND company_id=$2 AND promotion_id=$3`,
-      [fixture.workspace, fixture.companyA, fixture.promotion])).rows[0].count, 1);
+      [fixture.workspace, fixture.companyA, fixture.promotion])).rows[0].count, 2);
     });
 
     await requiredSubtest(t, 'reserved points equal active reservations at commit', async () => {

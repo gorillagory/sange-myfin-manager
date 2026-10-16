@@ -67,3 +67,31 @@ export async function releaseOrderReservations(c, companyId, orderId, reason) {
     [companyId, orderId, reason],
   );
 }
+
+// A hosted checkout keeps the accepted order's entire reservation set alive for
+// the same bounded window. The caller must insert the immutable payment intent
+// first: the recipe-reservation guard only permits a monotonic extension whose
+// timestamp is anchored to that intent's hold_until value.
+export async function extendOrderReservations(c, companyId, orderId, expiresAt) {
+  const stale = (await c.query(
+    `SELECT
+       EXISTS(SELECT 1 FROM myfin.customer_order_reservations
+         WHERE company_id=$1 AND order_id=$2 AND released_at IS NULL AND expires_at<=now()) OR
+       EXISTS(SELECT 1 FROM myfin.customer_order_recipe_reservations
+         WHERE company_id=$1 AND order_id=$2 AND state='active' AND expires_at<=now()) AS stale`,
+    [companyId, orderId],
+  )).rows[0]?.stale;
+  if (stale) v.fail(409, 'order_reservations_unavailable');
+  await c.query(
+    `UPDATE myfin.customer_order_reservations
+        SET expires_at=$3
+      WHERE company_id=$1 AND order_id=$2 AND released_at IS NULL AND expires_at<$3`,
+    [companyId, orderId, expiresAt],
+  );
+  await c.query(
+    `UPDATE myfin.customer_order_recipe_reservations
+        SET expires_at=$3,updated_at=now()
+      WHERE company_id=$1 AND order_id=$2 AND state='active' AND expires_at<$3`,
+    [companyId, orderId, expiresAt],
+  );
+}

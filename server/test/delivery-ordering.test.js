@@ -81,7 +81,7 @@ test('public delivery queries require both company delivery enablement and an en
   const staff = await readFile(new URL('../src/customer-orders.js', import.meta.url), 'utf8');
   assert.match(staff, /delivery_address_snapshot/);
   assert.match(staff, /contactPurpose: row\.delivery_contact_purpose/);
-  assert.match(staff, /reservationOrderId: id, acceptedOrderQuote: true/);
+  assert.match(staff, /reservationOrderId: order\.id, acceptedOrderQuote: true/);
 });
 
 test('staff fulfillment sees the delivery address while customer status remains region-only', async () => {

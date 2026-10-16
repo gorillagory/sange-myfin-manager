@@ -67,7 +67,9 @@ async function runtimeSourceGraph() {
 function tableRequirements(graph) {
   const inventory = new Map();
   const operations = [
-    ['SELECT', /\b(?:FROM|JOIN)\s+myfin\.([a-z_][a-z0-9_]*)/gi],
+    // A set-returning stored function can appear in FROM. The word boundary
+    // plus call lookahead keeps that function out of the table ACL inventory.
+    ['SELECT', /\b(?:FROM|JOIN)\s+myfin\.([a-z_][a-z0-9_]*)\b(?!\s*\()/gi],
     ['INSERT', /\bINSERT\s+INTO\s+myfin\.([a-z_][a-z0-9_]*)/gi],
     ['UPDATE', /\bUPDATE\s+myfin\.([a-z_][a-z0-9_]*)/gi],
     ['DELETE', /\bDELETE\s+FROM\s+myfin\.([a-z_][a-z0-9_]*)/gi],
@@ -85,7 +87,8 @@ function tableRequirements(graph) {
 function directlyCalledFunctions(graph) {
   const names = new Set();
   for (const source of graph.values())
-    for (const match of source.matchAll(/\bSELECT\s+myfin\.([a-z_][a-z0-9_]*)\s*\(/gi)) names.add(match[1]);
+    for (const match of source.matchAll(/\b(?:SELECT|FROM)\s+myfin\.([a-z_][a-z0-9_]*)\s*\(/gi))
+      names.add(match[1]);
   return [...names].sort();
 }
 
@@ -206,7 +209,7 @@ test('startup readiness consumes every parameterized shared-manifest predicate',
   assert.equal((check.predicate.match(/has_(?:schema|table|sequence|function)_privilege/g) || []).length,
     expectedPredicateCount);
   assert.equal(check.parameters.length, expectedPredicateCount * 2);
-  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0034_receipt_sync_recovery.sql');
+  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0041_customer_identity_security.sql');
 });
 
 test('the dynamic SQL allowlist stays narrow and reviewable', () => {

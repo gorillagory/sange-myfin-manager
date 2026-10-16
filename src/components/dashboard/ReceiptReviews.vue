@@ -352,7 +352,7 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; bulk
     </div>
 
     <Modal v-if="selected" title="Review original payment" :busy="busy" @close="selected = null">
-      <div class="ed-notice warning">Approval records the saved amount once and deducts stock once; it does not charge the customer. Dismissal marks the payment reviewed but not recorded. The original cashier’s device keeps its queued receipt until the server decision is confirmed there.</div>
+      <div class="ed-notice warning">Approval records the saved amount once and deducts available catalog stock once; it does not charge the customer. If stock is now short, the sale records that shortage without consuming stock reserved for another order. Recipe shortages are posted as a financial-only inventory exception for reconciliation. Dismissal marks the payment reviewed but not recorded. The original cashier’s device keeps its queued receipt until the server decision is confirmed there.</div>
       <dl>
         <dt>Receipt</dt><dd>{{ selected.sale.number || selected.id }}</dd>
         <dt>Original cashier</dt><dd>{{ selected.sale.cashierId }}</dd>

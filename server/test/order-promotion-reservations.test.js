@@ -67,11 +67,14 @@ test('consumption is exact-once and every failure stays inside the tender transa
   assert.match(consume, /order_row\.status='paid'[\s\S]*payment\.sale_id=requested_sale[\s\S]*sale\.pricing_snapshot_id=reservation\.pricing_snapshot_id/);
   assert.doesNotMatch(consume, /\bCOMMIT\b|\bROLLBACK\b/);
   const tender = orders.slice(orders.indexOf("app.post('/api/companies/:company/customer-orders/:id/tender'"));
+  const completion = orders.slice(orders.indexOf('async function completePaidOrder'),
+    orders.indexOf('export function registerCustomerOrders'));
   assert.ok(tender.indexOf('SELECT p.request_digest,p.sale_id') < tender.indexOf('customer_order_not_tenderable'));
-  assert.match(tender, /SELECT company_id,id,data FROM myfin\.transactions/);
-  assert.match(tender, /sale: publicTransaction/);
-  assert.ok(tender.indexOf('await checkout(') < tender.indexOf('INSERT INTO myfin.customer_order_payments'));
-  assert.ok(tender.indexOf("SET status='paid',payment_state='paid'") < tender.indexOf('consumeOrderPromotionReservations'));
+  assert.match(orders, /SELECT company_id,id,data FROM myfin\.transactions/);
+  assert.match(orders, /sale: publicTransaction/);
+  assert.ok(completion.indexOf('await checkout(') < completion.indexOf('INSERT INTO myfin.customer_order_payments'));
+  assert.ok(completion.indexOf("SET status='paid',payment_state='paid'") < completion.indexOf('consumeOrderPromotionReservations'));
+  assert.match(tender, /completePaidOrder/);
   assert.match(business, /INSERT INTO myfin\.transactions\([\s\S]*pricing_snapshot_id\)/);
 });
 

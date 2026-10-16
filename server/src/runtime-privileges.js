@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0034_receipt_sync_recovery.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0041_customer_identity_security.sql';
 
 const tableGroups = [
   {
@@ -11,6 +11,7 @@ const tableGroups = [
       'workspaces', 'workspace_memberships', 'tenant_hosts', 'pos_access_codes',
       'pos_login_guards', 'pos_sessions', 'app_sessions', 'session_handoffs',
       'storefront_product_variants',
+      'storefront_carousel_slides',
     ],
   },
   {
@@ -31,6 +32,8 @@ const tableGroups = [
       'goods_receipt_lines', 'pricing_snapshots', 'promotion_redemptions',
       'loyalty_point_events', 'loyalty_sale_award_batches',
       'customer_order_lines', 'inventory_recipe_versions', 'inventory_recipe_components',
+      'payment_gateway_connections',
+      'online_payment_reconciliation_jobs',
     ],
   },
   {
@@ -51,6 +54,7 @@ const tableGroups = [
       'marketing_campaign_version_promotions', 'marketing_campaign_version_audiences',
       'marketing_campaign_events', 'workspace_loyalty_setting_versions',
       'loyalty_point_reservation_events',
+      'online_payment_intents', 'online_payment_events', 'online_payment_finalizations',
     ],
   },
   { privileges: ['SELECT', 'INSERT', 'DELETE'], objects: ['expense_links'] },
@@ -62,6 +66,7 @@ const tableGroups = [
       'promotion_usage_counters', 'promotion_customer_usage_counters',
       'promotion_voucher_usage_counters', 'promotion_voucher_customer_usage_counters',
       'promotion_reservations', 'promotion_reservation_events',
+      'customer_order_online_payment_state',
     ],
   },
 ];
@@ -85,6 +90,11 @@ export const RUNTIME_PRIVILEGES = Object.freeze({
   }),
   functions: Object.freeze({
     'reserve_order_promotions(text,text,text,timestamptz)': Object.freeze(['EXECUTE']),
+    'reserve_pos_promotions(text,text,text,timestamptz)': Object.freeze(['EXECUTE']),
+    'release_pos_promotions(text,text,text,text)': Object.freeze(['EXECUTE']),
+    'authorize_pos_pricing_recovery(text,text,text,text,text)': Object.freeze(['EXECUTE']),
+    'pos_pricing_recovery_authorized(text,text,text)': Object.freeze(['EXECUTE']),
+    'cleanup_expired_unbound_storefront_pricing_snapshots(integer)': Object.freeze(['EXECUTE']),
     'extend_order_promotion_reservations(text,text,timestamptz)': Object.freeze(['EXECUTE']),
     'release_order_promotion_reservations(text,text,text)': Object.freeze(['EXECUTE']),
     'consume_order_promotion_reservations(text,text,text,timestamptz)': Object.freeze(['EXECUTE']),

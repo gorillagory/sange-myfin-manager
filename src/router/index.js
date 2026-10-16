@@ -6,6 +6,7 @@ import { isStorefrontHostname } from '../domain/customerOrdering';
 
 const routes = [
     { path: '/shop', alias: '/menu', component: () => import('../components/customer/CustomerStorefront.vue'), meta: { surface: 'customer' } },
+    { path: '/display', component: () => import('../components/customer/CustomerDisplay.vue'), meta: { surface: 'customer' } },
     { path: '/privacy', component: () => import('../components/customer/CustomerPrivacyNotice.vue'), meta: { surface: 'customer' } },
     { path: '/order/:code', component: () => import('../components/customer/CustomerOrderStatus.vue'), meta: { surface: 'customer' } },
     { path: '/order', component: () => import('../components/customer/CustomerStorefront.vue'), meta: { surface: 'customer' } },
@@ -15,6 +16,7 @@ const routes = [
     { path: '/overview', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/orders', component: () => import('../components/dashboard/OrdersTab.vue') },
+    { path: '/storefront', component: () => import('../components/dashboard/StorefrontTab.vue'), meta: { requiresAdmin: true } },
     { path: '/kitchen', component: () => import('../components/dashboard/KitchenDisplay.vue') },
     { path: '/finance-sales', component: () => import('../components/dashboard/finance/FinanceSales.vue') },
     { path: '/payment-operations', component: () => import('../components/dashboard/PaymentOperationsTab.vue') },

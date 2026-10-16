@@ -1,0 +1,36 @@
+# Explicit opt-in only. Do not include this override until the HitPay sandbox
+# connection, webhook and staff reconciliation flow have passed acceptance.
+services:
+  api:
+    environment:
+      PAYMENT_GATEWAY_ENABLED: 'true'
+      PAYMENT_GATEWAY_SECRET_FILE: /run/secrets/payment_gateway_credentials
+    volumes:
+      - type: bind
+        source: ${MYFIN_PAYMENT_GATEWAY_SECRET_FILE:?set absolute payment gateway credential file path}
+        target: /run/secrets/payment_gateway_credentials
+        read_only: true
+    # The image stays USER node. Grant only the dedicated host secret-file GID
+    # as a supplementary group; do not run the API as root or make the file
+    # world-readable.
+    group_add:
+      - ${MYFIN_PAYMENT_GATEWAY_SECRET_GID:?set dedicated numeric gateway secret group id}
+    # payment-egress is the only network added by this opt-in file. Keep the
+    # existing application and PostgreSQL paths explicit when Compose merges.
+    networks: [app, nexus-data, payment-egress]
+  report-worker:
+    environment:
+      PAYMENT_GATEWAY_ENABLED: 'true'
+      PAYMENT_GATEWAY_SECRET_FILE: /run/secrets/payment_gateway_credentials
+    volumes:
+      - type: bind
+        source: ${MYFIN_PAYMENT_GATEWAY_SECRET_FILE:?set absolute payment gateway credential file path}
+        target: /run/secrets/payment_gateway_credentials
+        read_only: true
+    group_add:
+      - ${MYFIN_PAYMENT_GATEWAY_SECRET_GID:?set dedicated numeric gateway secret group id}
+    networks: [nexus-data, payment-egress]
+
+networks:
+  payment-egress:
+    driver: bridge

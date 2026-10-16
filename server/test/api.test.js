@@ -46,11 +46,17 @@ test('ready response, unknown business routes, and handler errors are minimal', 
   const app = buildApp({ database:{ ready:async () => true, close:async () => { closes++; } } });
   t.after(() => app.close());
   app.get('/test-error', async () => { throw Error('secret internal detail'); });
+  app.get('/test-gateway-unavailable', async () => {
+    const error = Error('online_payment_unavailable'); error.statusCode = 503; throw error;
+  });
   assert.deepEqual((await app.inject('/api/health/ready')).json(), { status:'ready' });
   assert.equal((await app.inject('/api/companies')).statusCode, 404);
   const error = await app.inject('/test-error');
   assert.equal(error.statusCode, 500);
   assert.deepEqual(error.json(), { error:'internal_error' });
+  const gateway = await app.inject('/test-gateway-unavailable');
+  assert.equal(gateway.statusCode, 503);
+  assert.deepEqual(gateway.json(), { error:'online_payment_unavailable' });
   await app.close();
   await app.close();
   assert.equal(closes, 1);

@@ -108,7 +108,7 @@ test('manager overview is company bounded and exposes stable definitions and dis
       id: 'promotion-a', version: '1', name: 'Ten percent', enabled: false,
       redemption_mode: 'automatic', valid_from: '2026-10-20T00:00:00Z', valid_until: null,
       discount_type: 'percentage', discount_basis_points: 1000, discount_sen: null,
-      requires_customer: false, requires_student: false,
+      requires_customer: false, requires_student: false, stackable:true, priority:25,
     }], rowCount: 1 };
     throw Error(`unexpected query: ${sql}`);
   } });
@@ -118,12 +118,17 @@ test('manager overview is company bounded and exposes stable definitions and dis
   assert.ok(result.definitions.objectives.includes('repeat_purchase'));
   assert.ok(result.definitions.channels.includes('storefront'));
   assert.equal(result.availablePromotions[0].enabled, false);
+  assert.equal(result.availablePromotions[0].stackable, true);
+  assert.equal(result.availablePromotions[0].priority, 25);
   assert.equal(result.attribution.causal, false);
   assert.ok(fixture.calls.slice(1).every(call => call.params[0] === 'workspace-a'));
   assert.ok(fixture.calls.slice(1).every(call => call.params[1] === 'company-a'));
   const audienceRead = fixture.calls.find(call => call.sql.includes('FROM myfin.marketing_audiences audience'));
   assert.equal(audienceRead.params[2], false);
   assert.match(audienceRead.sql, /\$3::boolean AND audience\.company_id IS NULL/);
+  const campaignRead = fixture.calls.find(call => call.sql.includes('FROM myfin.marketing_campaigns campaign'));
+  assert.match(campaignRead.sql, /voucher_version\.valid_from<=version\.starts_at/);
+  assert.match(campaignRead.sql, /voucher_usage\.redemption_count/);
 });
 
 test('workspace audiences are visible to owners but excluded from manager reads', async () => {
@@ -222,12 +227,12 @@ test('campaign creation stores immutable exact links and requires linked offers 
   );
 });
 
-test('publish atomically clones complete promotion rules, advances exact links, and marks campaign published', async () => {
+test('POS-only publish atomically clones complete promotion rules, advances exact links, and marks campaign published', async () => {
   let finalRead = false;
   const fixture = register({ query(sql) {
     if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
     if (sql.includes('FROM myfin.marketing_campaigns campaign') && sql.includes('FOR UPDATE OF campaign'))
-      return { rows: [campaignRow()], rowCount: 1 };
+      return { rows: [campaignRow({ channels:['pos'] })], rowCount: 1 };
     if (sql.includes('FROM myfin.promotions promotion') && sql.includes('FOR UPDATE OF promotion')) return { rows: [{
       current_version: '1', promotion_id: 'promotion-a', version: '1', redemption_mode: 'automatic',
     }], rowCount: 1 };
@@ -241,7 +246,7 @@ test('publish atomically clones complete promotion rules, advances exact links, 
     if (sql.includes('INSERT INTO myfin.marketing_campaign_events')) return { rows: [], rowCount: 1 };
     if (sql.includes('FROM myfin.marketing_campaigns campaign')) {
       finalRead = true;
-      return { rows: [campaignRow({ version: '2', lifecycle: 'published',
+      return { rows: [campaignRow({ version: '2', lifecycle: 'published', channels:['pos'],
         promotion_links: [{ promotionId: 'promotion-a', promotionVersion: 2 }] })], rowCount: 1 };
     }
     throw Error(`unexpected query: ${sql}`);
@@ -339,17 +344,34 @@ test('targeted campaign publishes after preserving the exact audience version li
   assert.deepEqual(audienceClone.params.slice(0, 5), ['workspace-a', 'company-a', 'campaign-a', 1, 2]);
 });
 
-test('a campaign without the live storefront channel remains a draft', async () => {
+test('a campaign without a live pricing channel remains a draft', async () => {
   const fixture = register({ query(sql) {
     if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
     if (sql.includes('FROM myfin.marketing_campaigns campaign') && sql.includes('FOR UPDATE OF campaign'))
-      return { rows: [campaignRow({ channels: ['pos', 'email'] })], rowCount: 1 };
+      return { rows: [campaignRow({ channels: ['email'] })], rowCount: 1 };
     throw Error(`unexpected mutation after channel guard: ${sql}`);
   } });
   await assert.rejects(
     fixture.routes.get('POST /api/companies/:company/marketing/campaigns/:campaignId/publish')(
       fixture.request({ expectedVersion: 1 }, { campaignId: 'campaign-a' }),
-    ), error => error.statusCode === 409 && error.message === 'campaign_storefront_channel_required',
+    ), error => error.statusCode === 409 && error.message === 'campaign_pricing_channel_required',
+  );
+  assert.equal(fixture.calls.some(call => call.sql.includes('UPDATE myfin.marketing_campaigns')), false);
+});
+
+test('a voucher campaign cannot publish without an enabled unexhausted code covering its schedule', async () => {
+  const fixture = register({ query(sql) {
+    if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+    if (sql.includes('FROM myfin.marketing_campaigns campaign') && sql.includes('FOR UPDATE OF campaign'))
+      return { rows: [campaignRow({ promotion_links:[{
+        promotionId:'promotion-a',promotionVersion:1,redemptionMode:'voucher',voucherReady:false,
+      }] })], rowCount: 1 };
+    throw Error(`unexpected mutation after voucher guard: ${sql}`);
+  } });
+  await assert.rejects(
+    fixture.routes.get('POST /api/companies/:company/marketing/campaigns/:campaignId/publish')(
+      fixture.request({ expectedVersion: 1 }, { campaignId: 'campaign-a' }),
+    ), error => error.statusCode === 409 && error.message === 'campaign_enabled_voucher_required',
   );
   assert.equal(fixture.calls.some(call => call.sql.includes('UPDATE myfin.marketing_campaigns')), false);
 });
@@ -377,6 +399,12 @@ test('campaign analytics SQL is exact-version, tenant, schedule and date bounded
   assert.match(analytics.sql, /snapshot\.priced_at>=link\.starts_at/);
   assert.match(analytics.sql, /redemption\.workspace_id=\$1 AND redemption\.company_id=\$2/);
   assert.match(analytics.sql, /JOIN attributed_sale_ids attributed ON attributed\.sale_id=payment\.sale_id/);
+  const reservationSchema = readFileSync(
+    new URL('../../db/migrations/0027_order_promotion_reservations.sql', import.meta.url), 'utf8',
+  );
+  assert.match(reservationSchema, /reserved_at timestamptz NOT NULL DEFAULT now\(\)/);
+  assert.match(analytics.sql, /reservation\.reserved_at >= \$4::date/);
+  assert.doesNotMatch(analytics.sql, /reservation\.created_at/);
 });
 
 test('0029 schema is additive, versioned, immutable and runtime ACLs are least privilege', () => {

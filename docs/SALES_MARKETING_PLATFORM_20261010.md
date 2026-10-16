@@ -64,11 +64,21 @@ only user-interface guidance.
 
 ## Live channel boundary
 
-The online storefront is the live campaign execution channel in this release.
-Publishing requires `storefront`; POS, email, SMS, WhatsApp, QR, social, and
-in-store selections remain planning metadata until their own reviewed execution
-adapters exist. The staff POS can tender a storefront order with its saved offer
-evidence, but a new staff-entered POS cart does not yet evaluate campaign pricing.
+The online storefront and staff POS are live campaign execution channels in this
+release. A campaign runs only on the channels explicitly selected in its
+published version. New POS carts receive an authoritative server quote; eligible
+percentage, fixed-value, voucher, and free-item rules appear before tender with
+their original price, savings, and final price. Online and POS orders share the
+same reservation ledger, so campaign and voucher capacity cannot be spent once
+through each channel. Email, SMS, WhatsApp, QR, social, and other in-store
+selections remain planning or attribution metadata until their own reviewed
+execution adapters exist.
+
+The staff POS can also tender an accepted storefront order with its immutable
+offer evidence. Direct POS rewards use normal stock and recipe validation and
+the server inserts automatic free-item lines into the immutable pricing
+snapshot; the cashier cannot add, remove, or edit those reward lines after the
+quote.
 
 Bonus points apply to each eligible paid storefront order. Total and per-customer
 bonus caps are not represented yet, so the campaign builder neither accepts nor

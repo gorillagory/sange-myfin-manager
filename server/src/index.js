@@ -3,6 +3,7 @@ import { loadConfig } from './config.js';
 import { createDatabase } from './database.js';
 import { buildApp } from './app.js';
 import { installShutdown } from './shutdown.js';
+import { createPaymentGatewayRuntime } from './payment-gateways.js';
 
 let app;
 let shutdown;
@@ -13,7 +14,9 @@ try {
   });
   const authOptions = authConfig();
   const auth = createAuth(database.pool, authOptions);
-  app = buildApp({ database, auth, authOptions, uploadDir: process.env.UPLOAD_DIR || '/app/uploads', logger: { level: 'info' } });
+  const paymentGateway = createPaymentGatewayRuntime(process.env);
+  app = buildApp({ database, auth, authOptions, paymentGateway,
+    uploadDir: process.env.UPLOAD_DIR || '/app/uploads', logger: { level: 'info' } });
   shutdown = installShutdown(app, { timeoutMs: config.shutdownTimeoutMs });
   await app.listen({ host: config.host, port: config.port });
 } catch {
