@@ -56,3 +56,9 @@ test('quiescent backup and destructive restore stop every enabled database write
   assert.match(development, /compose --profile receipt-email start \$writer_services/);
   assert.match(production, /compose --profile receipt-email start \$writer_services/);
 });
+
+test('production backup is pinned to the production release symlink', async () => {
+  const script = await read('scripts/deploy/production-backup.sh');
+  assert.match(script, /repo=\/srv\/docker\/apps\/sange-myfin-manager-prod(?:\r?\n|$)/);
+  assert.doesNotMatch(script, /repo=\/srv\/docker\/apps\/sange-myfin-manager(?:\r?\n|$)/);
+});

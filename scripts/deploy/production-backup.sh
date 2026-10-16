@@ -4,7 +4,7 @@ set -eu
 # Run on nexus-docker. Stop only the production API so database and uploads
 # describe the same instant; always restart it if a backup step fails.
 runtime=/srv/docker/secrets/myfin-prod/runtime.env
-repo=/srv/docker/apps/sange-myfin-manager
+repo=/srv/docker/apps/sange-myfin-manager-prod
 test -f "$runtime"
 set -a
 . "$runtime"
