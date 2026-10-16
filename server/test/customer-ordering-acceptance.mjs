@@ -353,11 +353,15 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
       )).rows[0].stock), 2);
 
       const item = { ...cartItem(product), qty: 2 };
+      assert.ok(accepted.checkoutCart?.pricingSnapshotId,
+        'staff tender payload must expose the accepted immutable pricing snapshot');
       const sale = createSale({
         id: `sale-${tag}`, items: [item],
         company: { id: companyA, name: 'Acceptance cafe A', address: '', phone: '', registration: '',
           preferences: { currency: 'RM', taxRate: 0 } },
         user: { uid: staffId, username: 'Acceptance owner' }, method: 'Cash', received: 100,
+        lockedTotals: accepted.checkoutCart.totals,
+        pricingSnapshotId: accepted.checkoutCart.pricingSnapshotId,
       });
       assert.equal(sale.total, accepted.total);
       const tenderBody = { requestId: randomUUID(), expectedVersion: accepted.version, sale };
@@ -448,15 +452,34 @@ test('customer accounts and ordering survive real PostgreSQL concurrency and con
     });
 
     await t.test('history ledgers stay immutable', async () => {
+      const [eventTarget, loyaltyTarget, paymentTarget] = await Promise.all([
+        database.query(
+          `SELECT company_id,id FROM myfin.customer_order_events
+            WHERE company_id=$1 ORDER BY created_at,id LIMIT 1`, [companyA]),
+        database.query(
+          `SELECT workspace_id,id FROM myfin.customer_loyalty_events
+            WHERE workspace_id=$1 ORDER BY created_at,id LIMIT 1`, [workspaceA]),
+        database.query(
+          `SELECT company_id,order_id FROM myfin.customer_order_payments
+            WHERE company_id=$1 ORDER BY created_at,order_id LIMIT 1`, [companyA]),
+      ]);
+      assert.equal(eventTarget.rowCount, 1,
+        'immutability check requires a persisted customer-order event');
+      assert.equal(loyaltyTarget.rowCount, 1,
+        'immutability check requires a persisted customer-loyalty event');
+      assert.equal(paymentTarget.rowCount, 1,
+        'immutability check requires a persisted customer-order payment');
       await expectCode(database.query(
         `UPDATE myfin.customer_order_events SET note=note
-          WHERE company_id=$1 AND order_id IN (
-            SELECT id FROM myfin.customer_order_requests WHERE company_id=$1 LIMIT 1)`, [companyA]), '23514');
+          WHERE company_id=$1 AND id=$2`,
+        [eventTarget.rows[0].company_id, eventTarget.rows[0].id]), '23514');
       await expectCode(database.query(
         `UPDATE myfin.customer_loyalty_events SET reason=reason
-          WHERE workspace_id=$1`, [workspaceA]), '23514');
+          WHERE workspace_id=$1 AND id=$2`,
+        [loyaltyTarget.rows[0].workspace_id, loyaltyTarget.rows[0].id]), '23514');
       await expectCode(database.query(
-        `DELETE FROM myfin.customer_order_payments WHERE company_id=$1`, [companyA]), '23514');
+        `DELETE FROM myfin.customer_order_payments WHERE company_id=$1 AND order_id=$2`,
+        [paymentTarget.rows[0].company_id, paymentTarget.rows[0].order_id]), '23514');
     });
   } finally {
     if (app) await app.close();

@@ -395,7 +395,9 @@ test('migration separates security surfaces and keeps audit and payment ledgers 
   assert.match(sql, /split_part\(NEW\.hostname,'.',1\) LIKE 'order-%'/);
   assert.match(sql, /customer_guest_sessions/);
   assert.match(sql, /guest_session_digest/);
+  assert.match(sql, /immutable_customer_order_events/);
   assert.match(sql, /immutable_customer_order_payments/);
+  assert.match(sql, /immutable_customer_loyalty_events/);
   assert.match(sql, /staff_actor_id text REFERENCES myfin\.app_identities/);
   assert.match(sql, /customer_actor_id text REFERENCES myfin\.customer_accounts/);
   assert.match(sql, /actor_type='customer'.*customer_actor_id IS NOT NULL/s);
