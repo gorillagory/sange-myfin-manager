@@ -200,8 +200,7 @@ export async function expenseOutput(c, companyId, rows, who) {
   if (!rows.length) return [];
   const permissions=permissionsFor(who);
   const expenseIds = rows.map(row => row.id), payerIds = [...new Set(rows.map(row => row.paid_by_identity_id).filter(Boolean))];
-  const [linkResult, payerResult, paymentResult] = await Promise.all([
-    c.query(`SELECT el.*,si.name AS stock_item_name,sl.item_id AS movement_item_id,
+  const linkResult = await c.query(`SELECT el.*,si.name AS stock_item_name,sl.item_id AS movement_item_id,
         sl.kind AS movement_kind,msi.name AS movement_item_name,po.number AS purchase_order_number,
         gr.reference AS goods_receipt_reference,rpo.number AS receipt_order_number
       FROM myfin.expense_links el
@@ -212,11 +211,11 @@ export async function expenseOutput(c, companyId, rows, who) {
       LEFT JOIN myfin.goods_receipts gr ON gr.company_id=el.company_id AND gr.id=el.goods_receipt_id
       LEFT JOIN myfin.purchase_orders rpo ON rpo.company_id=gr.company_id AND rpo.id=gr.purchase_order_id
       WHERE el.company_id=$1 AND el.expense_id=ANY($2::text[])
-      ORDER BY el.expense_id,el.link_type,el.created_at,el.id`, [companyId, expenseIds]),
-    payerIds.length
-      ? c.query('SELECT id,display_name FROM myfin.app_identities WHERE id=ANY($1::text[])', [payerIds])
-      : Promise.resolve({ rows:[] }),
-    c.query(`SELECT p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
+      ORDER BY el.expense_id,el.link_type,el.created_at,el.id`, [companyId, expenseIds]);
+  const payerResult = payerIds.length
+    ? await c.query('SELECT id,display_name FROM myfin.app_identities WHERE id=ANY($1::text[])', [payerIds])
+    : { rows:[] };
+  const paymentResult = await c.query(`SELECT p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
         p.petty_cash_fund_id,f.name AS petty_cash_fund_name,
         sum(CASE WHEN p.event_type='payment' THEN p.amount_sen ELSE -p.amount_sen END)::bigint AS amount_sen
       FROM myfin.expense_payment_events p
@@ -225,8 +224,7 @@ export async function expenseOutput(c, companyId, rows, who) {
       GROUP BY p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
         p.petty_cash_fund_id,f.name
       HAVING sum(CASE WHEN p.event_type='payment' THEN p.amount_sen ELSE -p.amount_sen END)>0
-      ORDER BY p.expense_id,p.source_type,p.paid_by_name,p.petty_cash_fund_id`, [companyId, expenseIds]),
-  ]);
+      ORDER BY p.expense_id,p.source_type,p.paid_by_name,p.petty_cash_fund_id`, [companyId, expenseIds]);
   const payers = new Map(payerResult.rows.map(row => [row.id, row.display_name || row.id]));
   const links = new Map(expenseIds.map(id => [id, []]));
   for (const row of linkResult.rows) {
@@ -277,26 +275,24 @@ export async function expenseOutput(c, companyId, rows, who) {
 
 export async function expenseLinkOptions(c, companyId, who) {
   const permissions = permissionsFor(who);
-  const [stock, movements, orders, receipts] = await Promise.all([
-    c.query(`SELECT id,name,internal_code FROM myfin.stock_items
-      WHERE company_id=$1 ORDER BY active DESC,name,id LIMIT 500`, [companyId]),
-    permissions.stockHistoryRead
-      ? c.query(`SELECT sl.id,sl.item_id,sl.kind,sl.created_at,si.name
+  const stock = await c.query(`SELECT id,name,internal_code FROM myfin.stock_items
+      WHERE company_id=$1 ORDER BY active DESC,name,id LIMIT 500`, [companyId]);
+  const movements = permissions.stockHistoryRead
+    ? await c.query(`SELECT sl.id,sl.item_id,sl.kind,sl.created_at,si.name
           FROM myfin.stock_ledger sl JOIN myfin.stock_items si
             ON si.company_id=sl.company_id AND si.id=sl.item_id
           WHERE sl.company_id=$1 ORDER BY sl.created_at DESC,sl.id DESC LIMIT 500`, [companyId])
-      : Promise.resolve({ rows:[] }),
-    permissions.costsRead
-      ? c.query(`SELECT id,number,status FROM myfin.purchase_orders
+    : { rows:[] };
+  const orders = permissions.costsRead
+    ? await c.query(`SELECT id,number,status FROM myfin.purchase_orders
           WHERE company_id=$1 ORDER BY created_at DESC,id DESC LIMIT 500`, [companyId])
-      : Promise.resolve({ rows:[] }),
-    permissions.costsRead
-      ? c.query(`SELECT gr.id,gr.reference,gr.received_at,po.number
+    : { rows:[] };
+  const receipts = permissions.costsRead
+    ? await c.query(`SELECT gr.id,gr.reference,gr.received_at,po.number
           FROM myfin.goods_receipts gr JOIN myfin.purchase_orders po
             ON po.company_id=gr.company_id AND po.id=gr.purchase_order_id
           WHERE gr.company_id=$1 ORDER BY gr.received_at DESC,gr.id DESC LIMIT 500`, [companyId])
-      : Promise.resolve({ rows:[] }),
-  ]);
+    : { rows:[] };
   return {
     stockItems:stock.rows.map(row => ({ id:row.id, label:`${row.name} · ${row.internal_code}` })),
     stockMovements:movements.rows.map(row => ({ id:row.id, label:`${row.name} · ${row.kind} · ${String(row.created_at).slice(0, 10)}` })),

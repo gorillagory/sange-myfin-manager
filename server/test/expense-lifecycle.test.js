@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { activeExpenseSettlementDate,expenseAuditDetail,expenseOutput,lockRecordedPaymentLifecycle,prepareExpense,recordExpenseEvent } from '../src/expense-lifecycle.js';
+import { activeExpenseSettlementDate,expenseAuditDetail,expenseLinkOptions,expenseOutput,lockRecordedPaymentLifecycle,prepareExpense,recordExpenseEvent } from '../src/expense-lifecycle.js';
 import { ledgerOutput } from '../src/stock.js';
 
 const expenseRow = {
@@ -41,6 +41,38 @@ function projectionClient() {
     throw new Error(`Unexpected query: ${sql}`);
   } };
 }
+
+function singleFlightClient() {
+  let active = false;
+  const calls = [];
+  return {
+    calls,
+    async query(sql) {
+      if (active) throw new Error('concurrent_query_on_checked_out_client');
+      active = true;
+      calls.push(sql);
+      try {
+        await new Promise(resolve => setImmediate(resolve));
+        if (sql.includes('FROM myfin.expense_links')) return { rows: linkedRows };
+        if (sql.includes('FROM myfin.expense_payment_events')) return { rows: paymentRows };
+        if (sql.includes('FROM myfin.app_identities')) return { rows: [{ id: 'payer-1', display_name: 'Paying user' }] };
+        return { rows: [] };
+      } finally {
+        active = false;
+      }
+    },
+  };
+}
+
+test('expense projections serialize queries on a checked-out PostgreSQL client', async () => {
+  const outputClient = singleFlightClient();
+  await expenseOutput(outputClient, 'company-1', [expenseRow], { id: 'owner-1', role: 'workspace_owner' });
+  assert.equal(outputClient.calls.length, 3);
+
+  const optionsClient = singleFlightClient();
+  await expenseLinkOptions(optionsClient, 'company-1', { id: 'owner-1', role: 'workspace_owner' });
+  assert.equal(optionsClient.calls.length, 4);
+});
 
 test('expense link projections respect stock-history and procurement permissions', async () => {
   const operator = (await expenseOutput(projectionClient(), 'company-1', [expenseRow], { id: 'operator-1', role: 'operator' }))[0];
