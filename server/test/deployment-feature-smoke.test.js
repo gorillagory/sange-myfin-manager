@@ -36,7 +36,7 @@ test('production accounting smoke pins the protected Snidect reconciliation with
   for (const [key, value] of Object.entries({ sales:'149782.86', tax:'1380.76', expenses:'22852', cashIn:'78228.75', cashOut:'16352', cashFlow:'61876.75', quoted:'79000', convertedQuoted:'158149.64' })) {
     assert.match(source, new RegExp(`['"]${key}['"]:${value.replace('.', '\\.')}`));
   }
-  assert.match(source, /'sales':21,'expenses':5,'receipts':8,'quotes':16/);
+  assert.match(source, /'sales':21,'expenses':5,'expenseCashMovements':3,'receipts':8,'quotes':16/);
   assert.match(source, /'notes' not in serialized\.lower\(\)/);
   assert.match(source, /'history' not in serialized\.lower\(\)/);
 });

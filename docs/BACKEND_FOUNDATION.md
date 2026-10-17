@@ -35,7 +35,7 @@ No `.env` autoloading occurs. Supply an explicit environment (or Node's `--env-f
 | `PGPASSWORD` or `PGPASSWORD_FILE` | Exactly one usable secret required; file's final newline removed; no multiline password |
 | `PG_TLS` | `disable` on the supplied private development network; alternatively `verify-full` |
 | `PG_CA_FILE` | Optional CA file for `verify-full`; no insecure verification mode |
-| `PGPOOL_MAX` | 5, range 1–20; provisioning role cap also 5; do not raise one without reviewing both and replica totals |
+| `PGPOOL_MAX` | Per-process pool, range 1–20. API defaults to 5; report and optional receipt workers default to 2 each. The shared runtime role cap is 9 and rollout verifies it covers every enabled process. Review the role cap, every pool and replica count together. |
 | `PG_CONNECT_TIMEOUT_MS` | 2000, range 100–10000; also bounds pool checkout wait |
 | `PG_STATEMENT_TIMEOUT_MS` | 3000, range 100–60000; server cancellation |
 | `PG_QUERY_TIMEOUT_MS` | 4000, range 100–65000 and greater than statement timeout |
