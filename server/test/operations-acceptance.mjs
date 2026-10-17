@@ -340,7 +340,8 @@ try {
       [batchId],
     )).rows[0].n, 2);
     assert.equal((await listed(companyB, hostB, cookieB, '/expenses')).length, 1);
-    assert.equal((await listed(companyA, hostA, cookieA, '/expenses')).length, 2);
+    // Two imported expenses plus the linked-evidence expense created above.
+    assert.equal((await listed(companyA, hostA, cookieA, '/expenses')).length, 3);
   });
 
   await test('archived stock stops movements while its ledger remains readable', async () => {
