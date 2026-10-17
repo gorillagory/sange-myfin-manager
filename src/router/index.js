@@ -2,6 +2,7 @@ import { watch } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import { Store } from '../store';
 import { canVisit } from '../domain/viewAccess';
+import { effectiveModulesFor } from '../domain/permissions';
 import { isStorefrontHostname } from '../domain/customerOrdering';
 
 const routes = [
@@ -60,7 +61,8 @@ router.beforeEach(async to => {
     });
     if (Store.state.currentUser && !canVisit(Store.state.currentUser,to.path)) return '/overview';
 });
-watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id], () => {
+watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id,
+    effectiveModulesFor(Store.state.currentUser).slice().sort().join(',')], () => {
     if (router.currentRoute.value.meta.surface !== 'customer' && Store.state.currentUser && !canVisit(Store.state.currentUser,router.currentRoute.value.path))
         router.replace('/overview');
 });

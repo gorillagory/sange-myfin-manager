@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {compileScript,compileTemplate,parse} from '@vue/compiler-sfc';
 import {expenseTemplateCsv,exportExpensesCsv,importExpensesCsv} from '../src/domain/expensesCsv.js';
-import {effectiveExpenseStatus,expenseCommittedRefreshError,expenseHasCashImpact,expenseSaveFailureDisposition} from '../src/domain/expenseLifecycle.js';
+import {effectiveExpenseStatus,expenseCommittedRefreshError,expenseHasCashImpact,expenseSaveFailureDisposition,normalizeExpenseLifecycle} from '../src/domain/expenseLifecycle.js';
 import {duplicateStockItem,findStockCode,normalizeStockItem,stockConversionText,stockMovement,validateStockItem} from '../src/domain/stock.js';
 import {recipeAvailability,validateRecipeStockUnits} from '../src/domain/inventoryRecipes.js';
 
 test('expense CSV template imports cents and links an exact supplier',()=>{
  const suppliers=[{id:'supplier-a',name:'Roaster & Co',type:'Supplier'}];
  const csv='date,description,category,amount,supplier_id,supplier_name,payee\n2026-09-29,Beans,Inventory,19.90,,Roaster & Co,';
- assert.deepEqual(importExpensesCsv(csv,suppliers),[{date:'2026-09-29',description:'Beans',category:'Inventory',amount:19.9,
+  assert.deepEqual(importExpensesCsv(csv,suppliers),[{date:'2026-09-29',description:'Beans',category:'Inventory',amount:19.9,
   supplier_id:'supplier-a',payee:'Roaster & Co',status:'paid',paidByType:'other',paidByUserId:'',paidByName:'Imported / unspecified',
-  creditTermsDays:null,creditDueDate:'',paidOn:'2026-09-29',links:[]}]);
+  creditTermsDays:null,creditDueDate:'',paidOn:'2026-09-29',pettyCashFundId:'',links:[]}]);
  assert.match(expenseTemplateCsv('2026-09-29'),/"date","description"/);
  assert.match(exportExpensesCsv([{date:'2026-09-29',description:'=bad',amount:1}],[]),/"'=bad"/);
  const exported=exportExpensesCsv([{date:'2026-09-28T16:30:00.000Z',description:'Legacy expense',amount:2.5}],[]);
@@ -24,7 +24,7 @@ test('expense CSV round-trips credit terms and fixed stock and procurement links
   +'2026-09-29,Beans on account,42.05,pending,credit,30,2026-10-29,beans;milk,move-1,po-1,gr-1';
  const [expense]=importExpensesCsv(csv,[]);
  assert.deepEqual(expense,{date:'2026-09-29',description:'Beans on account',category:'General',amount:42.05,
-  supplier_id:'',payee:'',status:'pending',paidByType:'credit',paidByUserId:'',paidByName:'',creditTermsDays:30,
+  supplier_id:'',payee:'',status:'pending_payment',paidByType:'credit',paidByUserId:'',paidByName:'',pettyCashFundId:'',creditTermsDays:30,
   creditDueDate:'2026-10-29',paidOn:'',links:[{type:'stock_item',id:'beans'},{type:'stock_item',id:'milk'},
    {type:'stock_movement',id:'move-1'},{type:'purchase_order',id:'po-1'},{type:'goods_receipt',id:'gr-1'}]});
  assert.deepEqual(importExpensesCsv(exportExpensesCsv([expense],[]),[]),[expense]);
@@ -34,11 +34,24 @@ test('expense CSV rejects ambiguous suppliers, invalid dates and excess decimals
  const suppliers=[{id:'a',name:'Same',type:'Supplier'},{id:'b',name:'Same',type:'Supplier'}];
  assert.throws(()=>importExpensesCsv('date,description,amount,supplier_name\n2026-09-29,Beans,1,Same',suppliers),/exactly one/);
  assert.throws(()=>importExpensesCsv('date,description,amount\n2026-02-30,Beans,1.001',[]),/date|decimal/);
- assert.throws(()=>importExpensesCsv('date,description,amount,status,paid_by_type\n2026-09-29,Beans,1,pending,petty_cash',[]),/credit expenses/);
+ assert.throws(()=>importExpensesCsv('date,description,amount,status,paid_by_type\n2026-09-29,Beans,1,pending,petty_cash',[]),/petty cash fund/i);
  assert.throws(()=>importExpensesCsv('date,description,amount,status,paid_by_type,credit_terms_days,credit_due_date\n2026-09-29,Beans,1,pending,credit,30,2026-10-30',[]),/do not match/);
  assert.throws(()=>importExpensesCsv('date,description,amount,stock_item_ids\n2026-09-29,Beans,1,item-1;item-1',[]),/duplicate expense link/i);
  assert.throws(()=>importExpensesCsv('date,description,amount,paid_by_type,paid_on\n2026-09-29,Beans,1,legacy_unspecified,2026-09-29',[]),/Choose who paid/);
  assert.throws(()=>importExpensesCsv('date,description,amount,paid_on\n2026-09-29,Beans,1,2099-01-01',[]),/future/);
+ assert.throws(()=>importExpensesCsv('date,description,amount,status\n2026-09-29,Beans,10,partially_paid',[]),/cannot recreate their payment history.*pending_payment/i);
+});
+
+test('expense CSV round-trips petty cash fund references and unpaid drafts',()=>{
+ const csv='date,description,amount,status,paid_by_type,petty_cash_fund_id,paid_on\n'
+  +'2026-10-17,Counter supplies,12.50,paid,petty_cash,fund-1,2026-10-17\n'
+  +'2026-10-17,Claim awaiting review,8.40,draft,unassigned,,';
+ const rows=importExpensesCsv(csv,[]);
+ assert.equal(rows[0].pettyCashFundId,'fund-1');assert.equal(rows[0].status,'paid');assert.equal(rows[0].paidOn,'2026-10-17');
+ assert.equal(rows[1].status,'draft');assert.equal(rows[1].paidByType,'unassigned');assert.equal(rows[1].paidOn,'');
+ assert.deepEqual(importExpensesCsv(exportExpensesCsv(rows,[]),[]),rows);
+ const [pending]=importExpensesCsv('date,description,amount,status\n2026-10-17,Utility bill,55,pending_payment',[]);
+ assert.equal(pending.paidByType,'unassigned');assert.equal(pending.paidOn,'');
 });
 
 test('expense lifecycle history attributes each event to its actor',async()=>{
@@ -54,8 +67,28 @@ test('expense lifecycle history attributes each event to its actor',async()=>{
  assert.match(source,/let expenseEventRequest=0/);
  assert.match(source,/const request=\+\+expenseEventRequest/);
  assert.match(source,/request===expenseEventRequest&&form\.value\?\.id===id/);
- assert.match(source,/function closeEditor\(\)\{invalidateExpenseEvents\(\);form\.value=null;\}/);
+ assert.match(source,/function closeEditor\(\)\{[\s\S]*invalidateExpenseEvents\(\);form\.value=null;[\s\S]*\}/);
  assert.doesNotMatch(source,/@close="form=null"/);
+ assert.match(source,/const paymentLifecycleLocked=computed\(\(\)=>Number\(form\.value\?\.paidAmountSen\|\|0\)>0\)/);
+ assert.match(source,/recorded payments are part of the audit trail/);
+ assert.match(source,/:disabled="paymentLifecycleLocked\|\|form\.status==='partially_paid'"/);
+ assert.match(source,/:disabled="paymentLifecycleLocked"/);
+ assert.match(source,/allowRecordedPaymentState:paymentLifecycleLocked\.value/);
+});
+
+test('only the recorded-payment validation path accepts settled legacy source states',()=>{
+ const base={date:'2026-10-02',status:'paid',paidOn:'2026-10-03',links:[]};
+ assert.throws(()=>normalizeExpenseLifecycle({...base,paidByType:'unassigned'}),/Choose who paid/);
+ assert.throws(()=>normalizeExpenseLifecycle({...base,paidByType:'credit',creditTermsDays:30,
+  creditDueDate:'2026-11-01'}),/Record the credit expense as pending/);
+ assert.equal(normalizeExpenseLifecycle({...base,paidByType:'unassigned'},
+  {allowRecordedPaymentState:true}).paidByType,'unassigned');
+ const credit=normalizeExpenseLifecycle({...base,paidByType:'credit',creditTermsDays:30,
+  creditDueDate:'2026-11-01'},{allowRecordedPaymentState:true});
+ assert.equal(credit.status,'paid');assert.equal(credit.paidByType,'credit');
+ assert.throws(()=>normalizeExpenseLifecycle({...base,status:'partially_paid',paidOn:'',paidByType:'unassigned'}),/Choose who paid/);
+ assert.equal(normalizeExpenseLifecycle({...base,status:'partially_paid',paidOn:'',paidByType:'unassigned'},
+  {allowRecordedPaymentState:true}).status,'partially_paid');
 });
 
 test('expense mutations require live data and failed saves clean only uncommitted receipt uploads',async()=>{
@@ -70,8 +103,8 @@ test('expense mutations require live data and failed saves clean only uncommitte
  assert.match(source,/let uploaded=null,saved=false/);
  assert.match(finance,/mutationCommitted:true,mutationResult:result/);
  assert.match(source,/if\(disposition==='committed'\)\{[\s\S]*saved=true;[\s\S]*removeFile\(oldPath\)[\s\S]*closeEditor\(\);Store\.notify\('Expense saved, but live data could not be refreshed\./);
- assert.match(source,/disposition==='ambiguous'\)\{Store\.state\.fromCache=true;Store\.state\.dataError='Expense save outcome requires reconciliation\.'/);
- assert.match(source,/The server outcome is unknown[\s\S]+uploaded receipt was retained/);
+ assert.match(source,/disposition==='ambiguous'\)\{[\s\S]*Store\.state\.fromCache=true;Store\.state\.dataError='Expense save outcome requires reconciliation\.'/);
+ assert.match(source,/The server outcome is unknown[\s\S]+request identity and uploaded receipt were retained/);
  assert.match(source,/else\{if\(uploaded\?\.path&&!saved\)await removeFile\(uploaded\.path\)\.catch\(\(\)=>\{\}\);error\.value=caught\.message;\}/);
  assert.match(source,/:disabled="busy\|\|!writeReady" type="submit" form="expense-form"/);
  assert.match(source,/v-if="canVoidRecord\(expense\)"/);
@@ -97,7 +130,7 @@ test('expense cash status normalizes legacy vouchers without changing typed life
  const pendingVoucher={type:'Payment Voucher',status:'Pending'};
  const paidVoucher={type:'Payment Voucher',status:'Paid'};
  const clearedVoucher={type:'Payment Voucher',status:'Cleared'};
- assert.equal(effectiveExpenseStatus(pendingVoucher),'pending');
+  assert.equal(effectiveExpenseStatus(pendingVoucher),'pending_payment');
  assert.equal(expenseHasCashImpact(pendingVoucher),false);
  assert.equal(effectiveExpenseStatus(paidVoucher),'paid');
  assert.equal(expenseHasCashImpact(paidVoucher),true);

@@ -37,6 +37,7 @@ const asRecord = row => ({ ...row.data, id: row.id, company_id: row.company_id,
   ...(row.paid_on ? { paidOn:dateOnly(row.paid_on) } : {}),
   ...(row.paid_by_type ? { paidByType:row.paid_by_type } : {}),
   ...(row.amount_sen != null ? { amount:Number(row.amount_sen)/100 } : {}),
+  ...(row.paid_amount_sen != null ? { paidAmountSen:Number(row.paid_amount_sen) } : {}),
 });
 const inRange = (date, from, to) => /^\d{4}-\d{2}-\d{2}$/.test(date)
   && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date
@@ -286,13 +287,13 @@ function classificationBreakdown(sales, receipts, field) {
     || cents(right.cashIn) - cents(left.cashIn) || left.label.localeCompare(right.label, 'en'));
 }
 
-const reportBasis = 'Sales and tax use POS business dates, the occurrence date of manager-recorded sales, or issued invoice dates. Open quotes remain pipeline; converted quote value is reported separately and only its issued invoice becomes sales. Cash in uses paid POS and recorded-sale receipts plus invoice payments. Every active expense is recognized on its expense date; cash out uses its paid or settlement date. Paid payment vouchers use their voucher date.';
+const reportBasis = 'Sales and tax use POS business dates, the occurrence date of manager-recorded sales, or issued invoice dates. Open quotes remain pipeline; converted quote value is reported separately and only its issued invoice becomes sales. Cash in uses paid POS and recorded-sale receipts plus invoice payments. Every active expense is recognized on its expense date; cash out uses immutable expense payment events, including partial payments and reversals. Historical payment vouchers retain their voucher-date cash treatment.';
 
 // Keep this classification aligned with /reports/summary in business.js. The
 // detail endpoint uses the same dates and amount rules as the approved report.
-export function companyReport({ transactions = [], expenses = [], payments = [], products = [] }, from, to, requestedFilters = {}) {
+export function companyReport({ transactions = [], expenses = [], payments = [], expensePayments = [], products = [] }, from, to, requestedFilters = {}) {
   const filters = normalizeReportFilters(requestedFilters), productsById = reportProductMap(products);
-  const sales = [], expenseLines = [], receipts = [], quotes = [];
+  const sales = [], expenseLines = [], expenseCashMovements = [], receipts = [], quotes = [];
   for (const row of transactions) {
     const data = row.data || {};
     const date = data.businessDate || businessDate(row.issued_at || data.date);
@@ -344,12 +345,24 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
     const voucher = expense.type === 'Payment Voucher';
     const cashDate = voucher ? date : businessDate(expense.paidOn || expense.date);
     const accrualImpact = inRange(date, from, to);
-    const cashImpact = (voucher ? CASH_STATUSES.has(expense.status) : expenseHasCashImpact(expense))
+    const typedPaymentEvidence=expense.paidAmountSen!==undefined;
+    const cashImpact = (voucher ? CASH_STATUSES.has(expense.status) : !typedPaymentEvidence&&expenseHasCashImpact(expense))
       && inRange(cashDate, from, to);
     if (accrualImpact || cashImpact) expenseLines.push({ id: expense.id, date, cashDate,
       description: safeText(expense.description), category: safeText(expense.category || 'Uncategorized'),
       payee: safeText(expense.payee), number: safeText(expense.number), kind: voucher ? 'Payment voucher' : 'Expense',
-      status: safeText(expense.status || 'paid'), amount: Number(expense.amount || 0), accrualImpact, cashImpact });
+      status: safeText(expense.status || 'paid'), amount: Number(expense.amount || 0),
+      ...(typedPaymentEvidence ? { paidAmount:Number(expense.paidAmountSen || 0) / 100,
+        outstandingAmount:Math.max(0, cents(expense.amount || 0) - Number(expense.paidAmountSen || 0)) / 100 } : {}),
+      accrualImpact, cashImpact });
+  }
+  for(const payment of expensePayments){
+    const date=businessDate(payment.occurred_on),direction=payment.event_type==='reversal'?-1:1;
+    if(!inRange(date,from,to))continue;
+    expenseCashMovements.push({id:payment.id,expenseId:payment.expense_id,date,cashDate:date,
+      description:safeText(payment.data?.description),category:safeText(payment.data?.category||'Uncategorized'),
+      payee:safeText(payment.data?.payee),kind:payment.event_type==='reversal'?'Expense payment reversal':'Expense payment',
+      status:payment.event_type,amount:direction*Number(payment.amount_sen||0)/100,cashImpact:true});
   }
   for (const payment of payments) {
     const date = businessDate(payment.paid_at);
@@ -368,7 +381,7 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
   const byDate = (a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id);
   selectedSales.sort(byDate); expenseLines.sort(byDate); selectedReceipts.sort(byDate); selectedQuotes.sort(byDate);
   const accruedExpenses = expenseLines.filter(row => row.accrualImpact);
-  const cashExpenses = expenseLines.filter(row => row.cashImpact);
+  const cashExpenses = [...expenseLines.filter(row => row.cashImpact),...expenseCashMovements];
   const totals = { sales: sum(selectedSales, 'total'), tax: sum(selectedSales, 'tax'), expenses: sum(accruedExpenses, 'amount'), cashIn: sum(selectedReceipts, 'amount'), cashOut: sum(cashExpenses, 'amount'), cashFlow: (selectedReceipts.reduce((amount, row) => amount + cents(row.amount), 0) - cashExpenses.reduce((amount, row) => amount + cents(row.amount), 0)) / 100, quoted: sum(selectedQuotes.filter(row => !row.converted), 'total'), convertedQuoted: sum(selectedQuotes.filter(row => row.converted), 'total') };
   const days = new Map();
   for (let stamp = Date.parse(from); stamp <= Date.parse(to); stamp += 86400000) {
@@ -382,6 +395,7 @@ export function companyReport({ transactions = [], expenses = [], payments = [],
   for (const row of cashExpenses) add(row.cashDate, 'cashOut', row.amount);
   const daily = [...days.values()].map(row => ({ date: row.date, sales: row.sales / 100, tax: row.tax / 100, expenses: row.expenses / 100, cashIn: row.cashIn / 100, cashOut: row.cashOut / 100, cashFlow: (row.cashIn - row.cashOut) / 100 }));
   return { totals, daily, sales: selectedSales.map(publicReportRow), expenses: expenseLines,
+    expenseCashMovements,
     receipts: selectedReceipts.map(publicReportRow), quotes: selectedQuotes.map(publicReportRow), basis: reportBasis,
     filters, filterOptions: options, filterActive: hasFilters(filters),
     filterScope: hasFilters(filters)
@@ -427,16 +441,20 @@ export async function companyRows(c, companyIds, from, to) {
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND ${standardPrefix} AND ${datePrefix} BETWEEN $4 AND $5`),
     transactionBranch(`${missingBusinessDate} AND issued_at IS NULL AND (data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`),
   ].join(' UNION ALL ');
-  const expenseBranch = condition => `SELECT company_id,id,data,amount_sen,status,paid_by_type,
+  const expenseBranch = condition => `SELECT company_id,id,data,amount_sen,paid_amount_sen,status,paid_by_type,
       credit_due_date::text AS credit_due_date,paid_on::text AS paid_on FROM myfin.expenses
     WHERE company_id=ANY($1::text[]) AND voided_at IS NULL AND (${condition})`;
   const expenseQuery = [
     expenseBranch(`${standardPrefix} AND ${datePrefix} BETWEEN $2 AND $3`),
     expenseBranch(`data->>'date' IS NULL OR ${datePrefix} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`),
-    expenseBranch(`status='paid' AND paid_on BETWEEN $4 AND $5 AND ${standardPrefix} AND ${datePrefix} NOT BETWEEN $2 AND $3`),
+    expenseBranch(`paid_amount_sen>0 AND paid_on BETWEEN $4 AND $5 AND ${standardPrefix} AND ${datePrefix} NOT BETWEEN $2 AND $3`),
   ].join(' UNION ALL ');
   const transactions = await c.query(transactionQuery, args);
   const expenses = await c.query(expenseQuery, [companyIds, fromPad, toPad, from, to]);
+  const expensePayments=await c.query(`SELECT p.company_id,p.id,p.expense_id,p.event_type,p.amount_sen,
+      p.occurred_on,e.data FROM myfin.expense_payment_events p
+      JOIN myfin.expenses e ON e.company_id=p.company_id AND e.id=p.expense_id
+      WHERE p.company_id=ANY($1::text[]) AND p.occurred_on BETWEEN $2 AND $3`,[companyIds,from,to]);
   const payments = await c.query(`SELECT p.company_id,p.id,p.document_id,p.amount,p.method,p.paid_at,
       t.data->>'number' AS number,t.data,t.source,t.document_state,t.issued_snapshot
       FROM myfin.document_payments p LEFT JOIN myfin.transactions t ON t.company_id=p.company_id AND t.id=p.document_id
@@ -457,7 +475,8 @@ export async function companyRows(c, companyIds, from, to) {
        FROM myfin.products WHERE company_id=ANY($1::text[]) AND id=ANY($2::text[])`,
     [companyIds, [...productIds]],
   ) : { rows: [] };
-  return { transactions: transactions.rows, expenses: expenses.rows, payments: payments.rows, products: products.rows };
+  return { transactions: transactions.rows, expenses: expenses.rows, payments: payments.rows,
+    expensePayments:expensePayments.rows, products: products.rows };
 }
 
 export function registerReporting(app, { db, managed, authorize, managementSession }) {
@@ -473,13 +492,13 @@ export function registerReporting(app, { db, managed, authorize, managementSessi
     return { from, to, totals: result.totals, daily: result.daily, basis: result.basis,
       filters: result.filters, filterOptions: result.filterOptions, filterActive: result.filterActive,
       filterScope: result.filterScope, breakdowns: result.breakdowns,
-      counts: { sales: result.sales.length, expenses: result.expenses.length, receipts: result.receipts.length, quotes: result.quotes.length },
-      sales: result.sales.slice(0, limit), expenses: result.expenses.slice(0, limit), receipts: result.receipts.slice(0, limit), quotes: result.quotes.slice(0, limit),
-      limited: [result.sales.length, result.expenses.length, result.receipts.length, result.quotes.length].some(count => count > limit) };
+      counts: { sales: result.sales.length, expenses: result.expenses.length, expenseCashMovements:result.expenseCashMovements.length, receipts: result.receipts.length, quotes: result.quotes.length },
+      sales: result.sales.slice(0, limit), expenses: result.expenses.slice(0, limit),
+      expenseCashMovements:result.expenseCashMovements.slice(0,limit),receipts: result.receipts.slice(0, limit), quotes: result.quotes.slice(0, limit),
+      limited: [result.sales.length, result.expenses.length,result.expenseCashMovements.length, result.receipts.length, result.quotes.length].some(count => count > limit) };
   }));
 
   app.get('/api/reports/consolidation', req => managed(req, async(c, who) => {
-    requireCapability(who, 'financialReports');
     const { from, to, workspaceId } = range(req.query, consolidationQuerySchema);
     const permitted = await c.query(`SELECT co.id,co.name,co.workspace_id,w.name AS workspace_name,
       coalesce(nullif(co.data->'preferences'->>'currency',''),'RM') AS currency
@@ -487,14 +506,18 @@ export function registerReporting(app, { db, managed, authorize, managementSessi
       WHERE co.archived_at IS NULL AND co.suspended_at IS NULL AND w.archived_at IS NULL AND w.suspended_at IS NULL
         AND ($3::text='' OR co.id=$3)
         AND ($2 OR EXISTS(SELECT 1 FROM myfin.workspace_memberships wm WHERE wm.workspace_id=co.workspace_id AND wm.identity_id=$1 AND wm.suspended_at IS NULL)
-          OR EXISTS(SELECT 1 FROM myfin.memberships m WHERE m.company_id=co.id AND m.identity_id=$1 AND m.role IN ('manager','company_admin')))
+          OR EXISTS(SELECT 1 FROM myfin.memberships m WHERE m.company_id=co.id AND m.identity_id=$1
+            AND m.role IN ('manager','company_admin')
+            AND coalesce((SELECT 'analytics'=ANY(g.module_ids) FROM myfin.membership_module_grants g
+              WHERE g.company_id=m.company_id AND g.identity_id=m.identity_id),true)))
       ORDER BY w.name,co.name LIMIT 1001`, [who.id, who.role === 'super_admin', req.identity.host_company_id || '']);
     if (permitted.rowCount > 1000) v.fail(409, 'company_limit_exceeded');
     const workspaces = [...new Map(permitted.rows.map(row => [row.workspace_id, { id: row.workspace_id, name: row.workspace_name }])).values()];
     const selected = workspaceId || workspaces[0]?.id || '';
     if (selected && !workspaces.some(workspace => workspace.id === selected)) v.fail(403, 'access_denied');
     const companies = permitted.rows.filter(row => row.workspace_id === selected);
-    const rows = companies.length ? await companyRows(c, companies.map(row => row.id), from, to) : { transactions: [], expenses: [], payments: [] };
+    const rows = companies.length ? await companyRows(c, companies.map(row => row.id), from, to)
+      : { transactions: [], expenses: [], payments: [], expensePayments:[] };
     const byCompany = collection => {
       const grouped = new Map();
       for (const row of collection) {
@@ -503,9 +526,11 @@ export function registerReporting(app, { db, managed, authorize, managementSessi
       }
       return grouped;
     };
-    const transactions = byCompany(rows.transactions), expenses = byCompany(rows.expenses), payments = byCompany(rows.payments);
+    const transactions = byCompany(rows.transactions), expenses = byCompany(rows.expenses),
+      payments = byCompany(rows.payments),expensePayments=byCompany(rows.expensePayments);
     const reports = companies.map(company => ({ id: company.id, name: company.name, currency: company.currency,
-      ...companyReport({ transactions: transactions.get(company.id), expenses: expenses.get(company.id), payments: payments.get(company.id) }, from, to).totals }));
+      ...companyReport({ transactions: transactions.get(company.id), expenses: expenses.get(company.id),
+        payments: payments.get(company.id),expensePayments:expensePayments.get(company.id) }, from, to).totals }));
     return { from, to, workspaceId: selected, workspaces, companies: reports };
   }));
 }

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { manager, owner } from './access.js';
+import { owner } from './access.js';
+import { permissionsFor } from '../../src/domain/permissions.js';
 import * as v from './validation.js';
 
 const MAX_POINTS = 1_000_000_000;
@@ -59,7 +60,7 @@ const canonical = value => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
     : value;
 const digest = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
-const privileged = who => owner(who) || manager(who);
+const privileged = who => permissionsFor(who).marketingRead;
 
 function fail(statusCode, message) {
   throw Object.assign(new Error(message), { statusCode });

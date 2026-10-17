@@ -32,7 +32,7 @@ await test("fixtures and role projections isolate costs, suppliers, expenses, au
  product=await json(route("/products"),{method:"POST",body:{name:"Private cost product",sku:"SKU-"+tag,price:10,cost:77191.37,stock:20,trackStock:true,variants:[]}});
  customer=await json(route("/clients"),{method:"POST",cookie:staffCookie,body:{name:"Customer",type:"Client"}});
  supplier=await json(route("/clients"),{method:"POST",body:{name:"Private supplier",type:"Supplier"}});
- await json(route("/expenses"),{method:"POST",body:{amount:50,date:today,description:"Private expense"}});
+ await json(route("/expenses"),{method:"POST",body:{id:randomUUID(),amount:50,date:today,description:"Private expense"}});
  for(const cookie of [staffCookie,managerCookie]){
   const rows=await json(route("/products"),{cookie});assert.equal(rows.rows[0].price,10);noFinancial(rows);
   const clients=await json(route("/clients"),{cookie});assert.ok(!clients.rows.some(row=>row.id===supplier.id));
@@ -155,7 +155,7 @@ await test("manager overrides require reason, supplier side effects denied, and 
 await test("private expense and historical file downloads reject nonowners over HTTP",async()=>{
  const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6SgAAAABJRU5ErkJggg==","base64"),boundary="myfin"+tag;
  const upload=await request(route("/files/receipts"),{method:"POST",headers:{"content-type":"multipart/form-data; boundary="+boundary},body:Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="receipt.png"\r\nContent-Type: image/png\r\n\r\n`),png,Buffer.from(`\r\n--${boundary}--\r\n`)])});assert.equal(upload.statusCode,200);const file=upload.json();
- await json(route("/expenses"),{method:"POST",body:{amount:3,date:today,description:"Private attachment",receiptPath:file.path,receiptUrl:file.url}});
+ await json(route("/expenses"),{method:"POST",body:{id:randomUUID(),amount:3,date:today,description:"Private attachment",receiptPath:file.path,receiptUrl:file.url}});
  assert.equal((await request(file.url.slice(4))).statusCode,200);
  for(const cookie of [staffCookie,managerCookie]){assert.equal((await request(file.url.slice(4),{cookie})).statusCode,403);assert.equal((await request(route("/files/receipts"),{cookie,method:"POST"})).statusCode,403);}
 });

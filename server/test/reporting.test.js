@@ -118,6 +118,26 @@ test('credit settlement posts cash out in its own period without repeating accru
     cashIn: 0, cashOut: 42.05, cashFlow: -42.05 });
 });
 
+test('immutable partial expense payments and reversals drive cash out without duplicating accrual', () => {
+  const rows={
+    expenses:[{id:'partial-expense',company_id:'co',amount_sen:10000,paid_amount_sen:2500,
+      status:'partially_paid',paid_by_type:'credit',credit_due_date:'2026-10-30',
+      data:{amount:100,date:'2026-10-01',description:'Supplier invoice'}}],
+    expensePayments:[
+      {id:'payment-1',company_id:'co',expense_id:'partial-expense',event_type:'payment',amount_sen:4000,
+        occurred_on:'2026-10-03',data:{description:'Supplier invoice'}},
+      {id:'reversal-1',company_id:'co',expense_id:'partial-expense',event_type:'reversal',amount_sen:1500,
+        occurred_on:'2026-10-03',data:{description:'Supplier invoice'}},
+    ],
+  };
+  const accrual=companyReport(rows,'2026-10-01','2026-10-01');
+  assert.equal(accrual.totals.expenses,100);assert.equal(accrual.totals.cashOut,0);
+  const cash=companyReport(rows,'2026-10-03','2026-10-03');
+  assert.equal(cash.totals.expenses,0);assert.equal(cash.totals.cashOut,25);assert.equal(cash.totals.cashFlow,-25);
+  assert.deepEqual(cash.expenseCashMovements.map(row=>[row.kind,row.amount]),
+    [['Expense payment',40],['Expense payment reversal',-15]]);
+});
+
 test('PostgreSQL date objects preserve the paid expense cash date', () => {
   const rows = { expenses: [{ id: 'database-date', company_id: 'co', amount_sen: 1420000, status: 'paid',
     paid_by_type: 'legacy_unspecified', paid_on: new Date('2026-01-03T00:00:00.000Z'),
@@ -165,11 +185,12 @@ test('report queries bound each ordinary date source before materializing record
   const calls = [];
   const client = { async query(sql, params) { calls.push({ sql, params }); return { rows: [] }; } };
   await companyRows(client, ['company-a'], '2026-09-30', '2026-09-30');
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   const allParams = [['company-a'], '2026-09-30', '2026-09-30', '2026-09-29', '2026-10-01', '2026-10-01'];
   assert.deepEqual(calls[0].params, allParams);
   assert.deepEqual(calls[1].params, [['company-a'], '2026-09-29', '2026-10-01', '2026-09-30', '2026-09-30']);
-  assert.deepEqual(calls[2].params, [['company-a'], '2026-09-30', '2026-10-01']);
+  assert.deepEqual(calls[2].params, [['company-a'], '2026-09-30', '2026-09-30']);
+  assert.deepEqual(calls[3].params, [['company-a'], '2026-09-30', '2026-10-01']);
   const transactions = calls[0].sql.split(' UNION ALL ');
   assert.equal(transactions.length, 4);
   assert.match(transactions[0], /businessDate' BETWEEN \$2 AND \$3/);
@@ -183,7 +204,8 @@ test('report queries bound each ordinary date source before materializing record
     assert.match(branch, /credit_due_date::text AS credit_due_date,paid_on::text AS paid_on/);
   }
   assert.match(expenseBranches[2], /paid_on BETWEEN \$4 AND \$5/);
-  assert.match(calls[2].sql, /paid_at >=.*paid_at </s);
+  assert.match(calls[2].sql, /expense_payment_events.*occurred_on BETWEEN/s);
+  assert.match(calls[3].sql, /paid_at >=.*paid_at </s);
 });
 
 test('report queries fetch only classification metadata for referenced products', async () => {
@@ -191,16 +213,17 @@ test('report queries fetch only classification metadata for referenced products'
   const responses = [
     { rows: [{ company_id: 'company-a', id: 'sale', data: { items: [{ productId: 'latte' }] } }] },
     { rows: [] },
+    { rows: [] },
     { rows: [{ company_id: 'company-a', id: 'payment', data: { items: [{ productId: 'service' }] } }] },
     { rows: [{ company_id: 'company-a', id: 'latte', category: 'Beverages', subcategory: 'Coffee' }] },
   ];
   const client = { async query(sql, params) { calls.push({ sql, params }); return responses[calls.length - 1]; } };
   const result = await companyRows(client, ['company-a'], '2026-10-01', '2026-10-01');
-  assert.equal(calls.length, 4);
-  assert.deepEqual(calls[3].params, [['company-a'], ['latte', 'service']]);
-  assert.match(calls[3].sql, /category.*subcategory/s);
-  assert.doesNotMatch(calls[3].sql, /cost|price/i);
-  assert.deepEqual(result.products, responses[3].rows);
+  assert.equal(calls.length, 5);
+  assert.deepEqual(calls[4].params, [['company-a'], ['latte', 'service']]);
+  assert.match(calls[4].sql, /category.*subcategory/s);
+  assert.doesNotMatch(calls[4].sql, /cost|price/i);
+  assert.deepEqual(result.products, responses[4].rows);
 });
 
 test('malformed historical date strings cannot enter a valid daily report', () => {

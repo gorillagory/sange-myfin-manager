@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { hostAllowed, normalizeHostname } from './tenancy.js';
-import { manager, owner } from './access.js';
+import { requireCapability } from './access.js';
 import { decimalToScaledInteger } from './pricing-engine.js';
 import { storefrontPrivacyComplete, storefrontPrivacyOutput } from './storefront-privacy.js';
 import * as v from './validation.js';
@@ -105,8 +105,7 @@ const deliveryZoneSchema = z.strictObject({
 });
 
 const hashToken = token => createHash('sha256').update(token).digest('hex');
-const canConfigure = who => owner(who) || manager(who);
-function requireConfigure(who) { if (!canConfigure(who)) v.fail(403, 'access_denied'); }
+function requireConfigure(who) { requireCapability(who, 'storefrontManage'); }
 const lockDeliveryConfiguration = (c, companyId) => c.query(
   'SELECT pg_advisory_xact_lock(hashtextextended($1,35))', [`${companyId}:storefront-delivery-configuration`],
 );

@@ -395,7 +395,7 @@ function inventoryOutput(row = {}) {
 
 export function registerAdvancedAnalytics(app, { scoped }) {
   app.get('/api/companies/:company/analytics/operations', req => scoped(req, async (c, companyId) => {
-    requireCapability(req.identity, 'financialReports');
+    requireCapability(req.identity, 'analyticsRead');
     const { from, to, toExclusive } = advancedAnalyticsRange(req.query);
     const [orders, inventory, student, sales] = await Promise.all([
       c.query(ORDER_SQL,[companyId,from,toExclusive]),
@@ -415,7 +415,7 @@ export function registerAdvancedAnalytics(app, { scoped }) {
   }));
 
   app.get('/api/companies/:company/analytics/cost-performance', req => scoped(req, async (c, companyId) => {
-    requireCapability(req.identity, 'financialReports');
+    requireCapability(req.identity, 'analyticsRead');
     requireCapability(req.identity, 'costsRead');
     const { from, to } = advancedAnalyticsRange(req.query);
     const [sales,expenses] = await Promise.all([

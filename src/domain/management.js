@@ -1,3 +1,5 @@
+import { moduleCeilingFor } from './permissions.js';
+
 export const roleLabel = role => ({ super_admin:'SuperAdmin', workspace_owner:'Workspace owner', manager:'Manager', operator:'Operator', super:'SuperAdmin', company_admin:'Manager', company_user:'Operator' }[role] || 'Unassigned');
 const normalizedRole=role=>({super:'super_admin',company_admin:'manager',company_user:'operator'}[role]||role);
 export const isArchived = company => !!(company?.archived || company?.archived_at);
@@ -21,13 +23,19 @@ export function companyPayload(company = {}) {
 export function userPayload(user, editing = false) {
   const role=normalizedRole(user.role);
   const companyIds=user.company_ids?.length?user.company_ids:(user.company_id?[user.company_id]:[]);
+  const ceiling=new Set(moduleCeilingFor(role)),moduleMap=user.module_grants_by_company||{};
+  const assignments=['manager','operator'].includes(role)?companyIds.map(company_id=>{
+    const existing=(user.assignments||[]).find(assignment=>assignment.company_id===company_id);
+    const configured=Object.hasOwn(moduleMap,company_id)?moduleMap[company_id]:existing?.modules;
+    return {company_id,role,...(configured===undefined?{}:{modules:configured===null?null:[...new Set(configured)].filter(module=>ceiling.has(module))})};
+  }):[];
   return {
     username: user.username.trim(),
     email: user.email.trim().toLowerCase(),
     role,
     company_id: ['super_admin','workspace_owner'].includes(role) ? '' : (companyIds[0] || ''),
     workspace_id:role==='workspace_owner'?(user.workspace_id||''):'',
-    assignments:['manager','operator'].includes(role)?companyIds.map(company_id=>({company_id,role})):[],
+    assignments,
     ...(editing ? { disabled: !!user.disabled } : { password: user.password }),
   };
 }

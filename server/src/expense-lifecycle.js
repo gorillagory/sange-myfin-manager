@@ -1,9 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { businessDate, cents } from '../../src/domain/pos.js';
-import { normalizeExpenseLifecycle } from '../../src/domain/expenseLifecycle.js';
+import { effectiveExpenseStatus, normalizeExpenseLifecycle } from '../../src/domain/expenseLifecycle.js';
 import { permissionsFor } from '../../src/domain/permissions.js';
 import { operator } from './access.js';
 import * as v from './validation.js';
+
+export async function activeExpenseSettlementDate(c,companyId,expenseId){
+  const row=(await c.query(`SELECT to_char(max(p.occurred_on),'YYYY-MM-DD') AS paid_on
+    FROM myfin.expense_payment_events p
+    WHERE p.company_id=$1 AND p.expense_id=$2 AND p.event_type='payment'
+      AND NOT EXISTS(SELECT 1 FROM myfin.expense_payment_events r
+        WHERE r.company_id=p.company_id AND r.reverses_event_id=p.id)`,[companyId,expenseId])).rows[0];
+  return row?.paid_on||'';
+}
 
 const linkColumn = Object.freeze({
   stock_item: 'stock_item_id',
@@ -15,6 +24,42 @@ const linkColumn = Object.freeze({
 const outputDate = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
 const lifecycleField=(record,column,key)=>record?.[column]??record?.[key]??record?.data?.[key]??'';
 const auditDate=value=>outputDate(value)||'—';
+
+// Once an expense has payment events, these fields describe immutable evidence.
+// Edits may still change ordinary expense details, but changing how a payment was
+// sourced must go through the payment/reversal workflow so the evidence balances.
+export function lockRecordedPaymentLifecycle(input = {}, record = {}) {
+  const column=(name,key,fallback='')=>Object.prototype.hasOwnProperty.call(record,name)
+    ? record[name] : record?.[key]??record?.data?.[key]??fallback;
+  const locked={
+    status:String(column('status','status','paid')||'paid').toLowerCase()==='pending'
+      ? 'pending_payment' : String(column('status','status','paid')||'paid').toLowerCase(),
+    paidByType:String(column('paid_by_type','paidByType','legacy_unspecified')||'legacy_unspecified'),
+    paidByUserId:String(column('paid_by_identity_id','paidByUserId','')||''),
+    paidByName:String(column('paid_by_name','paidByName','')||''),
+    pettyCashFundId:String(column('petty_cash_fund_id','pettyCashFundId','')||''),
+    creditTermsDays:column('credit_terms_days','creditTermsDays',null)==null
+      ? null : Number(column('credit_terms_days','creditTermsDays',null)),
+    creditDueDate:outputDate(column('credit_due_date','creditDueDate','')),
+    paidOn:outputDate(column('paid_on','paidOn','')),
+  };
+  const requested={
+    status:String(input.status||'paid').toLowerCase()==='pending'?'pending_payment':String(input.status||'paid').toLowerCase(),
+    paidByType:String(input.paidByType||'other'),
+    paidByUserId:String(input.paidByUserId||''),
+    paidByName:String(input.paidByName||''),
+    pettyCashFundId:String(input.pettyCashFundId||''),
+    creditTermsDays:input.creditTermsDays==null||input.creditTermsDays===''?null:Number(input.creditTermsDays),
+    creditDueDate:outputDate(input.creditDueDate),
+    paidOn:outputDate(input.paidOn),
+  };
+  return {
+    input:{...input,...locked},
+    locked,
+    changedFields:Object.keys(locked).filter(key=>requested[key]!==locked[key]),
+  };
+}
+
 export function expenseAuditDetail(id, previous, next, { voided = false } = {}) {
   const priorStatus=previous?(previous.voided_at?'voided':lifecycleField(previous,'status','status')||'paid'):'created';
   const nextStatus=voided?'voided':lifecycleField(next,'status','status')||priorStatus;
@@ -29,15 +74,23 @@ export function expenseAuditDetail(id, previous, next, { voided = false } = {}) 
 
 export function expenseLifecycleSnapshot(record = {}) {
   const amountSen=record.amount_sen??record.amountSen??cents(record.amount??record.data?.amount??0);
+  const paidAmountSen=record.paid_amount_sen??record.paidAmountSen??record.data?.paidAmountSen??
+    ((record.status??record.data?.status)==='paid'?amountSen:0);
+  const status=record.voided_at?'voided':lifecycleField(record,'status','status')||'paid';
   return {
-    status:record.voided_at?'voided':lifecycleField(record,'status','status')||'paid',
+    status,
+    effectiveStatus:record.voided_at?'voided':effectiveExpenseStatus({status,
+      creditDueDate:lifecycleField(record,'credit_due_date','creditDueDate')}),
     paidByType:lifecycleField(record,'paid_by_type','paidByType')||'legacy_unspecified',
     paidByUserId:lifecycleField(record,'paid_by_identity_id','paidByUserId')||'',
     paidByName:lifecycleField(record,'paid_by_name','paidByName')||'',
-    amountSen:Number(amountSen),expenseDate:outputDate(record.data?.date??record.date),
+    amountSen:Number(amountSen),paidAmountSen:Number(paidAmountSen),
+    outstandingAmountSen:Number(amountSen)-Number(paidAmountSen),expenseDate:outputDate(record.data?.date??record.date),
     creditTermsDays:Number(lifecycleField(record,'credit_terms_days','creditTermsDays')||0)||null,
     creditDueDate:outputDate(lifecycleField(record,'credit_due_date','creditDueDate')),
-    paidOn:outputDate(lifecycleField(record,'paid_on','paidOn')),voided:Boolean(record.voided_at),
+    paidOn:outputDate(lifecycleField(record,'paid_on','paidOn')),
+    pettyCashFundId:lifecycleField(record,'petty_cash_fund_id','pettyCashFundId')||'',
+    voided:Boolean(record.voided_at),
   };
 }
 
@@ -92,14 +145,25 @@ async function assertLinkTargets(c, companyId, who, expenseId, links) {
   }
 }
 
-export async function prepareExpense(c, companyId, who, parsed, { allowLegacy = false, defaultPaidOn = '' } = {}) {
+export async function prepareExpense(c, companyId, who, parsed, {
+  allowLegacy = false, allowRecordedPaymentState = false, defaultPaidOn = '', existingPettyCashFundId = '',
+} = {}) {
   let lifecycle;
-  const candidate=parsed.status!=='pending'&&!parsed.paidOn&&defaultPaidOn?{...parsed,paidOn:defaultPaidOn}:parsed;
-  try { lifecycle = normalizeExpenseLifecycle(candidate, { actorId:who.id, allowLegacy, today:businessDate() }); }
+  const candidate=(parsed.status||'paid')==='paid'&&!parsed.paidOn&&defaultPaidOn?{...parsed,paidOn:defaultPaidOn}:parsed;
+  try { lifecycle = normalizeExpenseLifecycle(candidate, {
+    actorId:who.id, allowLegacy, allowRecordedPaymentState, today:businessDate(),
+  }); }
   catch (error) { v.fail(400, error.message); }
   const amountSen = cents(parsed.amount);
   if (amountSen <= 0 || amountSen / 100 !== parsed.amount) v.fail(400, 'invalid_expense_amount');
   await assertPayer(c, companyId, who, lifecycle.paidByUserId);
+  if(lifecycle.pettyCashFundId){
+    const fund=await c.query(`SELECT id,status FROM myfin.petty_cash_funds
+      WHERE company_id=$1 AND id=$2 FOR KEY SHARE`,[companyId,lifecycle.pettyCashFundId]);
+    if(!fund.rowCount)v.fail(409,'petty_cash_fund_not_found');
+    if(fund.rows[0].status!=='open'&&lifecycle.pettyCashFundId!==existingPettyCashFundId)
+      v.fail(409,'petty_cash_fund_closed');
+  }
   await assertLinkTargets(c, companyId, who, parsed.id, lifecycle.links);
   const { links, version, paidByUserName, ...source } = parsed;
   const data = { ...source, ...lifecycle };
@@ -136,7 +200,7 @@ export async function expenseOutput(c, companyId, rows, who) {
   if (!rows.length) return [];
   const permissions=permissionsFor(who);
   const expenseIds = rows.map(row => row.id), payerIds = [...new Set(rows.map(row => row.paid_by_identity_id).filter(Boolean))];
-  const [linkResult, payerResult] = await Promise.all([
+  const [linkResult, payerResult, paymentResult] = await Promise.all([
     c.query(`SELECT el.*,si.name AS stock_item_name,sl.item_id AS movement_item_id,
         sl.kind AS movement_kind,msi.name AS movement_item_name,po.number AS purchase_order_number,
         gr.reference AS goods_receipt_reference,rpo.number AS receipt_order_number
@@ -152,6 +216,16 @@ export async function expenseOutput(c, companyId, rows, who) {
     payerIds.length
       ? c.query('SELECT id,display_name FROM myfin.app_identities WHERE id=ANY($1::text[])', [payerIds])
       : Promise.resolve({ rows:[] }),
+    c.query(`SELECT p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
+        p.petty_cash_fund_id,f.name AS petty_cash_fund_name,
+        sum(CASE WHEN p.event_type='payment' THEN p.amount_sen ELSE -p.amount_sen END)::bigint AS amount_sen
+      FROM myfin.expense_payment_events p
+      LEFT JOIN myfin.petty_cash_funds f ON f.company_id=p.company_id AND f.id=p.petty_cash_fund_id
+      WHERE p.company_id=$1 AND p.expense_id=ANY($2::text[])
+      GROUP BY p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
+        p.petty_cash_fund_id,f.name
+      HAVING sum(CASE WHEN p.event_type='payment' THEN p.amount_sen ELSE -p.amount_sen END)>0
+      ORDER BY p.expense_id,p.source_type,p.paid_by_name,p.petty_cash_fund_id`, [companyId, expenseIds]),
   ]);
   const payers = new Map(payerResult.rows.map(row => [row.id, row.display_name || row.id]));
   const links = new Map(expenseIds.map(id => [id, []]));
@@ -161,23 +235,44 @@ export async function expenseOutput(c, companyId, rows, who) {
       ||(['purchase_order','goods_receipt'].includes(row.link_type)&&permissions.costsRead);
     if(visible)links.get(row.expense_id)?.push({type:row.link_type,id:linkId(row),label:linkLabel(row),source:row.source});
   }
-  return rows.map(row => ({
+  const paymentSources = new Map(expenseIds.map(id => [id, []]));
+  for (const row of paymentResult.rows) paymentSources.get(row.expense_id)?.push({
+    sourceType:row.source_type,
+    amountSen:Number(row.amount_sen),
+    paidByUserId:row.paid_by_identity_id||'',
+    paidByName:row.paid_by_name||'',
+    pettyCashFundId:row.petty_cash_fund_id||'',
+    pettyCashFundName:row.petty_cash_fund_name||'',
+  });
+  return rows.map(row => {
+    const outputAmountSen=Number(row.amount_sen == null ? cents(row.amount) : row.amount_sen);
+    const outputPaidSen=Number(row.paid_amount_sen == null
+      ? ((row.status || row.data?.status || 'paid')==='paid'?outputAmountSen:0)
+      : row.paid_amount_sen);
+    return ({
     ...row.data,
     id:row.id,
     company_id:row.company_id,
     amount:Number(row.amount_sen == null ? row.amount : Number(row.amount_sen) / 100),
-    amountSen:Number(row.amount_sen == null ? cents(row.amount) : row.amount_sen),
+    amountSen:outputAmountSen,
     status:row.status || row.data?.status || 'paid',
+    effectiveStatus:row.voided_at?'voided':effectiveExpenseStatus({status:row.status || row.data?.status || 'paid',
+      creditDueDate:outputDate(row.credit_due_date)}),
     paidByType:row.paid_by_type || row.data?.paidByType || 'other',
     paidByUserId:row.paid_by_identity_id || row.data?.paidByUserId || '',
     paidByUserName:payers.get(row.paid_by_identity_id) || '',
     paidByName:row.paid_by_name || row.data?.paidByName || '',
+    pettyCashFundId:row.petty_cash_fund_id || row.data?.pettyCashFundId || '',
+    paidAmountSen:outputPaidSen,paidAmount:outputPaidSen/100,
+    outstandingAmountSen:Math.max(0,outputAmountSen-outputPaidSen),
+    outstandingAmount:Math.max(0,outputAmountSen-outputPaidSen)/100,
     creditTermsDays:row.credit_terms_days == null ? null : Number(row.credit_terms_days),
     creditDueDate:outputDate(row.credit_due_date),
     paidOn:outputDate(row.paid_on || row.data?.paidOn || ((row.status || row.data?.status || 'paid') === 'paid' ? row.data?.date : '')),
     version:Number(row.version || 1),
     links:links.get(row.id) || [],
-  }));
+    paymentSources:paymentSources.get(row.id) || [],
+  });});
 }
 
 export async function expenseLinkOptions(c, companyId, who) {

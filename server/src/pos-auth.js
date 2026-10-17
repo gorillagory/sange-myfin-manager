@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import { promisify } from "node:util";
 import { z } from "zod";
 import * as v from "./validation.js";
+import { permissionsFor } from "../../src/domain/permissions.js";
 
 const scrypt = promisify(scryptCallback);
 const cookieName = "myfin.pos_session";
@@ -49,9 +50,10 @@ export async function posIdentity(db, req, options) {
   if(!options?.pos || req.tenant?.surface!=="tenant")return null;
   const token=cookie(req);if(!token)return null;
   const digest=hmac(options.pos.sessionSecret,"session",req.tenant.company_id,token);
-  const {rows}=await db.query(`SELECT s.token_digest,s.identity_id AS id,i.display_name AS username,u.email,s.company_id,s.role,s.expires_at
+  const {rows}=await db.query(`SELECT s.token_digest,s.identity_id AS id,i.display_name AS username,u.email,s.company_id,s.role,s.expires_at,g.module_ids
     FROM myfin.pos_sessions s JOIN myfin.app_identities i ON i.id=s.identity_id
     JOIN myfin.auth_user u ON u.id=i.id JOIN myfin.memberships m ON m.company_id=s.company_id AND m.identity_id=s.identity_id AND m.role=s.role
+    LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
     JOIN myfin.companies c ON c.id=s.company_id JOIN myfin.workspaces w ON w.id=c.workspace_id
     WHERE s.token_digest=$1 AND s.company_id=$2 AND s.revoked_at IS NULL AND s.expires_at>now()
       AND i.disabled_at IS NULL AND c.suspended_at IS NULL AND c.archived_at IS NULL
@@ -59,7 +61,7 @@ export async function posIdentity(db, req, options) {
   const row=rows[0];if(!row)return null;
   db.query("UPDATE myfin.pos_sessions SET last_seen_at=now() WHERE token_digest=$1 AND last_seen_at<now()-interval '5 minutes'",[digest]).catch(()=>{});
   return {id:row.id,uid:row.id,username:row.username,email:row.email,role:row.role,company_id:row.company_id,
-    workspace_id:req.tenant.workspace_id,authLevel:"pos_code",posSessionDigest:digest};
+    workspace_id:req.tenant.workspace_id,module_grants:row.module_ids,authLevel:"pos_code",posSessionDigest:digest};
 }
 
 export function registerPosAuth(app,{db,authOptions}) {
@@ -72,8 +74,9 @@ export function registerPosAuth(app,{db,authOptions}) {
       const guard=(await c.query("SELECT * FROM myfin.pos_login_guards WHERE company_id=$1 FOR UPDATE",[companyId])).rows[0];
       if(guard.locked_until&&new Date(guard.locked_until)>now())v.fail(429,"pos_login_locked");
       const digest=hmac(authOptions.pos.codeSecret,"code-lookup",companyId,code);
-      const row=(await c.query(`SELECT p.*,m.role,i.display_name AS username,u.email
+      const row=(await c.query(`SELECT p.*,m.role,i.display_name AS username,u.email,g.module_ids
         FROM myfin.pos_access_codes p JOIN myfin.memberships m ON m.company_id=p.company_id AND m.identity_id=p.identity_id
+        LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
         JOIN myfin.app_identities i ON i.id=p.identity_id JOIN myfin.auth_user u ON u.id=i.id
         WHERE p.company_id=$1 AND p.lookup_digest=$2 AND p.disabled_at IS NULL AND i.disabled_at IS NULL
           AND m.role IN ('manager','operator') FOR UPDATE OF p`,[companyId,digest])).rows[0];
@@ -85,7 +88,8 @@ export function registerPosAuth(app,{db,authOptions}) {
       await c.query("INSERT INTO myfin.pos_sessions(token_digest,company_id,identity_id,role,expires_at) VALUES($1,$2,$3,$4,now()+($5||' hours')::interval)",[tokenDigest,companyId,row.identity_id,row.role,String(authOptions.pos.sessionHours)]);
       await c.query("INSERT INTO myfin.management_events(id,actor_id,workspace_id,company_id,subject_id,action,details) VALUES($1,$2,$3,$4,$2,'pos_code_sign_in',$5)",
         [randomUUID(),row.identity_id,req.tenant.workspace_id,companyId,{authLevel:"pos_code"}]);
-      return {token,user:{id:row.identity_id,uid:row.identity_id,username:row.username,email:row.email,role:row.role,company_id:companyId,workspace_id:req.tenant.workspace_id,authLevel:"pos_code"}};
+      return {token,user:{id:row.identity_id,uid:row.identity_id,username:row.username,email:row.email,role:row.role,
+        company_id:companyId,workspace_id:req.tenant.workspace_id,module_grants:row.module_ids,authLevel:"pos_code"}};
     });
     reply.header("set-cookie",cookieHeader(result.token,authOptions.secure,authOptions.pos.sessionHours));
     return {user:result.user};
@@ -100,16 +104,18 @@ export function registerPosAuth(app,{db,authOptions}) {
   });
 }
 
-export async function verifyManagerCode(c,options,companyId,code) {
+export async function verifyManagerCode(c,options,companyId,code,capability="") {
   await c.query("INSERT INTO myfin.pos_login_guards(company_id) VALUES($1) ON CONFLICT DO NOTHING",[companyId]);
   const guard=(await c.query("SELECT * FROM myfin.pos_login_guards WHERE company_id=$1 FOR UPDATE",[companyId])).rows[0];
   if(guard.locked_until&&new Date(guard.locked_until)>now())v.fail(429,"pos_login_locked");
   const parsed=v.parse(codeSchema,code),digest=hmac(options.codeSecret,"code-lookup",companyId,parsed);
-  const row=(await c.query(`SELECT p.identity_id,p.salt,p.verifier FROM myfin.pos_access_codes p
+  const row=(await c.query(`SELECT p.identity_id,p.salt,p.verifier,g.module_ids FROM myfin.pos_access_codes p
     JOIN myfin.memberships m ON m.company_id=p.company_id AND m.identity_id=p.identity_id AND m.role='manager'
     JOIN myfin.app_identities i ON i.id=p.identity_id AND i.disabled_at IS NULL
+    LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
     WHERE p.company_id=$1 AND p.lookup_digest=$2 AND p.disabled_at IS NULL FOR UPDATE OF p`,[companyId,digest])).rows[0];
   if(!row||!equalHex(row.verifier,await verifier(options.codeSecret,companyId,parsed,row.salt))){await failedAttempt(c,companyId,guard);v.fail(403,"manager_approval_required");}
+  if(capability&&!permissionsFor({role:"manager",module_grants:row.module_ids})[capability])v.fail(403,"manager_approval_required");
   await c.query("UPDATE myfin.pos_login_guards SET failure_count=0,window_started_at=now(),locked_until=NULL,updated_at=now() WHERE company_id=$1",[companyId]);
   return row.identity_id;
 }

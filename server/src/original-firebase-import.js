@@ -530,8 +530,29 @@ export async function applyOriginalFirebaseImport(database,bundle,manifest){
     for(const record of plan.records.filter(x=>x.disposition==='imported'&&x.collection==='transactions'))await c.query(
       "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,data,document_state) VALUES($1,$2,$3,'manual',$4,$5,'legacy')",
       [record.targetCompanyId,record.targetId,plan.importActorId,record.targetData.total,record.targetData]);
-    for(const record of plan.records.filter(x=>x.disposition==='imported'&&x.collection==='expenses'))await c.query(
-      "INSERT INTO myfin.expenses(company_id,id,amount,data,created_by) VALUES($1,$2,$3,$4,$5)",[record.targetCompanyId,record.targetId,record.targetData.amount,record.targetData,plan.importActorId]);
+    for(const record of plan.records.filter(x=>x.disposition==='imported'&&x.collection==='expenses')){
+      const amountSen=Math.round(record.targetData.amount*100),paidOn=record.targetData.date;
+      const initialStatus=amountSen>0?'pending_payment':'paid';
+      const initialData={...record.targetData,status:initialStatus,effectiveStatus:initialStatus,
+        paidByType:'legacy_unspecified',paidByUserId:'',paidByName:'',paidAmountSen:0,
+        outstandingAmountSen:amountSen,paidOn:amountSen>0?'':paidOn};
+      await c.query(`INSERT INTO myfin.expenses(company_id,id,amount,amount_sen,data,created_by,status,
+        paid_by_type,paid_amount_sen,paid_on) VALUES($1,$2,$3,$4,$5,$6,$7,
+        'legacy_unspecified',0,$8)`,[record.targetCompanyId,record.targetId,record.targetData.amount,
+        amountSen,initialData,plan.importActorId,initialStatus,amountSen>0?null:paidOn]);
+      if(amountSen>0){
+        const paymentId=`firebase-payment-${sha256(`${plan.runId}:${record.targetCompanyId}:${record.targetId}`).slice(0,40)}`;
+        const idempotencyKey=`firebase-${sha256(`${plan.runId}:expense-payment:${record.path}`)}`;
+        const requestDigest=sha256(stableStringify({runId:plan.runId,sourcePath:record.path,
+          companyId:record.targetCompanyId,expenseId:record.targetId,amountSen,paidOn}));
+        await c.query(`INSERT INTO myfin.expense_payment_events(company_id,id,expense_id,event_type,
+          amount_sen,source_type,paid_by_name,reference,reason,idempotency_key,request_digest,
+          actor_id,occurred_on,created_at)
+          VALUES($1,$2,$3,'payment',$4,'legacy_unspecified','','','Original Firebase paid expense',
+          $5,$6,$7,$8,$9)`,[record.targetCompanyId,paymentId,record.targetId,amountSen,
+          idempotencyKey,requestDigest,plan.importActorId,paidOn,record.createTime||plan.source.readTime]);
+      }
+    }
     for(const record of plan.records.filter(x=>x.disposition==='imported'&&x.collection==='activities')){
       const actorMapping=record.data.actorId?plan.userMappings.find(x=>x.sourceUid===record.data.actorId):null;
       await c.query("INSERT INTO myfin.activities(company_id,id,actor_id,data,created_at) VALUES($1,$2,$3,$4,$5)",[

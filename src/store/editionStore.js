@@ -1,9 +1,9 @@
-import { permissionsFor, can, stripConfidential } from "../domain/permissions";
+import { actorForCompany, permissionsFor, can, stripConfidential } from "../domain/permissions";
 import { hydrationCollections } from "../domain/viewAccess";
 import { safePaidSale, safeCompany, needsReceiptReview } from "../domain/offlinePolicy";
 import { localSettings } from "../services/localSettings";
 import { reactive } from "vue";
-import { api, listAll, onSessionExpired } from "../services/api";
+import { api, listAll, onSessionExpired, userManagementPath } from "../services/api";
 import { state } from "./state";
 import { financeModule } from "./finance";
 import { inventoryModule } from "./inventory";
@@ -29,6 +29,14 @@ let initialized = false,
   workspaceRefreshTask = null,
   reviewRefreshTask = null,
   lastDataRefreshAt = 0;
+const accessSignature = user => JSON.stringify({
+  role:user?.role || "", companyId:user?.company_id || "",
+  modules:permissionsFor(user).modules.slice().sort(),
+});
+const visibleClientsFor = (clients,user) => {
+  const permissions=permissionsFor(user);
+  return (clients||[]).filter(client=>client.type==='Supplier'?permissions.suppliersRead:permissions.clientsRead);
+};
 export const DATA_REFRESH_STALE_MS = 2 * 60 * 1000;
 async function confirmSale(sale) {
   let timeout;
@@ -77,15 +85,37 @@ export const Store = reactive({
   can(action) { return can(state.currentUser, action); },
   async refreshActor() {
     if (!state.online || !state.currentUser) return state.currentUser;
-    const generation = session, request = ++actorEpoch, previous = state.currentUser;
-    const fresh = await api("/me");
-    if (generation !== session || request !== actorEpoch) return null;
+    const generation = session, request = ++actorEpoch, previous = state.currentUser,
+      companyId=state.selectedCompany?.id || "";
+    let fresh;
+    try {
+      fresh=await api("/me"+(companyId?"?company="+encodeURIComponent(companyId):""));
+    } catch (error) {
+      const selectedStillCurrent=companyId && generation===session && request===actorEpoch &&
+        state.selectedCompany?.id===companyId;
+      if(selectedStillCurrent && [403,404].includes(error.status)){
+        this.clearCompany();
+        state.users=[];
+        state.companies=state.companies.filter(company=>company.id!==companyId);
+        state.selectedCompany=null;
+        state.sessionVerified=false;
+        const superAdmin=previous.globalRole==='super_admin'||previous.role==='super_admin';
+        state.currentUser={...previous,role:superAdmin?'super_admin':'',company_id:'',workspace_id:'',module_grants:superAdmin?null:[],
+          companyMemberships:Array.isArray(previous.companyMemberships)
+            ? previous.companyMemberships.filter(membership=>membership.company_id!==companyId)
+            : previous.companyMemberships};
+        state.globalAdministration=superAdmin;
+        this.notify("Your access to that workspace changed. Its cached data was cleared; choose an available workspace or sign in again.","warning");
+      }
+      throw error;
+    }
+    if (generation !== session || request !== actorEpoch || (state.selectedCompany?.id || "") !== companyId) return null;
     if ((fresh.uid || fresh.id) !== (previous.uid || previous.id)) {
       this.clearSession();
       this.notify("The signed-in account changed. Reload before continuing.", "warning");
       return null;
     }
-    const changed = fresh.role !== previous.role || fresh.company_id !== previous.company_id;
+    const changed = accessSignature(fresh) !== accessSignature(previous);
     if (changed) {
       this.clearCompany();
       state.users = [];
@@ -107,7 +137,7 @@ export const Store = reactive({
     if (!p.activityRead) state.activities = [];
     if (!p.stockHistoryRead) { state.stock_movements = []; state.stock_ledger = []; }
     if (!p.usersManage) state.users = [];
-    if (!p.suppliersRead) state.clients = state.clients.filter(c => c.type !== "Supplier");
+    state.clients=visibleClientsFor(state.clients,fresh);
     return fresh;
   },
   async login(email, password) {
@@ -322,20 +352,21 @@ export const Store = reactive({
     if (!state.currentUser || !state.online) return;
     const user = verifyActor ? await this.refreshActor() : state.currentUser;
     if (!user || generation !== session || request !== directoryEpoch) return;
-    const p = permissionsFor(user);
-    const [companies, users] = await Promise.all([
-      api("/companies"), p.usersManage ? api("/users") : Promise.resolve([]),
-    ]);
+    const companies=await api("/companies");
     if (generation !== session || request !== directoryEpoch || state.currentUser?.role !== user.role) return;
-    state.companies = p.costsRead ? companies : stripConfidential(companies);
-    state.users = users;
+    state.companies = companies.map(company=>permissionsFor(actorForCompany(user,company)).costsRead
+      ? company : stripConfidential(company));
     const stayInGlobalAdministration = user.role === "super_admin" && state.globalAdministration;
     const chosen = stayInGlobalAdministration
       ? null
       : state.tenantContext?.company?.id || state.selectedCompany?.id || localSettings.getItem("myfin-store-" + user.uid);
     const co = state.companies.find(c => c.id === chosen) || (user.role !== "super_admin" ? state.companies[0] : null);
+    const selectedActor=co?actorForCompany(user,co):user,selectedPermissions=permissionsFor(selectedActor);
+    const users=selectedPermissions.usersManage?await api(userManagementPath(co?.id)):[];
+    if(generation!==session||request!==directoryEpoch)return;
+    state.users=users;
     const hydration = this.selectCompany(co || null, { hydrate, verifyActor: false, silent });
-    await localPos.putProfile(user.uid, { user, companies: state.companies, verifiedAt:new Date().toISOString() })
+    await localPos.putProfile(user.uid, { user:state.currentUser, companies: state.companies, verifiedAt:new Date().toISOString() })
       .catch(() => this.notify("Offline profile could not be saved on this device.", "warning"));
     await hydration;
   },
@@ -343,6 +374,7 @@ export const Store = reactive({
     if (company && !state.companies.some((c) => c.id === company.id)) return;
     const changed = company?.id !== state.selectedCompany?.id;
     if (changed) this.clearCompany();
+    if(company&&state.currentUser)state.currentUser=actorForCompany(state.currentUser,company);
     state.selectedCompany = company;
     state.globalAdministration = state.currentUser?.role === "super_admin" && !company;
     let device={};try{device=JSON.parse(localSettings.getItem("myfin-device-preferences-"+company?.id)||"{}");}catch{}
@@ -370,7 +402,7 @@ export const Store = reactive({
     if (generation !== companyEpoch) return;
     if (cached && state.fromCache) {
       state.products = stripConfidential(cached.products || []);
-      state.clients = (cached.clients || []).filter(c => c.type !== "Supplier");
+      state.clients = visibleClientsFor(cached.clients,state.currentUser);
       state.fromCache = true;
     }
     await this.refreshPending();
@@ -415,7 +447,7 @@ export const Store = reactive({
         names.forEach((name, i) => {
           let rows = name === "products" ? values[i].map(normalizeProduct) : values[i];
           if (!permissions.costsRead) rows = stripConfidential(rows);
-          if (name === "clients" && !permissions.suppliersRead) rows = rows.filter(c => c.type !== "Supplier");
+          if (name === "clients") rows=visibleClientsFor(rows,state.currentUser);
           state[name] = rows;
         });
         await this.refreshReceiptReviews();
@@ -483,7 +515,7 @@ export const Store = reactive({
       const permissions = permissionsFor(state.currentUser);
       const normalized = products.map(normalizeProduct);
       state.products = permissions.costsRead ? normalized : stripConfidential(normalized);
-      if (clients) state.clients = permissions.suppliersRead ? clients : clients.filter(client => client.type !== "Supplier");
+      if (clients) state.clients=visibleClientsFor(clients,state.currentUser);
       state.fromCache = false;
       state.dataError = "";
       await localPos.putCatalog(uid, co, { products: state.products, clients: state.clients })
@@ -500,7 +532,7 @@ export const Store = reactive({
   async refreshReceiptReviews() {
     const uid = state.currentUser?.uid, role = state.currentUser?.role,
       co = state.selectedCompany?.id, generation = companyEpoch;
-    if (!uid || !co || !state.online || !this.can("checkout"))
+    if (!uid || !co || !state.online || !this.can("receiptReviewsRead"))
       return { status: "unavailable", refreshed: false };
     const key = [session, generation, uid, co, role].join(":");
     if (reviewRefreshTask?.key === key) return reviewRefreshTask.promise;
@@ -793,8 +825,8 @@ export const Store = reactive({
   deleteProduct(id) {
     return inventoryModule.deleteProduct(this, id);
   },
-  addExpense(e) {
-    return financeModule.addExpense(this, e);
+  addExpense(e, update) {
+    return financeModule.addExpense(this, e, update);
   },
   importExpenses(rows) {
     return financeModule.importExpenses(this, rows);

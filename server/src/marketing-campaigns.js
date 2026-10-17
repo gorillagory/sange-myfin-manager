@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { manager, owner } from './access.js';
 import * as v from './validation.js';
+import { requireCapability, owner } from './access.js';
 
 const MAX_SEN = 9_000_000_000_000_000;
 const OBJECTIVES = Object.freeze([
@@ -124,7 +124,7 @@ const asIso = value => value instanceof Date ? value.toISOString() : value || nu
 const asNumber = value => value === null || value === undefined ? null : Number(value);
 
 function requireMarketingStaff(who) {
-  if (!owner(who) && !manager(who)) v.fail(403, 'access_denied');
+  requireCapability(who, 'marketingRead');
 }
 
 async function companyWorkspace(c, companyId) {

@@ -1,14 +1,19 @@
-export const EXPENSE_STATUSES = Object.freeze(['pending', 'paid']);
-export const EXPENSE_PAID_BY_TYPES = Object.freeze(['legacy_unspecified', 'app_user', 'non_user', 'petty_cash', 'other', 'credit']);
+export const EXPENSE_STATUSES = Object.freeze(['draft', 'pending_payment', 'partially_paid', 'paid']);
+export const EXPENSE_PAID_BY_TYPES = Object.freeze(['unassigned', 'legacy_unspecified', 'app_user', 'non_user', 'petty_cash', 'other', 'credit']);
 export const EXPENSE_LINK_TYPES = Object.freeze(['stock_item', 'stock_movement', 'purchase_order', 'goods_receipt']);
 
 export const EXPENSE_STATUS_LABELS = Object.freeze({
-  pending: 'Pending',
+  draft: 'Draft',
+  pending: 'Pending payment',
+  pending_payment: 'Pending payment',
+  partially_paid: 'Partially paid',
   paid: 'Paid',
   overdue: 'Overdue',
+  voided: 'Voided',
 });
 
 export const EXPENSE_PAID_BY_LABELS = Object.freeze({
+  unassigned: 'Not assigned',
   legacy_unspecified: 'Legacy / unspecified',
   app_user: 'App user',
   non_user: 'Named non-user',
@@ -46,11 +51,13 @@ export function normalizeExpenseLinks(links = []) {
 }
 
 export function normalizeExpenseLifecycle(input = {}, {
-  actorId = '', allowLegacy = false, today = new Date().toISOString().slice(0, 10),
+  actorId = '', allowLegacy = false, allowRecordedPaymentState = false,
+  today = new Date().toISOString().slice(0, 10),
 } = {}) {
   const date = clean(input.date);
   if (!realDate(date)) throw new Error('Choose a valid expense date.');
-  const status = clean(input.status || 'paid').toLowerCase();
+  const rawStatus = clean(input.status || 'paid').toLowerCase();
+  const status = rawStatus === 'pending' ? 'pending_payment' : rawStatus;
   const paidByType = clean(input.paidByType || 'other').toLowerCase();
   if (!EXPENSE_STATUSES.includes(status)) throw new Error('Choose a valid expense status.');
   if (!EXPENSE_PAID_BY_TYPES.includes(paidByType)) throw new Error('Choose who paid this expense.');
@@ -62,8 +69,16 @@ export function normalizeExpenseLifecycle(input = {}, {
     ? null : Number(input.creditTermsDays);
   let creditDueDate = clean(input.creditDueDate);
   let paidOn = clean(input.paidOn);
+  let pettyCashFundId = clean(input.pettyCashFundId);
 
-  if (paidByType === 'app_user') {
+  if (paidByType === 'unassigned') {
+    if (['partially_paid', 'paid'].includes(status) && !allowRecordedPaymentState) {
+      throw new Error('Choose who paid this expense.');
+    }
+    paidByUserId = '';
+    paidByName = '';
+    pettyCashFundId = '';
+  } else if (paidByType === 'app_user') {
     paidByUserId ||= clean(actorId);
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(paidByUserId)) throw new Error('Choose the app user who paid.');
     paidByName = '';
@@ -72,8 +87,17 @@ export function normalizeExpenseLifecycle(input = {}, {
   }
   if (paidByType === 'non_user' && !paidByName) throw new Error('Enter the non-user who paid.');
   if (paidByType === 'other' && !paidByName) throw new Error('Describe who paid or the payment source.');
+  if (paidByType === 'petty_cash') {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(pettyCashFundId)) throw new Error('Choose a petty cash fund.');
+    paidByName = '';
+  } else {
+    pettyCashFundId = '';
+  }
 
   if (paidByType === 'credit') {
+    if (['partially_paid', 'paid'].includes(status) && !allowRecordedPaymentState) {
+      throw new Error('Record the credit expense as pending, then record its settlement.');
+    }
     if (creditTermsDays != null && (!Number.isInteger(creditTermsDays) || creditTermsDays < 1 || creditTermsDays > 3650)) {
       throw new Error('Credit duration must be between 1 and 3,650 days.');
     }
@@ -87,12 +111,11 @@ export function normalizeExpenseLifecycle(input = {}, {
   } else {
     creditTermsDays = null;
     creditDueDate = '';
-    if (status !== 'paid') throw new Error('Only credit expenses can remain pending.');
     if (paidByType === 'petty_cash') paidByName = '';
   }
 
-  if (status === 'pending') {
-    if (paidOn) throw new Error('A pending expense cannot have a settlement date.');
+  if (status !== 'paid') {
+    if (paidOn) throw new Error('An unpaid expense cannot have a settlement date.');
     paidOn = '';
   } else if (!realDate(paidOn)) {
     throw new Error('Choose a valid paid / settlement date.');
@@ -108,14 +131,17 @@ export function normalizeExpenseLifecycle(input = {}, {
     creditTermsDays,
     creditDueDate,
     paidOn,
+    pettyCashFundId,
     links: normalizeExpenseLinks(input.links || []),
   };
 }
 
 export function effectiveExpenseStatus(expense = {}, today = new Date().toISOString().slice(0, 10)) {
   const rawStatus = clean(expense.status).toLowerCase();
-  const status = rawStatus === 'pending' ? 'pending' : 'paid';
-  return status === 'pending' && realDate(clean(expense.creditDueDate)) && expense.creditDueDate < today ? 'overdue' : status;
+  const status = rawStatus === 'pending' ? 'pending_payment'
+    : EXPENSE_STATUSES.includes(rawStatus) ? rawStatus : 'paid';
+  return ['pending_payment','partially_paid'].includes(status)
+    && realDate(clean(expense.creditDueDate)) && expense.creditDueDate < today ? 'overdue' : status;
 }
 
 export function expenseHasCashImpact(expense = {}) {
@@ -123,7 +149,9 @@ export function expenseHasCashImpact(expense = {}) {
   // Historical payment vouchers use title-cased document statuses. Match the
   // reporting contract: only a Paid or Cleared voucher has moved cash.
   if (expense.type === 'Payment Voucher') return ['paid', 'cleared'].includes(rawStatus);
-  if (rawStatus === 'pending') return false;
+  if (expense.paidAmountSen !== undefined || expense.paid_amount_sen !== undefined)
+    return Number(expense.paidAmountSen ?? expense.paid_amount_sen) > 0;
+  if (['draft','pending','pending_payment'].includes(rawStatus)) return false;
   // Historical expense records without an explicit lifecycle status were
   // treated as paid before typed expense lifecycles were introduced.
   return true;

@@ -36,7 +36,7 @@ try {
     Store.state.transactions = [{ id: "sale-a" }];
     const pending = [];
     globalThis.fetch = async (path) => {
-      if(path === "/api/me")return {ok:true,status:200,json:async()=>Store.state.currentUser};
+      if(path.startsWith("/api/me"))return {ok:true,status:200,json:async()=>Store.state.currentUser};
       if(path.endsWith("/receipt-reviews"))return {ok:true,status:200,json:async()=>[]};
       if (path.includes("/companies/a/"))
         return new Promise((resolve) =>
@@ -58,13 +58,16 @@ try {
   });
   await test("older requests cannot overwrite a newer refresh within the same company", async () => {
     const pending = [];
-    globalThis.fetch = async () =>
-      new Promise((resolve) =>
+    globalThis.fetch = async path => path.startsWith("/api/me")
+      ? {ok:true,status:200,json:async()=>Store.state.currentUser}
+      : new Promise((resolve) =>
         pending.push(() => resolve(respond([{ id: "older" }]))),
       );
     const older = Store.refreshData();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    globalThis.fetch = async () => respond([{ id: "newer", variants: [] }]);
+    globalThis.fetch = async path => path.startsWith("/api/me")
+      ? {ok:true,status:200,json:async()=>Store.state.currentUser}
+      : respond([{ id: "newer", variants: [] }]);
     await Store.refreshData();
     for (const resolve of pending) resolve();
     await older;

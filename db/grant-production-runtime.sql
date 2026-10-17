@@ -3,7 +3,7 @@ SELECT current_database()='myfin_prod' AS correct_database \gset
 \if :correct_database
 GRANT SELECT ON myfin.schema_migrations TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.auth_user,myfin.auth_session,myfin.auth_account,myfin.auth_verification,
- myfin.companies,myfin.app_identities,myfin.identity_mappings,myfin.memberships,myfin.products,myfin.product_variants,
+ myfin.companies,myfin.app_identities,myfin.identity_mappings,myfin.memberships,myfin.membership_module_grants,myfin.products,myfin.product_variants,
  myfin.clients,myfin.transactions,myfin.expenses,myfin.files,myfin.workspaces,myfin.workspace_memberships,
  myfin.tenant_hosts,myfin.pos_access_codes,myfin.pos_login_guards,myfin.pos_sessions,
  myfin.app_sessions,myfin.session_handoffs TO myfin_prod_runtime;
@@ -66,6 +66,8 @@ GRANT SELECT,INSERT ON myfin.online_payment_intents,myfin.online_payment_events,
 GRANT SELECT,INSERT,UPDATE ON myfin.online_payment_reconciliation_jobs TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.receipt_email_deliveries TO myfin_prod_runtime;
 GRANT INSERT ON myfin.receipt_email_events TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.petty_cash_funds,myfin.petty_cash_entries,
+ myfin.expense_payment_events TO myfin_prod_runtime;
 GRANT SELECT ON myfin.customer_order_online_payment_state TO myfin_prod_runtime;
 -- PostgreSQL locking reads require UPDATE even when immutable evidence rows are never changed.
 GRANT UPDATE ON myfin.inventory_source_effects,myfin.purchase_order_lines,

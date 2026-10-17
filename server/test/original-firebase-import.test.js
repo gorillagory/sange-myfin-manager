@@ -214,6 +214,13 @@ test('apply sends anomaly arrays as JSON and can repeat only after complete ledg
   const writes=client.calls.filter(call=>call.sql.includes('INSERT INTO myfin.original_firebase_source_records'));
   assert.equal(writes.length,plan.counts.sourceRecords);
   for(const write of writes){assert.equal(typeof write.params[15],'string');assert.ok(Array.isArray(JSON.parse(write.params[15])));}
+  const expenses=client.calls.filter(call=>call.sql.includes('INSERT INTO myfin.expenses'));
+  const payments=client.calls.filter(call=>call.sql.includes('INSERT INTO myfin.expense_payment_events'));
+  assert.equal(expenses.length,plan.counts.imported.expenses);
+  assert.equal(payments.length,plan.records.filter(row=>row.collection==='expenses'&&row.disposition==='imported'&&row.targetData.amount>0).length);
+  assert.equal(expenses[0].params[6],'pending_payment');
+  assert.match(payments[0].sql,/legacy_unspecified/);
+  assert.equal(payments[0].params[7],plan.records.find(row=>row.collection==='expenses'&&row.disposition==='imported').targetData.date);
 });
 
 test('deterministic target inspection reports conflicts and recognizes an identical prior run', async t => {

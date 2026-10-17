@@ -82,7 +82,7 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   await audit(c,who,co,"Request paid receipt dismissal",sale.id);return {id:sale.id,status:"pending",reasonCode:"cashier_requested_dismissal"};
  }));
  app.get("/api/companies/:company/receipt-reviews",req=>scope(req,async(c,co,who)=>{
-  requireCapability(who,"checkout");const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND ($2 OR actor_id=$3) ORDER BY created_at DESC LIMIT 1001",[co,!operator(who),who.id]);if(r.rowCount>1000)v.fail(409,"receipt_review_list_limit");return r.rows.map(row=>output(row,who));
+  requireCapability(who,"receiptReviewsRead");const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND ($2 OR actor_id=$3) ORDER BY created_at DESC LIMIT 1001",[co,!operator(who),who.id]);if(r.rowCount>1000)v.fail(409,"receipt_review_list_limit");return r.rows.map(row=>output(row,who));
  }));
  app.post("/api/companies/:company/receipt-reviews/approve-all",req=>scope(req,async(c,co,who)=>{
   requireCapability(who,"receiptReviewsResolve");

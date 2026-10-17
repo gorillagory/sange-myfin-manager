@@ -789,6 +789,7 @@ await test("quote conversion idempotency, scoped project assignment, expense and
   await json(route(coA, "expenses"), {
     method: "POST",
     body: {
+      id: randomUUID(),
       amount: 10.55,
       date: "2026-09-12",
       description: "Synthetic expense",
@@ -888,6 +889,7 @@ await test("private uploads tenant scope, sniffing, limits, traversal and symlin
   const attached = await json(route(coA, "expenses"), {
     method: "POST",
     body: {
+      id: randomUUID(),
       amount: 1,
       description: "Attached file",
       date: "2026-09-12",

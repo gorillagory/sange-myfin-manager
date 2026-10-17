@@ -29,7 +29,7 @@ try{
   product=await api(owner,co+'/products',{method:'POST',data:{name:'Acceptance coffee '+suffix,sku:'DOC-'+suffix,unit:'pcs',price:10,cost:3.47,stock:20,trackStock:true,variants:[]}});
   customer=await api(owner,co+'/clients',{method:'POST',data:{name:'Original customer '+suffix,type:'Customer',registration:'SYNTHETIC-CLIENT-05',address:'45 Customer Lane',phone:'0000000001',email:'customer@myfin.test'}});
   await api(owner,co+'/clients',{method:'POST',data:{name:'Confidential supplier '+suffix,type:'Supplier'}});
-  await api(owner,co+'/expenses',{method:'POST',data:{amount:91.73,date:'2026-09-13',description:'Confidential expense '+suffix}});
+  await api(owner,co+'/expenses',{method:'POST',data:{id:randomUUID(),amount:91.73,date:'2026-09-13',description:'Confidential expense '+suffix}});
   manager=await newPage();staff=await newPage();await login(manager,managerEmail);await login(staff,staffEmail);
   for(const page of [manager,staff]){
     for(const name of ['Financial reports','Expenses','Activity'])assert.equal(await page.getByRole('link',{name,exact:true}).count(),0);

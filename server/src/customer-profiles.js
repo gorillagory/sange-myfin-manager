@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { manager, owner } from './access.js';
+import { requireCapability } from './access.js';
 import { releaseExpiredLoyaltyReservations } from './marketing-loyalty.js';
 import * as v from './validation.js';
 
@@ -9,7 +9,6 @@ const querySchema = z.strictObject({
   after: v.id.optional(),
 });
 
-const allowed = who => owner(who) || manager(who);
 const literalLike = value => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
 function profileOutput(row) {
@@ -44,7 +43,7 @@ function profileOutput(row) {
 
 export function registerCustomerProfiles(app, { scoped }) {
   app.get('/api/companies/:company/customer-profiles', req => scoped(req, async (c, companyId) => {
-    if (!allowed(req.identity)) v.fail(403, 'access_denied');
+    requireCapability(req.identity, 'customerProfilesRead');
     const query = v.parse(querySchema, req.query);
     const company = (await c.query(
       'SELECT workspace_id FROM myfin.companies WHERE id=$1', [companyId],

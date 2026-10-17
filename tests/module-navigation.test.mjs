@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc';
+import { permissionsFor } from '../src/domain/permissions.js';
+import { canVisit } from '../src/domain/viewAccess.js';
 import { ROUTE_CAPABILITIES } from '../src/domain/viewAccess.js';
 import { WORKSPACE_MODULES, WORKSPACE_PAGES, workspacePageFor } from '../src/domain/workspaceModules.js';
 
@@ -79,6 +81,30 @@ test('module navigation is collapsed, route-aware, persistent, and keyboard acce
     filename: 'EditionShell.vue',
     id: 'module-navigation',
     compilerOptions: { bindingMetadata: script.bindings },
+  });
+  assert.deepEqual(template.errors, []);
+});
+
+test('finance-only receipt reviewers can render the payment review page without checkout access', async () => {
+  const reviewer = { id:'finance-reviewer', role:'manager', module_grants:['finance'] };
+  const permissions = permissionsFor(reviewer);
+  assert.equal(permissions.checkout, false);
+  assert.equal(permissions.receiptReviewsRead, true);
+  assert.equal(permissions.receiptReviewsResolve, true);
+  assert.equal(canVisit(reviewer, '/receipt-reviews'), true);
+
+  const source = await readFile(new URL('../src/components/dashboard/ReceiptReviews.vue', import.meta.url), 'utf8');
+  assert.match(source, /<div v-if="Store\.can\('receiptReviewsRead'\)" class="ed-page">/);
+  assert.doesNotMatch(source, /<div v-if="Store\.can\('checkout'\)" class="ed-page">/);
+
+  const parsed = parse(source, { filename:'ReceiptReviews.vue' });
+  assert.deepEqual(parsed.errors, []);
+  const script = compileScript(parsed.descriptor, { id:'receipt-review-access' });
+  const template = compileTemplate({
+    source:parsed.descriptor.template.content,
+    filename:'ReceiptReviews.vue',
+    id:'receipt-review-access',
+    compilerOptions:{ bindingMetadata:script.bindings },
   });
   assert.deepEqual(template.errors, []);
 });

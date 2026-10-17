@@ -41,6 +41,7 @@ const rowLockUpdateTables = Object.freeze([
   'loyalty_point_events', 'loyalty_sale_award_batches',
   // The recipe reservation validation trigger runs as the caller and locks these rows.
   'customer_order_lines', 'inventory_recipe_versions', 'inventory_recipe_components',
+  'petty_cash_entries', 'expense_payment_events',
 ]);
 
 function addPrivilege(inventory, object, privilege) {
@@ -209,7 +210,7 @@ test('startup readiness consumes every parameterized shared-manifest predicate',
   assert.equal((check.predicate.match(/has_(?:schema|table|sequence|function)_privilege/g) || []).length,
     expectedPredicateCount);
   assert.equal(check.parameters.length, expectedPredicateCount * 2);
-  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0042_receipt_email_delivery.sql');
+  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0044_dynamic_module_access.sql');
 });
 
 test('the dynamic SQL allowlist stays narrow and reviewable', () => {

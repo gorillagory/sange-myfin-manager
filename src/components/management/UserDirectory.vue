@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { Store } from '../../store';
 import { manageableAccount } from '../../domain/viewAccess';
-import { api } from '../../services/api';
+import { api, userManagementPath } from '../../services/api';
 import { matchesPeople, roleLabel, userPayload, managementError, isArchived } from '../../domain/management';
 import Icon from '../ui/EditionIcon.vue';
 import Modal from '../ui/EditionModal.vue';
@@ -33,9 +33,10 @@ async function applyAction() {
   const { user, action } = pending.value;
   try {
     if (!manageableAccount(Store.state.currentUser,user)) throw new Error("access_denied");
-    if (action === 'revoke') await api('/users/' + encodeURIComponent(user.id) + '/revoke-sessions', { method: 'POST', body: {} });
-    else if (action === 'suspend') await api('/users/' + encodeURIComponent(user.id), { method: 'DELETE' });
-    else await api('/users/' + encodeURIComponent(user.id), { method: 'PUT', body: userPayload({ ...user, disabled: false }, true) });
+    const companyId=props.companyId||Store.state.selectedCompany?.id;
+    if (action === 'revoke') await api(userManagementPath(companyId,'/' + encodeURIComponent(user.id) + '/revoke-sessions'), { method: 'POST', body: {} });
+    else if (action === 'suspend') await api(userManagementPath(companyId,'/' + encodeURIComponent(user.id)), { method: 'DELETE' });
+    else await api(userManagementPath(companyId,'/' + encodeURIComponent(user.id)), { method: 'PUT', body: userPayload({ ...user, disabled: false }, true) });
     pending.value = null;
     Store.notify(action === 'revoke' ? 'Sessions revoked. The teammate must sign in again.' : action === 'suspend' ? 'Account suspended. Assignment and history retained.' : 'Account reactivated.');
     await refresh();
@@ -65,9 +66,9 @@ async function applyAction() {
           <td><div class="ed-actions">
             <button v-if="user.login_available && (user.id === Store.state.currentUser?.id || manageableAccount(Store.state.currentUser,user))" class="ed-btn small" :disabled="!Store.state.online" @click="edit(user)">{{ user.id === Store.state.currentUser?.id ? 'My profile' : 'Edit' }}</button>
             <template v-if="user.login_available && user.id !== Store.state.currentUser?.id && manageableAccount(Store.state.currentUser,user)">
-              <button v-if="!user.disabled" class="ed-btn small" :disabled="!Store.state.online" @click="confirmAction(user,'revoke')">Sign out sessions</button>
-              <button v-if="!user.disabled" class="ed-btn small danger" :disabled="!Store.state.online" @click="confirmAction(user,'suspend')">Suspend</button>
-              <button v-else class="ed-btn small" :disabled="!Store.state.online || archivedAssignment(user) || (!(user.assignments||[]).length && !['super_admin','workspace_owner'].includes(user.role))" @click="confirmAction(user,'reactivate')">Reactivate</button>
+              <button v-if="!user.disabled" class="ed-btn small" :disabled="!Store.state.online" @click="confirmAction(user,'revoke')">{{ Store.state.currentUser?.role==='manager'?'Sign out company sessions':'Sign out sessions' }}</button>
+              <button v-if="!user.disabled && Store.can('managersManage')" class="ed-btn small danger" :disabled="!Store.state.online" @click="confirmAction(user,'suspend')">Suspend</button>
+              <button v-if="user.disabled && Store.can('managersManage')" class="ed-btn small" :disabled="!Store.state.online || archivedAssignment(user) || (!(user.assignments||[]).length && !['super_admin','workspace_owner'].includes(user.role))" @click="confirmAction(user,'reactivate')">Reactivate</button>
             </template>
           </div><small v-if="!user.login_available">Historical records retained. This person has no sign-in account.</small><small v-else-if="user.disabled && !(user.assignments||[]).length && !['super_admin','workspace_owner'].includes(user.role)">Assign a company and role before reactivating.</small><small v-else-if="user.disabled && archivedAssignment(user)">Restore the company or reassign this account first.</small></td>
         </tr></tbody>
@@ -79,9 +80,9 @@ async function applyAction() {
       <h3>{{ pending.user.username }}</h3><p class="ed-muted">{{ pending.user.email }}</p>
       <p v-if="pending.action === 'suspend'">This person will be signed out and unable to sign in. Their company assignment and financial history will stay intact. You can reactivate them later.</p>
       <p v-else-if="pending.action === 'reactivate'">This person can sign in again using their existing password and assigned role. Previous sessions remain signed out.</p>
-      <p v-else>This person will be signed out on every device. Their account stays active and they can sign in again.</p>
+      <p v-else>{{ Store.state.currentUser?.role==='manager'?'This person will be signed out of handoff and POS-code sessions for this company. Other company sessions stay active.':'This person will be signed out on every device. Their account stays active and they can sign in again.' }}</p>
       <p v-if="error" class="ed-notice error" role="alert">{{ error }}</p>
-      <template #actions><button class="ed-btn" :disabled="busy" @click="pending=null">Cancel</button><button class="ed-btn" :class="pending.action === 'suspend' ? 'danger' : 'primary'" :disabled="busy || !Store.state.online" @click="applyAction">{{ busy ? 'Updating…' : pending.action === 'suspend' ? 'Suspend account' : pending.action === 'reactivate' ? 'Reactivate account' : 'Sign out sessions' }}</button></template>
+      <template #actions><button class="ed-btn" :disabled="busy" @click="pending=null">Cancel</button><button class="ed-btn" :class="pending.action === 'suspend' ? 'danger' : 'primary'" :disabled="busy || !Store.state.online" @click="applyAction">{{ busy ? 'Updating…' : pending.action === 'suspend' ? 'Suspend account' : pending.action === 'reactivate' ? 'Reactivate account' : Store.state.currentUser?.role==='manager' ? 'Sign out company sessions' : 'Sign out sessions' }}</button></template>
     </Modal>
   </section>
 </template>

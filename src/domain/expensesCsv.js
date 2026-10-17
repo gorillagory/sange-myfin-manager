@@ -3,7 +3,7 @@ import { businessDate } from './pos.js';
 import { normalizeExpenseLifecycle } from './expenseLifecycle.js';
 
 export const EXPENSE_COLUMNS = ['date','description','category','amount','status','paid_by_type','paid_by_user_id',
-  'paid_by_name','credit_terms_days','credit_due_date','paid_on','supplier_id','supplier_name','payee','stock_item_ids',
+  'paid_by_name','petty_cash_fund_id','credit_terms_days','credit_due_date','paid_on','supplier_id','supplier_name','payee','stock_item_ids',
   'stock_movement_ids','purchase_order_ids','goods_receipt_ids'];
 const clean = value => String(value ?? '').trim();
 const supplierType = value => ['supplier'].includes(clean(value).toLowerCase());
@@ -48,9 +48,11 @@ export function importExpensesCsv(text, suppliers = []) {
     const supplier=supplierFor(row,suppliers,line);
     const links=Object.entries(linkColumns).flatMap(([column,type])=>ids(row[column],line,column).map(id=>({type,id})));
     let lifecycle;
-    const status=row.status||'paid',paidByType=row.paid_by_type||'other';
+    const status=row.status||'paid',paidByType=row.paid_by_type||(status==='paid'?'other':'unassigned');
+    if(status==='partially_paid')throw new Error(`Row ${line}: partially paid expenses cannot be imported because a CSV cannot recreate their payment history. Import the expense as pending_payment, then record each payment in MyFin.`);
     try{lifecycle=normalizeExpenseLifecycle({date:row.date,status,paidByType,
       paidByUserId:row.paid_by_user_id||'',paidByName:row.paid_by_name||(paidByType==='other'?'Imported / unspecified':''),
+      pettyCashFundId:row.petty_cash_fund_id||'',
       creditTermsDays:row.credit_terms_days===''||row.credit_terms_days==null?null:Number(row.credit_terms_days),
       creditDueDate:row.credit_due_date||'',paidOn:row.paid_on||(status==='paid'?row.date:''),links});}
     catch(error){throw new Error(`Row ${line}: ${error.message}`);}
@@ -72,7 +74,7 @@ export function exportExpensesCsv(expenses = [], suppliers = []) {
   const rows=[EXPENSE_COLUMNS,...expenses.map(expense=>[
     businessDate(expense.date),expense.description,expense.category||'General',Number(expense.amount||0).toFixed(2),
     expense.status||'paid',expense.paidByType||'other',expense.paidByUserId||'',expense.paidByName||'',
-    expense.creditTermsDays??'',expense.creditDueDate||'',expense.paidOn||(expense.status!=='pending'?businessDate(expense.date):''),
+    expense.pettyCashFundId||'',expense.creditTermsDays??'',expense.creditDueDate||'',expense.paidOn||(['paid'].includes(expense.status||'paid')?businessDate(expense.date):''),
     expense.supplier_id||'',names.get(expense.supplier_id)||'',expense.payee||'',
     linked(expense,'stock_item'),linked(expense,'stock_movement'),linked(expense,'purchase_order'),linked(expense,'goods_receipt'),
   ])];

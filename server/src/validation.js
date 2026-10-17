@@ -175,10 +175,11 @@ export const expense = z.strictObject({
   receiptPath: opt(z.string().max(500)),
   attachmentUrl: opt(z.string().max(500)),
   attachmentPath: opt(z.string().max(500)),
-  status: z.enum(["pending", "paid"]).default("paid"),
-  paidByType: z.enum(["legacy_unspecified", "app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
+  status: z.enum(["draft", "pending", "pending_payment", "partially_paid", "paid"]).default("paid"),
+  paidByType: z.enum(["unassigned", "legacy_unspecified", "app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
   paidByUserId: z.union([id, z.literal("")]).default(""),
   paidByName: z.string().trim().max(500).default(""),
+  pettyCashFundId: z.union([id, z.literal("")]).default(""),
   creditTermsDays: z.union([z.number().int().min(1).max(3650), z.null()]).optional(),
   creditDueDate: z.string().max(10).default(""),
   paidOn: z.string().max(10).default(""),
@@ -188,8 +189,12 @@ export const expense = z.strictObject({
   })).max(100).default([]),
   version: z.number().int().positive().optional(),
 });
-export const expenseCreate = expense.extend({
-  paidByType: z.enum(["app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
+export const expenseCreate = expense.omit({ version:true }).extend({
+  // The browser generates and retains this request identity before any
+  // upload or network mutation begins. Eight characters preserves existing
+  // non-UI integration ids; the first-party UI always sends a UUID.
+  id: id.refine(value => value.length >= 8, 'Expense request id is required.'),
+  paidByType: z.enum(["unassigned", "app_user", "non_user", "petty_cash", "other", "credit"]).default("app_user"),
 });
 export const sale = z.strictObject({
   id,
@@ -240,7 +245,11 @@ export const user = z.strictObject({
   role: z.enum(["super_admin", "workspace_owner", "manager", "operator", "super", "company_admin", "company_user"]),
   company_id: z.union([id, z.literal("")]),
   workspace_id: opt(z.union([id,z.literal("")])),
-  assignments: opt(z.array(z.strictObject({company_id:id,role:z.enum(["manager","operator"])})).max(100)),
+  assignments: opt(z.array(z.strictObject({
+    company_id:id,
+    role:z.enum(["manager","operator"]),
+    modules:z.array(z.enum(["workspace","inventory","finance","analytics","administration","settings","access"])).max(7).nullable().optional(),
+  })).max(100)),
   disabled: opt(z.boolean()),
 });
 export function parse(schema, value) {

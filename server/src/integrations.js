@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { manager, owner } from './access.js';
+import { owner, requireCapability } from './access.js';
 import { GOKOO_MALAYSIA } from './integrations-gokoo.js';
 import * as v from './validation.js';
 
@@ -306,7 +306,7 @@ export function registerIntegrations(app, { db, managed, authorize, managementSe
       await managementSession(c, req);
       const companyId = v.parse(v.id, req.params.company);
       await authorize(c, req.identity, companyId);
-      if (!owner(req.identity) && !manager(req.identity)) v.fail(403, 'access_denied');
+      requireCapability(req.identity, 'paymentOperationsRead');
       return paymentOperationsOutput(c, companyId, rangeInput(req.query));
     });
   });

@@ -305,7 +305,7 @@ try {
       idempotency_key,request_digest,received_by) VALUES($1,$2,$3,$4,now(),$5,$6,$7)`,
     [companyA,goodsReceiptId,purchaseOrderId,`GR-EXP-${tag}`,`expense-gr-key-${tag}`,'2'.repeat(64),ownerId]);
     const linkedTypes=await ok(hostA,url(companyA,'/expenses'),{cookie:cookieA,method:'POST',body:{
-      date:'2026-09-29',description:'All linked evidence',amount:1,status:'paid',paidOn:'2026-09-29',
+      id:randomUUID(),date:'2026-09-29',description:'All linked evidence',amount:1,status:'paid',paidOn:'2026-09-29',
       paidByType:'other',paidByName:'Acceptance business account',links:[
         {type:'stock_item',id:beans.id},{type:'stock_movement',id:evidenceMovement},
         {type:'purchase_order',id:purchaseOrderId},{type:'goods_receipt',id:goodsReceiptId},

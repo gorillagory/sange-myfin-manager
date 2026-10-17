@@ -1,11 +1,11 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0042_receipt_email_delivery.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0044_dynamic_module_access.sql';
 
 const tableGroups = [
   {
     privileges: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
     objects: [
       'auth_user', 'auth_session', 'auth_account', 'auth_verification',
-      'companies', 'app_identities', 'identity_mappings', 'memberships',
+      'companies', 'app_identities', 'identity_mappings', 'memberships', 'membership_module_grants',
       'products', 'product_variants', 'clients', 'transactions', 'expenses', 'files',
       'stock_packagings',
       'workspaces', 'workspace_memberships', 'tenant_hosts', 'pos_access_codes',
@@ -35,6 +35,7 @@ const tableGroups = [
       'payment_gateway_connections',
       'online_payment_reconciliation_jobs',
       'receipt_email_deliveries',
+      'petty_cash_funds', 'petty_cash_entries', 'expense_payment_events',
     ],
   },
   {

@@ -22,7 +22,9 @@ import { registerWorkspaces } from "./workspaces.js";
 import { handoffSubject,createHandoff } from "./session-handoff.js";
 import { permissionsFor } from "../../src/domain/permissions.js";
 import { registerExpenseImport } from "./expense-import.js";
-import { expenseAuditDetail,expenseLinkOptions,expenseOutput,prepareExpense,recordExpenseEvent,replaceExpenseLinks } from "./expense-lifecycle.js";
+import { activeExpenseSettlementDate,expenseAuditDetail,expenseLinkOptions,expenseOutput,lockRecordedPaymentLifecycle,prepareExpense,recordExpenseEvent,replaceExpenseLinks } from "./expense-lifecycle.js";
+import { inspectExpenseCreate } from "./expense-create.js";
+import { recordExpensePayment,registerPettyCash } from "./petty-cash.js";
 import { registerStock } from "./stock.js";
 import { consumeRecipeStock, offlineRecipeBoundary, recipeAvailabilityForProducts } from "./inventory-recipes.js";
 import { registerProcurement } from "./procurement.js";
@@ -73,8 +75,9 @@ export async function identity(db, subject, tenant=null) {
   const workspaces=(await db.query(`SELECT wm.workspace_id,wm.role FROM myfin.workspace_memberships wm
     JOIN myfin.workspaces w ON w.id=wm.workspace_id WHERE wm.identity_id=$1 AND wm.suspended_at IS NULL
     AND w.suspended_at IS NULL AND w.archived_at IS NULL ORDER BY wm.workspace_id`,[r.id])).rows;
-  const companies=(await db.query(`SELECT m.company_id,m.role,c.workspace_id FROM myfin.memberships m
+  const companies=(await db.query(`SELECT m.company_id,m.role,c.workspace_id,g.module_ids FROM myfin.memberships m
     JOIN myfin.companies c ON c.id=m.company_id JOIN myfin.workspaces w ON w.id=c.workspace_id
+    LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
     WHERE m.identity_id=$1 AND c.suspended_at IS NULL AND c.archived_at IS NULL
       AND w.suspended_at IS NULL AND w.archived_at IS NULL ORDER BY m.company_id`,[r.id])).rows;
   const target=tenant?.surface==="tenant"?tenant.company_id:companies[0]?.company_id||"";
@@ -84,6 +87,7 @@ export async function identity(db, subject, tenant=null) {
   if(!role&&!r.is_super)v.fail(403,"access_denied");
   return {id:r.id,uid:r.id,username:r.username,email:r.email,role,globalRole:r.is_super?"super_admin":"",
     workspace_id:workspaceId,company_id:target,workspaceMemberships:workspaces,companyMemberships:companies,
+    module_grants:owner({role})?null:(company?.module_ids??null),
     authLevel:"password",host_company_id:tenant?.surface==="tenant"?tenant.company_id:""};
 }
 export async function authorize(c, who, companyId, admin = false) {
@@ -98,16 +102,18 @@ export async function authorize(c, who, companyId, admin = false) {
   );
   if (!company.rowCount) v.fail(404, "not_found");
   if(who.host_company_id&&who.host_company_id!==companyId)v.fail(404,"not_found");
-  if (rows[0].is_super) {who.role="super_admin";who.globalRole="super_admin";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;return;}
+  if (rows[0].is_super) {who.role="super_admin";who.globalRole="super_admin";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;who.module_grants=null;return;}
   const wm=await c.query("SELECT 1 FROM myfin.workspace_memberships WHERE identity_id=$1 AND workspace_id=$2 AND suspended_at IS NULL",[who.id,company.rows[0].workspace_id]);
-  if(wm.rowCount){who.role="workspace_owner";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;return;}
+  if(wm.rowCount){who.role="workspace_owner";who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;who.module_grants=null;return;}
   const m = await c.query(
-    "SELECT role FROM myfin.memberships WHERE identity_id=$1 AND company_id=$2 FOR SHARE",
+    `SELECT m.role,g.module_ids FROM myfin.memberships m
+      LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
+      WHERE m.identity_id=$1 AND m.company_id=$2 FOR SHARE OF m`,
     [who.id, companyId],
   );
   if (!m.rowCount || (admin && m.rows[0].role !== "manager"))
     v.fail(403, "access_denied");
-  who.role=m.rows[0].role;who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;
+  who.role=m.rows[0].role;who.company_id=companyId;who.workspace_id=company.rows[0].workspace_id;who.module_grants=m.rows[0].module_ids;
 }
 async function requireSuper(c, who) {
   const r = await c.query(
@@ -358,6 +364,7 @@ async function posSalePricing(c, companyId, who, sale, approval = null) {
     manualDiscountAmount: snapshot.manualDiscountSen / 100 };
 }
 export async function checkout(c, who, companyId, input, approval=null, options={}) {
+  requireCapability(approval?.who || who, approval ? "receiptReviewsResolve" : "checkout");
   const submittedSale = v.parse(v.sale, input), sale={...submittedSale};
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
@@ -643,7 +650,16 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
     if(!req.identity)v.fail(401,"session_required");
     req.authLevel="pos_code";
   });
-  app.get("/api/me", async (req) => req.identity);
+  app.get("/api/me", async (req) => {
+    const { company } = v.parse(z.strictObject({ company:v.id.optional() }), req.query || {});
+    if (!company) return req.identity;
+    return db.transaction(async c => {
+      await managementSession(c,req);
+      const selected={...req.identity};
+      await authorize(c,selected,company);
+      return selected;
+    });
+  });
   app.post("/api/session-handoffs",async req=>db.transaction(async c=>{
     requirePasswordSession(req);await managementLock(c);await managementSession(c,req);
     const {targetHostname}=v.parse(z.strictObject({targetHostname:z.string().trim().toLowerCase().max(253)}),req.body);
@@ -684,6 +700,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
     });
   };
   registerExpenseImport(app,{scoped,audit});
+  registerPettyCash(app,{scoped,audit});
   registerStock(app,{scoped,audit});
   registerProcurement(app,{scoped,audit});
   registerReportAutomation(app,{scoped,audit});
@@ -764,6 +781,12 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   ]) {
     app.get(`/api/companies/:company/${name}`, (req) =>
       scoped(req, async (c, co) => {
+        if(name==="products")requireCapability(req.identity,"catalogRead");
+        if(name==="transactions")requireCapability(req.identity,"transactionsRead");
+        if(name==="clients"){
+          const permissions=permissionsFor(req.identity);
+          if(!permissions.clientsRead&&!permissions.suppliersRead)v.fail(403,"access_denied");
+        }
         const q = v.parse(
           z.strictObject({
             after: v.id.optional(),
@@ -777,6 +800,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
         if(name==="expenses")predicates.push("voided_at IS NULL");
         if(name==="expenses"&&operator(req.identity)){args.push(req.identity.id);predicates.push(`created_by=$${args.length}`);}
         if(!permissionsFor(req.identity).suppliersRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')<>'Supplier'");
+        if(!permissionsFor(req.identity).clientsRead&&name==="clients")predicates.push("coalesce(data->>'type','Customer')='Supplier'");
         if(!owner(req.identity)&&name==="transactions"){
           if(operator(req.identity)){args.push(req.identity.id);predicates.push(`((source='pos' AND actor_id=$${args.length}) OR (document_state='draft' AND data->>'type' IN ('Invoice','Quote') AND (actor_id=$${args.length} OR assigned_to=$${args.length})))`);}
           else predicates.push("(source IN ('pos','manual_sale') OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote')) OR (document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared')))");
@@ -827,7 +851,8 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
         }
         let data = v.parse(name==="expenses"&&!update?v.expenseCreate:schemas[name], input);
         const id =
-          update ? v.parse(v.id, req.params.id) : data.id || randomUUID();
+          update ? v.parse(v.id, req.params.id)
+            : name==="expenses" ? data.id : data.id || randomUUID();
         if (
           (data.company_id && data.company_id !== co) ||
           (data.id && data.id !== id)
@@ -835,6 +860,15 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
           v.fail(403, "invalid_tenant_or_id");
         data.id = id;
         data.company_id = co;
+        let expenseCreateDigest=null;
+        if(name==="expenses"&&!update){
+          const request=await inspectExpenseCreate(c,co,req.identity.id,data);
+          expenseCreateDigest=request.requestDigest;
+          if(request.existing){
+            const replay=(await expenseOutput(c,co,[request.existing],req.identity))[0];
+            return {...replay,idempotentReplay:true};
+          }
+        }
         await validateFileRefs(c, co, data);
         if (name === "expenses") await validateSupplierRef(c, co, data.supplier_id);
         if (name === "products") {
@@ -920,36 +954,87 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
               );
           } else if (name === "expenses") {
             if(update&&old.rows[0].voided_at)v.fail(409,"expense_voided");
-            const prepared=await prepareExpense(c,co,req.identity,data,
-              {allowLegacy:update&&old.rows[0].paid_by_type==="legacy_unspecified",defaultPaidOn:update?'':data.date});
+            if(!update&&data.status==='partially_paid')v.fail(409,"expense_payment_state_derived");
+            const paidAmountSen=update?Number(old.rows[0].paid_amount_sen||0):0;
+            if(update&&paidAmountSen>0){
+              const paymentLock=lockRecordedPaymentLifecycle(data,old.rows[0]);
+              if(paymentLock.changedFields.length)v.fail(409,"expense_payment_source_immutable");
+              data=paymentLock.input;
+            }
+            let prepared=await prepareExpense(c,co,req.identity,data,
+              {allowLegacy:update&&old.rows[0].paid_by_type==="legacy_unspecified",
+                allowRecordedPaymentState:update&&paidAmountSen>0,defaultPaidOn:update?'':data.date,
+                existingPettyCashFundId:update?(old.rows[0].petty_cash_fund_id||''):''});
             if(update&&prepared.version===undefined)v.fail(409,"expense_version_required");
             if(update&&prepared.version!==Number(old.rows[0].version))v.fail(409,"expense_changed");
+            if(update){
+              if(paidAmountSen>prepared.amountSen)v.fail(409,"expense_amount_below_payments");
+              const oldStatus=old.rows[0].status==='pending'?'pending_payment':old.rows[0].status;
+              if(prepared.status==='paid'&&oldStatus!=='paid')v.fail(409,"use_expense_payment_workflow");
+              if(prepared.status==='partially_paid'&&oldStatus!=='partially_paid')v.fail(409,"expense_payment_state_derived");
+              let derivedStatus=prepared.status,derivedPaidOn=prepared.paidOn;
+              if(paidAmountSen>0){
+                derivedStatus=paidAmountSen<prepared.amountSen?'partially_paid':'paid';
+                if(derivedStatus==='paid'){
+                  derivedPaidOn=old.rows[0].paid_on||prepared.paidOn;
+                  if(!derivedPaidOn){
+                    derivedPaidOn=await activeExpenseSettlementDate(c,co,id);
+                    if(!derivedPaidOn)v.fail(409,"expense_payment_state_inconsistent");
+                  }
+                }else derivedPaidOn='';
+              }else if(!['draft','pending_payment'].includes(prepared.status)){
+                v.fail(409,"expense_payment_state_derived");
+              }
+              prepared={...prepared,status:derivedStatus,paidOn:derivedPaidOn,
+                data:{...prepared.data,status:derivedStatus,paidOn:derivedPaidOn,
+                  paidAmountSen,outstandingAmountSen:prepared.amountSen-paidAmountSen}};
+            }
             data=prepared.data;
             data.amount=prepared.amountSen/100;
             expenseAuditDetails=expenseAuditDetail(id,update?old.rows[0]:null,prepared);
             if (update)
               await c.query(
                 `UPDATE myfin.expenses SET data=$3,amount=$4,amount_sen=$5,supplier_id=$6,status=$7,
-                  paid_by_type=$8,paid_by_identity_id=$9,paid_by_name=$10,credit_terms_days=$11,credit_due_date=$12,paid_on=$13
+                  paid_by_type=$8,paid_by_identity_id=$9,paid_by_name=$10,petty_cash_fund_id=$11,
+                  credit_terms_days=$12,credit_due_date=$13,paid_on=$14
                  WHERE company_id=$1 AND id=$2`,
                 [co,id,data,data.amount,prepared.amountSen,data.supplier_id||null,prepared.status,
                   prepared.paidByType,prepared.paidByUserId||null,prepared.paidByName||null,
-                  prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null],
+                  prepared.pettyCashFundId||null,prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null],
               );
-            else
+            else {
+              const initialStatus=prepared.status==='paid'?'pending_payment':prepared.status;
+              const initialPaidOn=prepared.status==='paid'?null:(prepared.paidOn||null);
+              const initialData={...data,status:initialStatus,paidOn:initialPaidOn||'',paidAmountSen:0,
+                outstandingAmountSen:prepared.amountSen};
               await c.query(
                 `INSERT INTO myfin.expenses(company_id,id,data,amount,amount_sen,created_by,supplier_id,status,
-                  paid_by_type,paid_by_identity_id,paid_by_name,credit_terms_days,credit_due_date,paid_on)
-                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-                [co,id,data,data.amount,prepared.amountSen,req.identity.id,data.supplier_id||null,prepared.status,
+                  paid_by_type,paid_by_identity_id,paid_by_name,petty_cash_fund_id,credit_terms_days,credit_due_date,paid_on,
+                  create_request_digest)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+                [co,id,initialData,data.amount,prepared.amountSen,req.identity.id,data.supplier_id||null,initialStatus,
                   prepared.paidByType,prepared.paidByUserId||null,prepared.paidByName||null,
-                  prepared.creditTermsDays,prepared.creditDueDate||null,prepared.paidOn||null],
+                  prepared.pettyCashFundId||null,prepared.creditTermsDays,prepared.creditDueDate||null,initialPaidOn,
+                  expenseCreateDigest],
               );
+            }
             await replaceExpenseLinks(c,co,id,prepared.links,req.identity);
             savedExpense=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1 AND id=$2",[co,id])).rows[0];
-            const eventAction=!update?"created":old.rows[0].status==="pending"&&prepared.status==="paid"?"settled":"updated";
+            const eventAction=!update?"created":"updated";
             await recordExpenseEvent(c,co,req.identity,{expenseId:id,expenseVersion:Number(savedExpense.version),
               action:eventAction,from:update?old.rows[0]:null,to:savedExpense});
+            if(!update&&prepared.status==='paid'){
+              const payment=await recordExpensePayment(c,req.identity,co,id,{
+                amount:prepared.amountSen/100,sourceType:prepared.paidByType,
+                pettyCashFundId:prepared.pettyCashFundId||'',paidByUserId:prepared.paidByUserId||'',
+                paidByName:prepared.paidByName||'',paidOn:prepared.paidOn,reference:'',
+                reason:`Initial payment for ${String(data.description||'expense').slice(0,900)}`,
+                idempotencyKey:`initial-${createHash('sha256').update(`${co}\u0000${id}`).digest('hex')}`,
+                expectedVersion:Number(savedExpense.version),
+              },audit,{requireWrite:false});
+              savedExpense=(await c.query("SELECT * FROM myfin.expenses WHERE company_id=$1 AND id=$2",[co,id])).rows[0];
+              expenseAuditDetails=expenseAuditDetail(id,null,savedExpense);
+            }
           } else if (update)
             await c.query(
               "UPDATE myfin.clients SET data=$3 WHERE company_id=$1 AND id=$2",
@@ -981,6 +1066,9 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
       scoped(
         req,
         async (c, co) => {
+          if(name==="products")requireCapability(req.identity,"inventoryWrite");
+          if(name==="clients")requireCapability(req.identity,"clientsWrite");
+          if(name==="expenses")requireCapability(req.identity,"expensesRead");
           const id = v.parse(v.id, req.params.id);
           const old = await c.query(
             `SELECT * FROM myfin.${name} WHERE company_id=$1 AND id=$2 FOR UPDATE`,
@@ -989,10 +1077,11 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
           if (!old.rowCount) v.fail(404, "not_found");
           if(name==="expenses"){
             if(old.rows[0].voided_at)v.fail(409,"expense_already_voided");
+            if(Number(old.rows[0].paid_amount_sen||0)>0)v.fail(409,"expense_payments_must_be_reversed");
             const approval=v.parse(z.strictObject({reason:z.string().trim().min(3).max(1000),managerCode:z.string().regex(/^\d{6}$/).optional()}),req.body||{});
             if(operator(req.identity)){
               if(!authOptions.pos||!approval.managerCode)v.fail(403,"manager_approval_required");
-              const approver=await verifyManagerCode(c,authOptions.pos,co,approval.managerCode);
+              const approver=await verifyManagerCode(c,authOptions.pos,co,approval.managerCode,"expensesVoid");
               await c.query("INSERT INTO myfin.action_approvals(id,company_id,actor_id,approver_id,action,subject_type,subject_id,reason) VALUES($1,$2,$3,$4,'void','expense',$5,$6)",[randomUUID(),co,req.identity.id,approver,id,approval.reason]);
             }else requireCapability(req.identity,"expensesVoid");
             const voided=(await c.query("UPDATE myfin.expenses SET voided_at=now(),voided_by=$3,void_reason=$4 WHERE company_id=$1 AND id=$2 RETURNING *",[co,id,req.identity.id,approval.reason])).rows[0];

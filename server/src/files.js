@@ -96,11 +96,13 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       ]);
       if (!r.rowCount) fail(404, "not_found");
       await authorize(c, req.identity, r.rows[0].company_id);
+      if(r.rows[0].kind==="products")requireCapability(req.identity,"catalogRead");
       if(!owner(req.identity)){
         const url="/api/files/"+fileId,co=r.rows[0].company_id;
         const expense=await c.query("SELECT created_by FROM myfin.expenses WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3) LIMIT 1",[co,fileId,url]);
-        if(expense.rowCount&&!manager(req.identity)&&expense.rows[0].created_by!==req.identity.id)fail(403,"access_denied");
+        if(expense.rowCount){requireCapability(req.identity,"expensesRead");if(!manager(req.identity)&&expense.rows[0].created_by!==req.identity.id)fail(403,"access_denied");}
         const refs=await c.query("SELECT * FROM myfin.transactions WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3)",[co,fileId,url]);
+        if(refs.rowCount)requireCapability(req.identity,"transactionsRead");
         if(refs.rows.some(row=>!recordVisible(row,req.identity)))fail(403,"access_denied");
         if(r.rows[0].kind==="receipts"&&!refs.rows.some(row=>recordVisible(row,req.identity)))fail(403,"access_denied");
       }

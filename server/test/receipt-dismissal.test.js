@@ -206,7 +206,7 @@ test('a delayed snapshot-backed receipt preserves capture evidence and remains r
 });
 
 test('individual approval resolves a paid recipe shortage with an audited financial-only inventory decision',async()=>{
- const cashier={id:'cashier-stock',role:'operator',username:'Cashier'},manager={id:'manager-stock',role:'manager'},
+ const cashier={id:'cashier-stock',role:'operator',username:'Cashier'},manager={id:'manager-stock',role:'manager',module_grants:['finance']},
   company={id:'company-stock',name:'Synthetic shop',preferences:{currency:'RM',taxRate:0}};
  const sale=stripConfidential(createSale({id:'recipe-shortage',items:[cartItem({id:'latte',name:'Latte',price:10,
   stock:0,trackStock:false})],company,user:{uid:cashier.id,username:cashier.username},method:'Cash',received:10,offline:true}));
@@ -276,6 +276,10 @@ test('managers, workspace owners and super admins list reviews from another cash
   assert.equal(rows[0].id,review.id);
   assert.deepEqual(filters.at(-1),{allCompanyReviews:true,actorId:identity.id});
  }
+ const financeOnly={id:'finance-only-manager',role:'manager',module_grants:['finance']};
+ const financeRows=await list({params:{company:companyId},identity:financeOnly,authLevel:'password',authSessionId:'session-shared'});
+ assert.equal(financeRows[0].id,review.id);
+ assert.deepEqual(filters.at(-1),{allCompanyReviews:true,actorId:financeOnly.id});
  const operatorIdentity={id:'operator-viewer',role:'operator'};
  await list({params:{company:companyId},identity:operatorIdentity,authLevel:'password',authSessionId:'session-shared'});
  assert.deepEqual(filters.at(-1),{allCompanyReviews:false,actorId:operatorIdentity.id});

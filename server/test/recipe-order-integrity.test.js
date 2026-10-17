@@ -244,13 +244,13 @@ test('existing receipt approval accepts only the recipe resolution recorded by t
     throw Error(`Unexpected query: ${sql}`);
   }},options={serverNow:sale.date};
   const exact=await checkout(client,cashier,company.id,sale,
-    {who:{id:'manager'},reason:'Reviewed',inventoryRecipeResolution:'current_recipe'},options);
+    {who:{id:'manager',role:'manager',module_grants:['finance']},reason:'Reviewed',inventoryRecipeResolution:'current_recipe'},options);
   assert.equal(exact.id,sale.id);
   await assert.rejects(checkout(client,cashier,company.id,sale,
-    {who:{id:'manager'},reason:'Changed',inventoryRecipeResolution:'captured_recipe'},options),
+    {who:{id:'manager',role:'manager',module_grants:['finance']},reason:'Changed',inventoryRecipeResolution:'captured_recipe'},options),
   error=>error?.statusCode===409&&error?.message==='inventory_recipe_resolution_changed');
   row.data={...sale};
   await assert.rejects(checkout(client,cashier,company.id,sale,
-    {who:{id:'manager'},reason:'Invented',inventoryRecipeResolution:'current_recipe'},options),
+    {who:{id:'manager',role:'manager',module_grants:['finance']},reason:'Invented',inventoryRecipeResolution:'current_recipe'},options),
   error=>error?.statusCode===409&&error?.message==='inventory_recipe_resolution_changed');
 });

@@ -54,6 +54,8 @@ export const companyPath = (store, suffix = "") => {
   if (!id) throw new Error("Choose a store first.");
   return "/companies/" + encodeURIComponent(id) + suffix;
 };
+export const userManagementPath = (companyId, suffix = "") =>
+  "/users" + suffix + (companyId ? "?company=" + encodeURIComponent(companyId) : "");
 export async function writeRecord(store, name, data, update = false) {
   const path = companyPath(
     store,

@@ -19,8 +19,7 @@ export const financeModule = {
     });
     await s.refreshData();
   },
-  async addExpense(s,e) {
-    const update=Boolean(e.id);
+  async addExpense(s,e,update=Boolean(e.version)) {
     if(update?!s.can("expensesWrite"):!s.can("expensesCreate"))
       throw new Error(update?"Ask a manager to edit an existing expense.":"You cannot record expenses in this company.");
     const result=await api(companyPath(s,"/expenses"+(update?"/"+encodeURIComponent(e.id):"")),{

@@ -13,6 +13,7 @@ const route = useRoute(), router = useRouter();
 const menu = ref(false), search = ref(false), query = ref(''), pending = ref(false), switcher = ref(false);
 const company = computed(() => Store.state.selectedCompany || {});
 const user = computed(() => Store.state.currentUser || {});
+const canSwitchCompany = computed(() => ['super_admin','workspace_owner'].includes(user.value.role) || Store.state.companies.length > 1);
 const serverReviewCount = computed(() => (Store.state.receiptReviews || []).filter(row => row.status === 'pending').length);
 const navSections = computed(() => WORKSPACE_MODULES
   .map(section => ({ ...section, pages: section.pages.filter(page => canVisit(Store.state.currentUser, page.path)) }))
@@ -138,7 +139,7 @@ onBeforeUnmount(() => {
         <button class="ed-icon-button ed-sidebar-collapse" type="button" :aria-label="sidebarCollapsed?'Expand navigation':'Collapse navigation'" :aria-expanded="!sidebarCollapsed" aria-controls="workspace-navigation" :title="sidebarCollapsed?'Expand navigation':'Collapse navigation'" @click="toggleSidebar"><Icon name="arrow-left" /></button>
       </div>
       <button class="ed-icon-button ed-drawer-close" aria-label="Close menu" @click="menu=false"><Icon name="close" /></button>
-      <button class="ed-store" :disabled="!['super_admin','workspace_owner'].includes(user.role)" :aria-label="`${company.name || 'Company'}. ${['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Current company'}`" :title="sidebarRail?(company.name || 'Current company'):undefined" @click="switcher=true"><span class="ed-avatar solid">{{ initials(company.name) }}</span><span class="ed-store-copy"><strong>{{ company.name }}</strong><small>{{ ['super_admin','workspace_owner'].includes(user.role)?'Switch company':'Your company' }}</small></span><Icon v-if="['super_admin','workspace_owner'].includes(user.role)" name="down" /></button>
+      <button class="ed-store" :disabled="!canSwitchCompany" :aria-label="`${company.name || 'Company'}. ${canSwitchCompany?'Switch company':'Current company'}`" :title="sidebarRail?(company.name || 'Current company'):undefined" @click="switcher=true"><span class="ed-avatar solid">{{ initials(company.name) }}</span><span class="ed-store-copy"><strong>{{ company.name }}</strong><small>{{ canSwitchCompany?'Switch company':'Your company' }}</small></span><Icon v-if="canSwitchCompany" name="down" /></button>
       <nav class="ed-nav" aria-label="Modules">
         <div class="ed-nav-heading">Modules</div>
         <section v-for="(section,index) in navSections" :key="section.id" class="ed-nav-section" :class="{active:isActiveModule(section)}">
@@ -192,7 +193,7 @@ onBeforeUnmount(() => {
           <h1 id="workspace-page-title">{{ pageMeta.title }}</h1>
           <p>{{ pageMeta.description }}</p>
         </header>
-        <div class="ed-route-view"><router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="company.id+user.role" :class="{'ed-legacy':!['/overview','/pos','/orders','/storefront','/kitchen','/finance-sales','/payment-operations','/consolidation','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view></div>
+        <div class="ed-route-view"><router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="`${company.id}:${user.role}:${(user.module_grants||[]).join(',')}`" :class="{'ed-legacy':!['/overview','/pos','/orders','/storefront','/kitchen','/finance-sales','/payment-operations','/consolidation','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view></div>
         <footer class="ed-footer"><span>MYFIN / EDITION<span v-if="Store.state.offlineStatus"> · {{ Store.state.offlineStatus }}</span></span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
       </main>
     </div>

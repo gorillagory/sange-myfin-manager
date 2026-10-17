@@ -3,6 +3,8 @@ import { z } from "zod";
 import * as v from "./validation.js";
 import { managementLock,managementSession,requirePasswordSession } from "./management.js";
 import { generatePosCode,protectPosCode } from "./pos-auth.js";
+import { publicCompany,requireCapability } from "./access.js";
+import { effectiveModulesFor } from "../../src/domain/permissions.js";
 
 const slug=z.string().trim().toLowerCase().min(1).max(63).regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/);
 const name=z.string().trim().min(1).max(160);
@@ -60,8 +62,24 @@ export function registerWorkspaces(app,{db,authOptions,authorize,audit,validateF
     const r=await c.query("UPDATE myfin.workspaces SET suspended_at=CASE WHEN $2 THEN coalesce(suspended_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 RETURNING id",[id,suspended]);if(!r.rowCount)v.fail(404,"not_found");await revokeScopeSessions(c,id);return {ok:true};
   }));
   app.get("/api/workspaces/:workspace/companies",req=>scope(req,async(c,who)=>{
-    const id=v.parse(v.id,req.params.workspace);if(!await owns(c,who,id)&&!(await c.query("SELECT 1 FROM myfin.companies co JOIN myfin.memberships m ON m.company_id=co.id WHERE co.workspace_id=$1 AND m.identity_id=$2",[id,who.id])).rowCount)v.fail(403,"access_denied");
-    const r=await c.query("SELECT c.*,(SELECT hostname FROM myfin.tenant_hosts h WHERE h.company_id=c.id AND h.canonical AND h.disabled_at IS NULL) AS hostname FROM myfin.companies c WHERE c.workspace_id=$1 AND c.archived_at IS NULL ORDER BY c.slug",[id]);return r.rows.map(x=>({...x.data,id:x.id,name:x.name,slug:x.slug,workspace_id:x.workspace_id,hostname:x.hostname||"",suspended:!!x.suspended_at}));
+    const id=v.parse(v.id,req.params.workspace),fullWorkspace=await owns(c,who,id);
+    if(!fullWorkspace&&!(await c.query("SELECT 1 FROM myfin.companies co JOIN myfin.memberships m ON m.company_id=co.id WHERE co.workspace_id=$1 AND m.identity_id=$2",[id,who.id])).rowCount)v.fail(403,"access_denied");
+    const r=await c.query(`SELECT c.*,
+      (SELECT hostname FROM myfin.tenant_hosts h WHERE h.company_id=c.id AND h.canonical AND h.disabled_at IS NULL) AS hostname,
+      m.role AS membership_role,g.module_ids AS membership_modules
+      FROM myfin.companies c
+      LEFT JOIN myfin.memberships m ON m.company_id=c.id AND m.identity_id=$3
+      LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
+      WHERE c.workspace_id=$1 AND c.archived_at IS NULL AND ($2 OR m.identity_id IS NOT NULL)
+      ORDER BY c.slug`,[id,fullWorkspace,who.id]);
+    return r.rows.map(x=>{
+      const company={...x.data,id:x.id,name:x.name,slug:x.slug,workspace_id:x.workspace_id,
+        hostname:x.hostname||"",suspended:!!x.suspended_at};
+      const actor=fullWorkspace?{...who,role:"workspace_owner",workspace_id:id,company_id:x.id}
+        :{...who,role:x.membership_role,workspace_id:id,company_id:x.id,module_grants:x.membership_modules};
+      return {...publicCompany(company,actor),id:x.id,name:x.name,slug:x.slug,workspace_id:x.workspace_id,
+        hostname:x.hostname||"",suspended:!!x.suspended_at};
+    });
   }));
   app.post("/api/workspaces/:workspace/companies",req=>scope(req,async(c,who)=>{
     const workspaceId=v.parse(v.id,req.params.workspace);await requireOwner(c,who,workspaceId);
@@ -80,15 +98,24 @@ export function registerWorkspaces(app,{db,authOptions,authorize,audit,validateF
     await c.query("UPDATE myfin.companies SET suspended_at=CASE WHEN $2 THEN coalesce(suspended_at,now()) ELSE NULL END WHERE id=$1",[companyId,suspended]);await revokeScopeSessions(c,row.workspace_id,companyId);return {ok:true};
   }));
   app.post("/api/companies/:company/users/:user/pos-code",req=>scope(req,async(c,who)=>{
-    if(!authOptions.pos)v.fail(503,"pos_code_unavailable");const companyId=v.parse(v.id,req.params.company),identityId=v.parse(v.id,req.params.user);await authorize(c,who,companyId,true);
-    const target=(await c.query("SELECT role FROM myfin.memberships WHERE company_id=$1 AND identity_id=$2",[companyId,identityId])).rows[0];if(!target||!["manager","operator"].includes(target.role))v.fail(404,"not_found");if(who.role==="manager"&&target.role!=="operator")v.fail(403,"access_denied");
+    if(!authOptions.pos)v.fail(503,"pos_code_unavailable");const companyId=v.parse(v.id,req.params.company),identityId=v.parse(v.id,req.params.user);await authorize(c,who,companyId,true);requireCapability(who,"usersManage");
+    const target=(await c.query(`SELECT m.role,g.module_ids FROM myfin.memberships m
+      LEFT JOIN myfin.membership_module_grants g ON g.company_id=m.company_id AND g.identity_id=m.identity_id
+      WHERE m.company_id=$1 AND m.identity_id=$2`,[companyId,identityId])).rows[0];
+    if(!target||!["manager","operator"].includes(target.role))v.fail(404,"not_found");
+    if(who.role==="manager"){
+      if(target.role!=="operator")v.fail(403,"access_denied");
+      const ownModules=new Set(effectiveModulesFor(who));
+      if(effectiveModulesFor({role:target.role,module_grants:target.module_ids}).some(module=>!ownModules.has(module)))
+        v.fail(403,"module_delegation_denied");
+    }
     let code,protectedCode;for(let i=0;i<20;i++){code=generatePosCode();protectedCode=await protectPosCode(authOptions.pos,companyId,code);if(!(await c.query("SELECT 1 FROM myfin.pos_access_codes WHERE company_id=$1 AND lookup_digest=$2 AND identity_id<>$3",[companyId,protectedCode.lookupDigest,identityId])).rowCount)break;code=null;}if(!code)v.fail(503,"pos_code_generation_failed");
     await c.query(`INSERT INTO myfin.pos_access_codes(company_id,identity_id,lookup_digest,salt,verifier,created_by)
       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(company_id,identity_id) DO UPDATE SET lookup_digest=EXCLUDED.lookup_digest,salt=EXCLUDED.salt,verifier=EXCLUDED.verifier,created_by=EXCLUDED.created_by,rotated_at=now(),disabled_at=NULL`,[companyId,identityId,protectedCode.lookupDigest,protectedCode.salt,protectedCode.verifier,who.id]);
     await c.query("UPDATE myfin.pos_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE company_id=$1 AND identity_id=$2",[companyId,identityId]);return {code};
   }));
   app.delete("/api/companies/:company/users/:user/pos-code",req=>scope(req,async(c,who)=>{
-    const companyId=v.parse(v.id,req.params.company),identityId=v.parse(v.id,req.params.user);await authorize(c,who,companyId,true);const target=(await c.query("SELECT role FROM myfin.memberships WHERE company_id=$1 AND identity_id=$2",[companyId,identityId])).rows[0];if(!target)v.fail(404,"not_found");if(who.role==="manager"&&target.role!=="operator")v.fail(403,"access_denied");
+    const companyId=v.parse(v.id,req.params.company),identityId=v.parse(v.id,req.params.user);await authorize(c,who,companyId,true);requireCapability(who,"usersManage");const target=(await c.query("SELECT role FROM myfin.memberships WHERE company_id=$1 AND identity_id=$2",[companyId,identityId])).rows[0];if(!target)v.fail(404,"not_found");if(who.role==="manager"&&target.role!=="operator")v.fail(403,"access_denied");
     await c.query("UPDATE myfin.pos_access_codes SET disabled_at=coalesce(disabled_at,now()) WHERE company_id=$1 AND identity_id=$2",[companyId,identityId]);await c.query("UPDATE myfin.pos_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE company_id=$1 AND identity_id=$2",[companyId,identityId]);return {ok:true};
   }));
 }

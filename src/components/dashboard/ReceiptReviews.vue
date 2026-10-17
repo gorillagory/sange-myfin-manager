@@ -259,7 +259,7 @@ watch(() => Store.state.selectedCompany?.id, () => { selected.value = null; bulk
 </script>
 
 <template>
-  <div v-if="Store.can('checkout')" class="ed-page">
+  <div v-if="Store.can('receiptReviewsRead')" class="ed-page">
     <header class="ed-page-head">
       <div>
         <div class="ed-eyebrow">WORKSPACE / PAYMENT REVIEWS</div>

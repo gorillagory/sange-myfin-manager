@@ -502,6 +502,7 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
     }));
 
   app.get('/api/companies/:company/loyalty', req => scoped(req, async (c, companyId) => {
+    requireCapability(req.identity, 'marketingRead');
     if (!privileged(req.identity)) v.fail(403, 'access_denied');
     const company = (await c.query('SELECT workspace_id FROM myfin.companies WHERE id=$1', [companyId])).rows[0];
     const row = (await c.query(
@@ -539,6 +540,7 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
   }));
 
   app.get('/api/companies/:company/loyalty/events', req => scoped(req, async (c, companyId) => {
+    requireCapability(req.identity, 'marketingRead');
     if (!privileged(req.identity)) v.fail(403, 'access_denied');
     const query = v.parse(z.strictObject({ limit: z.coerce.number().int().min(1).max(200).default(50) }), req.query);
     const company = (await c.query('SELECT workspace_id FROM myfin.companies WHERE id=$1', [companyId])).rows[0];

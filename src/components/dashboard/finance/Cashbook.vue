@@ -4,6 +4,7 @@ import { Store } from '../../../store';
 import { api, companyPath } from '../../../services/api';
 import { businessDate, money } from '../../../domain/pos';
 import { reportRange } from '../../../domain/financialReport';
+import { cashbookExpensePayment } from '../../../domain/expenseReport';
 import Icon from '../../ui/EditionIcon.vue';
 
 const today = businessDate();
@@ -12,10 +13,12 @@ let generation = 0;
 const currency = computed(() => Store.state.selectedCompany?.preferences?.currency || 'RM');
 const entries = computed(() => {
   const receipts = (report.value?.receipts || []).map(row => ({ ...row, direction: 'in', label: row.kind, description: row.number || row.id, cashImpact: true }));
-  const expenses = (report.value?.expenses || []).map(row => ({ ...row,
+  const expenses = (report.value?.expenses || []).filter(row => row.cashImpact || ['pending','pending_payment','partially_paid','overdue'].includes(row.status)).map(row => ({ ...row,
     date:row.cashImpact?(row.cashDate||row.date):row.date,
+    amount:row.cashImpact?row.amount:(row.outstandingAmount??row.amount),
     direction: row.cashImpact ? 'out' : 'pending', label: row.kind, description: row.description || row.number || row.id }));
-  return [...receipts, ...expenses].sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)));
+  const expensePayments = (report.value?.expenseCashMovements || []).map(cashbookExpensePayment);
+  return [...receipts, ...expenses, ...expensePayments].sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)));
 });
 const shown = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase();

@@ -28,10 +28,11 @@ export function registerDocuments(app,{db,authorize,audit}){
  };
  const output=async(c,co,id,who)=>recordOutput(await get(c,co,id,who),who);
  app.get("/api/companies/:company/documents",req=>scope(req,async(c,co,who)=>{
+  requireCapability(who,"documentsRead");
   const r=await c.query("SELECT t.*,(SELECT coalesce(sum(amount),0) FROM myfin.document_payments p WHERE p.company_id=t.company_id AND p.document_id=t.id) AS paid_amount FROM myfin.transactions t WHERE company_id=$1 AND source NOT IN ('pos','manual_sale') AND ($2 OR (document_state<>'legacy' AND data->>'type' IN ('Invoice','Quote') AND ($3 OR (document_state='draft' AND (actor_id=$4 OR assigned_to=$4)))) OR ($3 AND document_state='legacy' AND data->>'type'='Invoice' AND data->>'status' IN ('Pending','Partially paid','Paid','Cleared'))) ORDER BY id LIMIT 10001",[co,owner(who),manager(who),who.id]);
   if(r.rowCount>10000)v.fail(409,"document_list_limit");return r.rows.filter(row=>!["pos","manual_sale"].includes(row.source)&&recordVisible(row,who)).map(row=>recordOutput(row,who));
  }));
- app.get("/api/companies/:company/documents/:id",req=>scope(req,async(c,co,who)=>output(c,co,req.params.id,who)));
+ app.get("/api/companies/:company/documents/:id",req=>scope(req,async(c,co,who)=>{requireCapability(who,"documentsRead");return output(c,co,req.params.id,who);}));
  async function save(req,update){return scope(req,async(c,co,who)=>{
   requireCapability(who,"documentsDraft");if(containsConfidential(req.body))v.fail(403,"financial_fields_restricted");
   const data=v.parse(draft,req.body),id=update?v.parse(v.id,req.params.id):data.id||randomUUID();
@@ -54,6 +55,7 @@ export function registerDocuments(app,{db,authorize,audit}){
  app.post("/api/companies/:company/documents",req=>save(req,false));
  app.put("/api/companies/:company/documents/:id",req=>save(req,true));
  app.delete("/api/companies/:company/documents/:id",req=>scope(req,async(c,co,who)=>{
+  requireCapability(who,"documentsDraft");
   const row=await get(c,co,req.params.id,who);if(row.document_state!=="draft")v.fail(409,"issued_document_immutable");
   // Retain drafts as cancelled history instead of deleting their audit lineage.
   await c.query("UPDATE myfin.transactions SET document_state='voided' WHERE company_id=$1 AND id=$2",[co,row.id]);await event(c,who,co,row.id,"cancel_draft");return {ok:true};
@@ -106,6 +108,7 @@ export function registerDocuments(app,{db,authorize,audit}){
   await c.query("INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,data,document_state,correction_of) VALUES($1,$2,$3,'manual',$4,$5,'draft',$6)",[co,id,who.id,row.total,data,row.id]);await event(c,who,co,id,"create_correction",{originalId:row.id,reason});return output(c,co,id,who);
  }));
  app.get("/api/companies/:company/templates",req=>scope(req,async(c,co,who)=>{
+  requireCapability(who,"templatesRead");
   const r=await c.query("SELECT t.*,v.settings AS published_settings,d.version AS default_version FROM myfin.document_templates t LEFT JOIN myfin.document_template_versions v ON v.template_id=t.id AND v.version=t.published_version LEFT JOIN myfin.document_template_defaults d ON d.company_id=t.company_id AND d.kind=t.kind AND d.template_id=t.id WHERE t.company_id=$1 ORDER BY t.kind,t.name",[co]);
   return r.rows.filter(row=>!operator(who)||row.published_version).map(row=>({id:row.id,name:row.name,kind:row.kind,settings:publicTemplate(operator(who)?row.published_settings:row.settings),version:operator(who)?row.published_version:row.version,published:!!row.published_version,publishedVersion:row.published_version,isDefault:row.default_version!=null&&row.default_version===row.published_version,defaultVersion:row.default_version??null,publishedSettings:row.published_settings?publicTemplate(row.published_settings):null}));
  }));
