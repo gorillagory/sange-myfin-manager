@@ -52,7 +52,9 @@ expected={
 actual={key:summary[key] for key in expected}
 assert actual==expected,(actual,expected)
 assert details['totals']==expected
-assert details['counts']=={'sales':21,'expenses':5,'receipts':8,'quotes':16}
+assert details['counts']=={
+  'sales':21,'expenses':5,'expenseCashMovements':3,'receipts':8,'quotes':16,
+}
 assert not details['limited']
 assert len(details['sales'])==21 and len(details['expenses'])==5
 assert len(details['receipts'])==8 and len(details['quotes'])==16
