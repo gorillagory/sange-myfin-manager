@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertRecipeAvailability,catalogTracksStock,consumeRecipeStock,planRecipeConsumption,recipeAvailabilityForProducts,recipeRows,saveRecipe} from '../src/inventory-recipes.js';
+import {assertRecipeAvailability,catalogTracksStock,consumeRecipeStock,planRecipeConsumption,recipeAvailabilityForProducts,recipeRows,recipeVersionRows,saveRecipe} from '../src/inventory-recipes.js';
 
 class RecipeDatabase {
   constructor({milk=1000,beans=100,recipeEffectiveAt='2026-10-09T00:00:00.000Z'}={}){
@@ -141,6 +141,28 @@ test('recipe projections expose quantities and availability without confidential
   const result=await recipeRows(db,'company');
   assert.equal(result[0].availability.units,5);
   assert.doesNotMatch(JSON.stringify(result),/cost|93847/i);
+});
+
+test('inventory build history exposes immutable versions and captured stock-unit revisions',async()=>{
+  const db={query:async sql=>{
+    if(sql.includes('FROM myfin.inventory_recipes r JOIN myfin.products p'))return {rows:[{id:'build',product_id:'latte',variant_id:'large',version:'2',
+      product_data:{name:'Latte',variants:[{id:'large',name:'Large'}]}}],rowCount:1};
+    if(sql.includes('FROM myfin.inventory_recipe_versions'))return {rows:[
+      {version:'2',enabled:true,catalog_stock_disabled:true,created_by:'manager',created_at:'2026-10-18T08:00:00Z'},
+      {version:'1',enabled:false,catalog_stock_disabled:true,created_by:'owner',created_at:'2026-10-17T08:00:00Z'},
+    ],rowCount:2};
+    if(sql.includes('FROM myfin.inventory_recipe_components component'))return {rows:[
+      {recipe_version:'2',stock_item_id:'milk',stock_item_name:'Milk',stock_tracking_mode:'volume',stock_base_unit:'ml',stock_unit_version:'4',quantity_per_unit:'250'},
+      {recipe_version:'1',stock_item_id:'milk',stock_item_name:'Milk',stock_tracking_mode:'volume',stock_base_unit:'L',stock_unit_version:'3',quantity_per_unit:'0.2'},
+    ],rowCount:2};
+    throw Error(`Unexpected SQL: ${sql}`);
+  }};
+  const result=await recipeVersionRows(db,'company','build');
+  assert.equal(result.productName,'Latte');assert.equal(result.variantName,'Large');assert.equal(result.currentVersion,2);
+  assert.deepEqual(result.versions.map(row=>[row.version,row.enabled,row.components[0].trackingMode,row.components[0].baseUnit,
+    row.components[0].quantityPerUnit,row.components[0].stockUnitVersion]),[
+    [2,true,'volume','ml',250,4],[1,false,'volume','L',0.2,3],
+  ]);
 });
 
 test('a forged pre-activation date cannot bypass the current server recipe',async()=>{

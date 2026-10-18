@@ -19,4 +19,9 @@ export const stockModule={
     const result=await api(companyPath(store,'/stock_items/'+encodeURIComponent(itemId)+'/movements'),{method:'POST',body:movement});
     await store.refreshData();return result;
   },
+  async baseline(store,payload){
+    if(!store.can('inventoryWrite'))throw new Error('Only a manager or workspace owner can establish stock baselines in this company.');
+    const result=await api(companyPath(store,'/stock-baselines'),{method:'POST',body:payload});
+    await store.refreshData();return result;
+  },
 };

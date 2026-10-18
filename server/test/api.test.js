@@ -98,6 +98,9 @@ test('the complete authenticated route graph registers without duplicate endpoin
   t.after(()=>app.close());
   await app.ready();
   assert.equal(app.hasRoute({method:'GET',url:'/api/companies/:company/inventory-recipes'}),true);
+  assert.equal(app.hasRoute({method:'GET',url:'/api/companies/:company/inventory-builds'}),true);
+  assert.equal(app.hasRoute({method:'GET',url:'/api/companies/:company/inventory-builds/:id/versions'}),true);
+  assert.equal(app.hasRoute({method:'POST',url:'/api/companies/:company/stock-baselines'}),true);
 });
 test('pool options are passed through, idle errors are sanitized, close is idempotent', async () => {
   let pool, closes = 0;

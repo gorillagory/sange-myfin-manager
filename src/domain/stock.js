@@ -9,6 +9,15 @@ const amount=value=>Math.round(Number(value)*1e6)/1e6;
 export const stockMode = value => STOCK_MODES.find(mode=>mode.value===value);
 export const defaultStockUnit = mode => stockMode(mode)?.units[0] || 'pcs';
 
+export function stockTypeOptions(items=[]) {
+  const types=new Map();
+  for(const item of items){
+    const value=clean(item?.category);
+    if(value&&!types.has(value.toLocaleLowerCase()))types.set(value.toLocaleLowerCase(),value);
+  }
+  return [...types.values()].sort((a,b)=>a.localeCompare(b));
+}
+
 export function normalizeStockItem(input={}) {
   const mode=stockMode(input.trackingMode)?.value||'count';
   return {

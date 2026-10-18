@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0045_stock_unit_corrections.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0046_stock_baselines_and_build_versions.sql';
 
 const tableGroups = [
   {
@@ -42,7 +42,8 @@ const tableGroups = [
   {
     privileges: ['SELECT', 'INSERT'],
     objects: [
-      'stock_ledger', 'stock_unit_corrections', 'order_events', 'customer_identities', 'customer_company_links',
+      'stock_ledger', 'stock_unit_corrections', 'stock_baselines', 'stock_baseline_items',
+      'order_events', 'customer_identities', 'customer_company_links',
       'customer_consent_events', 'customer_loyalty_events',
       'customer_order_events', 'customer_order_payments', 'expense_import_batches',
       'expense_events', 'activities', 'stock_movements', 'company_enrollments',

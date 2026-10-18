@@ -283,6 +283,33 @@ async function recipeOutput(c,companyId,recipeId){
   return found;
 }
 
+async function recipeVersionRows(c,companyId,recipeId){
+  const recipe=(await c.query(`SELECT r.*,p.data AS product_data
+    FROM myfin.inventory_recipes r JOIN myfin.products p
+      ON p.company_id=r.company_id AND p.id=r.product_id
+    WHERE r.company_id=$1 AND r.id=$2`,[companyId,recipeId])).rows[0];
+  if(!recipe)v.fail(404,'inventory_build_not_found');
+  const versions=(await c.query(`SELECT * FROM myfin.inventory_recipe_versions
+    WHERE company_id=$1 AND recipe_id=$2 ORDER BY version DESC`,[companyId,recipeId])).rows;
+  const components=(await c.query(`SELECT component.*,item.name AS stock_item_name
+    FROM myfin.inventory_recipe_components component
+    JOIN myfin.stock_items item ON item.company_id=component.company_id AND item.id=component.stock_item_id
+    WHERE component.company_id=$1 AND component.recipe_id=$2
+    ORDER BY component.recipe_version DESC,component.position`,[companyId,recipeId])).rows;
+  const byVersion=new Map();
+  for(const row of components){
+    if(!byVersion.has(Number(row.recipe_version)))byVersion.set(Number(row.recipe_version),[]);
+    byVersion.get(Number(row.recipe_version)).push({stockItemId:row.stock_item_id,stockItemName:row.stock_item_name,
+      trackingMode:row.stock_tracking_mode,stockUnitVersion:Number(row.stock_unit_version),baseUnit:row.stock_base_unit,
+      quantityPerUnit:number(row.quantity_per_unit)});
+  }
+  const product=recipe.product_data||{},variant=(product.variants||[]).find(row=>row.id===recipe.variant_id);
+  return {id:recipe.id,productId:recipe.product_id,variantId:recipe.variant_id||'',
+    productName:String(product.name||recipe.product_id),variantName:String(variant?.name||''),currentVersion:Number(recipe.version),
+    versions:versions.map(row=>({version:Number(row.version),enabled:row.enabled,catalogStockDisabled:row.catalog_stock_disabled,
+      createdBy:row.created_by,createdAt:row.created_at,components:byVersion.get(Number(row.version))||[]}))};
+}
+
 async function saveRecipe(c,who,companyId,input,audit){
   let data;
   try{data=normalizeRecipeDraft(v.parse(recipeSchema,input));}catch(error){
@@ -320,21 +347,32 @@ async function saveRecipe(c,who,companyId,input,audit){
     VALUES($1,$2,$3,$4,$5,$6,$7)`,[companyId,id,nextVersion,data.enabled,!catalogTracksStock(product.data),requestDigest,who.id]);
   for(let position=0;position<data.components.length;position++){
     const component=data.components[position];
-    await c.query(`INSERT INTO myfin.inventory_recipe_components(company_id,recipe_id,recipe_version,stock_item_id,position,quantity_per_unit)
+    await c.query(`INSERT INTO myfin.inventory_recipe_components(company_id,recipe_id,recipe_version,stock_item_id,position,
+        quantity_per_unit)
       VALUES($1,$2,$3,$4,$5,$6)`,[companyId,id,nextVersion,component.stockItemId,position,component.quantityPerUnit]);
   }
-  await audit(c,who,companyId,data.enabled?'Enable inventory recipe':'Save inventory recipe',`${data.productId}${data.variantId?` · ${data.variantId}`:''} · v${nextVersion}`);
+  await audit(c,who,companyId,data.enabled?'Enable inventory build':'Save inventory build',`${data.productId}${data.variantId?` · ${data.variantId}`:''} · v${nextVersion}`);
   return recipeOutput(c,companyId,id);
 }
 
 export function registerInventoryRecipes(app,{scoped,audit}){
-  app.get('/api/companies/:company/inventory-recipes',req=>scoped(req,async(c,companyId)=>{
+  const list=req=>scoped(req,async(c,companyId)=>{
     requireCapability(req.identity,'inventoryWrite');
     return {rows:await recipeRows(c,companyId)};
-  }));
-  app.put('/api/companies/:company/inventory-recipes',req=>scoped(req,async(c,companyId)=>{
+  });
+  const save=req=>scoped(req,async(c,companyId)=>{
     requireCapability(req.identity,'inventoryWrite');
     return saveRecipe(c,req.identity,companyId,req.body,audit);
+  });
+  // Keep the original endpoints for installed clients while presenting the
+  // more universal Inventory Builds language to new clients.
+  app.get('/api/companies/:company/inventory-recipes',list);
+  app.put('/api/companies/:company/inventory-recipes',save);
+  app.get('/api/companies/:company/inventory-builds',list);
+  app.put('/api/companies/:company/inventory-builds',save);
+  app.get('/api/companies/:company/inventory-builds/:id/versions',req=>scoped(req,async(c,companyId)=>{
+    requireCapability(req.identity,'inventoryWrite');
+    return recipeVersionRows(c,companyId,v.parse(v.id,req.params.id));
   }));
 }
 
@@ -421,7 +459,7 @@ export async function consumeRecipeStock(c,{companyId,actorId,saleId,serverOccur
         reason,idempotency_key,request_digest,source_type,source_id,source_details)
       VALUES($1,$2,$3,$4,'consume',$5,$6,$7,$8,$9,$10,'pos_sale',$11,$12) RETURNING *`,
     [companyId,id,stock.id,actorId,quantity,`-${quantity}`,after,
-      `Automatic recipe consumption for sale ${saleId}`,movementKey(companyId,saleId,stock.id),requestDigest,saleId,details])).rows[0];
+      `Automatic inventory-build consumption for sale ${saleId}`,movementKey(companyId,saleId,stock.id),requestDigest,saleId,details])).rows[0];
     movements.push(ledgerOutput(inserted));
   }
   const details={serverOccurredAt:serverIso,capturedAt:capturedIso,mode,reservationOrderId:reservationOrderId||'',
@@ -432,4 +470,4 @@ export async function consumeRecipeStock(c,{companyId,actorId,saleId,serverOccur
   return {duplicate:false,...details,movements};
 }
 
-export { activeRecipeReservationQuantities, planRecipeConsumption, recipeRows, resolvedRecipes, saveRecipe };
+export { activeRecipeReservationQuantities, planRecipeConsumption, recipeRows, recipeVersionRows, resolvedRecipes, saveRecipe };

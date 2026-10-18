@@ -5,7 +5,7 @@ const vite=await createServer({server:{middlewareMode:true,hmr:{port:0}},appType
 const {Store}=await vite.ssrLoadModule('/src/store/editionStore.js');
 const {localPos}=await vite.ssrLoadModule('/src/services/posLocal.js');
 const {checkoutPayload}=await vite.ssrLoadModule('/src/services/postSale.js');
-const {inventoryModule}=await vite.ssrLoadModule('/src/store/inventory.js');
+const {inventoryModule,productWritePayload}=await vite.ssrLoadModule('/src/store/inventory.js');
 const {hydrationCollections}=await vite.ssrLoadModule('/src/domain/viewAccess.js');
 const staff={uid:'cashier',id:'cashier',role:'company_user',company_id:'a'};
 const owner={...staff,role:'super',company_id:''};
@@ -87,9 +87,13 @@ try{
   const accepted=await Store.completeSale(sale,'cashier:a:till',{cart:[]});assert.equal(accepted.syncStatus,'synced');assert.ok(!(await localPos.sales('cashier','a')).some(row=>row.id===sale.id));assert.ok(!Store.state.pendingSales.some(row=>row.id===sale.id));
  });
  await test('manager product writes strip nested costs and staff cannot invoke catalog mutations',async()=>{
-  const product={id:'p',sku:'A',name:'Item',price:10,cost:88,variants:[{id:'v',name:'Option',price:12,cost:99}],hasVariants:true,stock:3};
+  const product={id:'p',company_id:'a',version:4,sku:'A',name:'Item',price:10,cost:88,stock:3,trackStock:true,hasVariants:true,
+    recipeTracked:true,availableQuantity:8,recipeVersion:2,serverOnly:'read model',
+    variants:[{id:'v',name:'Option',price:12,cost:99,stock:3,recipeTracked:true,availableQuantity:5,recipeVersion:3,serverOnly:'read model'},
+      {id:'new-variant',name:'New option',price:13,cost:7,stock:0}]};
+  const writable=productWritePayload(product);assert.equal(writable.version,4);assert.deepEqual(writable.variants.map(row=>row.id),['v','new-variant']);assert.equal(writable.cost,88);assert.equal(writable.variants[0].cost,99);assert.equal(writable.recipeTracked,undefined);assert.equal(writable.availableQuantity,undefined);assert.equal(writable.recipeVersion,undefined);assert.equal(writable.serverOnly,undefined);assert.equal(writable.variants[0].recipeTracked,undefined);assert.equal(writable.variants[0].availableQuantity,undefined);assert.equal(writable.variants[0].recipeVersion,undefined);assert.equal(writable.variants[0].serverOnly,undefined);
   const manager={...staff,role:'company_admin'};reset(manager);const mock={state:Store.state,can:action=>Store.can(action),refreshData:async()=>{},notify:()=>{}};
-  await inventoryModule.updateProduct(mock,product);const write=requested.find(r=>r.options.method==='PUT');assert.ok(write);const sent=JSON.parse(write.options.body);assert.equal(sent.cost,undefined);assert.equal(sent.variants[0].cost,undefined);
+  await inventoryModule.updateProduct(mock,product);const write=requested.find(r=>r.options.method==='PUT');assert.ok(write);const sent=JSON.parse(write.options.body);assert.equal(sent.version,4);assert.deepEqual(sent.variants.map(row=>row.id),['v','new-variant']);assert.equal(sent.cost,undefined);assert.equal(sent.variants[0].cost,undefined);assert.equal(sent.variants[1].cost,undefined);
   reset(staff);assert.throws(()=>inventoryModule.addProduct(mock,product),/not allow|manager|permission|access/i);assert.ok(!requested.some(r=>r.options.method==='POST'));
  });
 }finally{Store.clearSession();await vite.close();}

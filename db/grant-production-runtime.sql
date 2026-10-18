@@ -11,6 +11,7 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.stock_items TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.stock_packagings TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.stock_ledger TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.stock_unit_corrections TO myfin_prod_runtime;
+GRANT SELECT,INSERT ON myfin.stock_baselines,myfin.stock_baseline_items TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.stock_internal_code_counters TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.orders TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.order_events TO myfin_prod_runtime;

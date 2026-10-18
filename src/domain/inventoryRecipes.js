@@ -31,7 +31,7 @@ export function validateRecipeStockUnits(draft,stockItems=[]){
   for(const component of draft.components||[]){
     const item=items.get(clean(component.stockItemId));
     if((item?.trackingMode||item?.tracking_mode)==='count'&&!Number.isInteger(Number(component.quantityPerUnit)))
-      throw new Error('Counted recipe components must use whole base units.');
+      throw new Error('Counted inventory-build components must use whole base units.');
   }
   return draft;
 }

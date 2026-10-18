@@ -21,6 +21,10 @@ const item=z.strictObject({
   packagings:z.array(packaging).max(50).default([]),unitCorrection:unitCorrection.optional(),
 });
 const movement=z.strictObject({kind:z.enum(['receive','count','adjust','consume','waste']),quantity,unitVersion:z.number().int().positive(),packagingId:z.union([v.id,z.literal('')]).optional(),supplierId:z.union([v.id,z.literal('')]).optional(),expenseId:z.union([v.id,z.literal('')]).optional(),reason:z.string().trim().min(3).max(1000),idempotencyKey:z.string().min(8).max(128)});
+const baselineItem=z.strictObject({stockItemId:v.id,expectedVersion:z.number().int().positive(),
+  unitVersion:z.number().int().positive(),quantity:quantity.nonnegative()});
+const baseline=z.strictObject({reason:z.string().trim().min(8).max(1000),idempotencyKey:z.string().min(8).max(128),
+  items:z.array(baselineItem).min(1).max(500)});
 const key=value=>String(value||'').trim().toLocaleUpperCase();
 const number=value=>Number(value);
 export const countedQuantitiesValid=values=>values.every(value=>Number.isInteger(number(value)));
@@ -51,7 +55,13 @@ export const ledgerOutput=row=>({id:row.id,company_id:row.company_id,itemId:row.
     expenseDueDate:dateOnly(row.expense_due_date),expensePaidOn:dateOnly(row.expense_paid_on),
     expenseVoided:Boolean(row.expense_voided_at),expenseEffectiveStatus:row.expense_voided_at?'voided':effectiveExpenseStatus({
       status:row.expense_status,creditDueDate:dateOnly(row.expense_due_date)},businessDate())}:{}),
-  reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},createdAt:row.created_at});
+  reason:row.reason,sourceType:row.source_type||'',sourceId:row.source_id||'',sourceDetails:row.source_details||{},
+  baselineId:row.baseline_id||'',createdAt:row.created_at});
+
+const baselineOutput=row=>({id:row.id,company_id:row.company_id,reason:row.reason,itemCount:Number(row.item_count),
+  createdBy:row.created_by,createdAt:row.created_at});
+const baselineItemOutput=row=>({stockItemId:row.stock_item_id,unitVersion:Number(row.stock_unit_version),
+  quantityBefore:number(row.quantity_before),quantityAfter:number(row.quantity_after),movementId:row.ledger_id});
 
 async function ensureCodes(c,companyId,itemId,codes){
   const normalized=codes.filter(Boolean).map(key);
@@ -103,10 +113,11 @@ async function reconcilePackagings(c,companyId,itemId,requested,{allowQuantityCo
   }
 }
 
-const dependencyKeys=['ledger','recipes','identifiers','purchaseOrders','receipts','batches','weightedCosts','valuationEvents','alerts','reservations','expenses','corrections'];
+const dependencyKeys=['ledger','baselines','recipes','identifiers','purchaseOrders','receipts','batches','weightedCosts','valuationEvents','alerts','reservations','expenses','corrections'];
 async function stockDependencies(c,companyId,itemId){
   const row=(await c.query(`SELECT
     (SELECT count(*)::integer FROM myfin.stock_ledger WHERE company_id=$1 AND item_id=$2) AS ledger,
+    (SELECT count(*)::integer FROM myfin.stock_baseline_items WHERE company_id=$1 AND stock_item_id=$2) AS baselines,
     (SELECT count(*)::integer FROM myfin.inventory_recipe_components WHERE company_id=$1 AND stock_item_id=$2) AS recipes,
     (SELECT count(*)::integer FROM myfin.stock_identifiers WHERE company_id=$1 AND stock_item_id=$2) AS identifiers,
     (SELECT count(*)::integer FROM myfin.purchase_order_lines WHERE company_id=$1 AND stock_item_id=$2) AS purchase_orders,
@@ -142,6 +153,63 @@ export function registerStock(app,{scoped,audit}){
       WHERE sl.company_id=$1 AND sl.id>$2 ORDER BY sl.id LIMIT $3`,[companyId,query.after||'',query.limit+1]);
     const visible=result.rows.slice(0,query.limit);
     return {rows:visible.map(ledgerOutput),next:result.rowCount>query.limit?visible.at(-1).id:null};
+  }));
+  app.get('/api/companies/:company/stock-baselines',req=>scoped(req,async(c,companyId)=>{
+    requireCapability(req.identity,'stockHistoryRead');
+    const query=v.parse(z.strictObject({limit:z.coerce.number().int().min(1).max(100).default(25)}),req.query);
+    const rows=(await c.query(`SELECT * FROM myfin.stock_baselines
+      WHERE company_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2`,[companyId,query.limit])).rows;
+    return {rows:rows.map(baselineOutput)};
+  }));
+  app.post('/api/companies/:company/stock-baselines',req=>scoped(req,async(c,companyId)=>{
+    requireCapability(req.identity,'inventoryWrite');
+    const data=v.parse(baseline,req.body),ids=data.items.map(row=>row.stockItemId);
+    if(new Set(ids).size!==ids.length)v.fail(400,'duplicate_stock_baseline_item');
+    const ordered=[...data.items].sort((a,b)=>a.stockItemId.localeCompare(b.stockItemId));
+    const requestDigest=createHash('sha256').update(JSON.stringify(canonical({companyId,actorId:req.identity.id,
+      reason:data.reason,items:ordered}))).digest('hex');
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,23))',[`${companyId}:stock-baseline:${data.idempotencyKey}`]);
+    const prior=(await c.query(`SELECT * FROM myfin.stock_baselines
+      WHERE company_id=$1 AND idempotency_key=$2`,[companyId,data.idempotencyKey])).rows[0];
+    if(prior){
+      if(prior.request_digest!==requestDigest)v.fail(409,'stock_baseline_payload_changed');
+      const items=(await c.query(`SELECT * FROM myfin.stock_baseline_items
+        WHERE company_id=$1 AND baseline_id=$2 ORDER BY stock_item_id`,[companyId,prior.id])).rows;
+      return {duplicate:true,baseline:baselineOutput(prior),items:items.map(baselineItemOutput)};
+    }
+    const stock=(await c.query(`SELECT * FROM myfin.stock_items
+      WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE`,[companyId,ordered.map(row=>row.stockItemId)])).rows;
+    if(stock.length!==ordered.length||stock.some(row=>!row.active))v.fail(409,'stock_baseline_item_unavailable');
+    const requested=new Map(ordered.map(row=>[row.stockItemId,row]));
+    for(const row of stock){
+      const target=requested.get(row.id);
+      if(target.expectedVersion!==Number(row.version))v.fail(409,'stock_item_changed_reload');
+      if(target.unitVersion!==Number(row.unit_version))v.fail(409,'stock_unit_changed_reload');
+      if(row.tracking_mode==='count'&&!Number.isInteger(target.quantity))v.fail(400,'counted_stock_requires_whole_units');
+    }
+    const id=randomUUID();
+    await c.query(`INSERT INTO myfin.stock_baselines(company_id,id,idempotency_key,request_digest,reason,item_count,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7)`,[companyId,id,data.idempotencyKey,requestDigest,data.reason,stock.length,req.identity.id]);
+    const items=[];
+    for(const row of stock){
+      const target=requested.get(row.id),quantityBefore=number(row.on_hand),
+        calculated=stockMovement({kind:'count',quantity:target.quantity},quantityBefore);
+      const ledgerId=randomUUID(),movementKey=`baseline:${createHash('sha256').update(`${companyId}\u0000${id}\u0000${row.id}`).digest('hex')}`;
+      await c.query(`UPDATE myfin.stock_items SET on_hand=$3,version=version+1,updated_at=now()
+        WHERE company_id=$1 AND id=$2`,[companyId,row.id,calculated.quantityAfter]);
+      await c.query(`INSERT INTO myfin.stock_ledger(company_id,id,item_id,actor_id,kind,input_quantity,delta,quantity_after,
+          reason,idempotency_key,request_digest,baseline_id)
+        VALUES($1,$2,$3,$4,'count',$5,$6,$7,$8,$9,$10,$11)`,[companyId,ledgerId,row.id,req.identity.id,
+        calculated.inputQuantity,calculated.delta,calculated.quantityAfter,data.reason,movementKey,requestDigest,id]);
+      await c.query(`INSERT INTO myfin.stock_baseline_items(company_id,baseline_id,stock_item_id,stock_unit_version,
+          quantity_before,quantity_after,ledger_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7)`,[companyId,id,row.id,target.unitVersion,quantityBefore,calculated.quantityAfter,ledgerId]);
+      items.push({stock_item_id:row.id,stock_unit_version:target.unitVersion,quantity_before:quantityBefore,
+        quantity_after:calculated.quantityAfter,ledger_id:ledgerId});
+    }
+    await audit(c,req.identity,companyId,'Record stock baseline',`${id} · ${stock.length} items · ${data.reason}`);
+    const created=(await c.query('SELECT * FROM myfin.stock_baselines WHERE company_id=$1 AND id=$2',[companyId,id])).rows[0];
+    return {duplicate:false,baseline:baselineOutput(created),items:items.map(baselineItemOutput)};
   }));
   const save=(req,update)=>scoped(req,async(c,companyId)=>{
     requireCapability(req.identity,'inventoryWrite');

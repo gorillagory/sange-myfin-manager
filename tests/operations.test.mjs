@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {compileScript,compileTemplate,parse} from '@vue/compiler-sfc';
 import {expenseTemplateCsv,exportExpensesCsv,importExpensesCsv} from '../src/domain/expensesCsv.js';
 import {effectiveExpenseStatus,expenseCommittedRefreshError,expenseHasCashImpact,expenseSaveFailureDisposition,normalizeExpenseLifecycle} from '../src/domain/expenseLifecycle.js';
-import {duplicateStockItem,findStockCode,normalizeStockItem,stockConversionText,stockMovement,stockUnitCorrectionPreview,validateStockItem} from '../src/domain/stock.js';
+import {duplicateStockItem,findStockCode,normalizeStockItem,stockConversionText,stockMovement,stockTypeOptions,stockUnitCorrectionPreview,validateStockItem} from '../src/domain/stock.js';
 import {recipeAvailability,validateRecipeStockUnits} from '../src/domain/inventoryRecipes.js';
 
 test('expense CSV template imports cents and links an exact supplier',()=>{
@@ -150,6 +150,32 @@ test('stock records support counted, weight and packaging barcode quantities',()
  assert.deepEqual(stockMovement({kind:'count',quantity:1875},2000),{kind:'count',inputQuantity:1875,delta:-125,quantityAfter:1875});
  assert.throws(()=>stockMovement({kind:'waste',quantity:2500},2000),/negative/);
  assert.equal(normalizeStockItem({name:'Cup'}).baseUnit,'pcs');
+});
+
+test('stock types are reusable create-or-select values within the loaded company',()=>{
+ assert.deepEqual(stockTypeOptions([{category:' Ingredients '},{category:'beverage'},{category:'BEVERAGE'},{category:''}]),
+  ['beverage','Ingredients']);
+});
+
+test('stock setup exposes an audited bulk baseline and versioned inventory-build language',async()=>{
+ const filename=new URL('../src/components/dashboard/StockTab.vue',import.meta.url);
+ const source=await readFile(filename,'utf8'),parsed=parse(source,{filename:filename.pathname});
+ assert.equal(parsed.errors.length,0);compileScript(parsed.descriptor,{id:'stock-baseline-builds'});
+ const template=compileTemplate({source:parsed.descriptor.template.content,filename:filename.pathname,
+  id:'stock-baseline-builds',compilerOptions:{bindingMetadata:{}}});
+ assert.equal(template.errors.length,0);
+ assert.match(source,/list="company-stock-types"/);
+ assert.match(source,/Choose a type already used by this company, or enter a new one/);
+ assert.match(source,/Set stock baseline/);
+ assert.match(source,/recordStockBaseline/);
+ assert.match(source,/expectedVersion:item\.version/);
+ assert.match(source,/included:false/);
+ assert.match(source,/Select all active/);
+ assert.match(source,/Old sales and movements stay unchanged/);
+ assert.match(source,/Inventory builds/);
+ assert.match(source,/Save next version/);
+ assert.doesNotMatch(source,/>Recipes<|Product recipes|Save recipe/);
+ assert.doesNotMatch(source,/because recipes|This recipe changed|recipe components|Remove recipe component/);
 });
 
 test('package conversions and recipes model pumps and millilitres exactly',()=>{

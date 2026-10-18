@@ -149,6 +149,20 @@ async function validateSupplierRef(c, companyId, supplierId) {
   )).rows[0];
   if (!row || row.data.type !== "Supplier") v.fail(409, "supplier_not_found");
 }
+export async function reconcileProductVariants(c, companyId, product) {
+  for (const variant of product.variants)
+    await c.query(
+      `INSERT INTO myfin.product_variants(company_id,product_id,id,stock,price,cost)
+       VALUES($1,$2,$3,$4,$5,$6)
+       ON CONFLICT(company_id,product_id,id) DO UPDATE
+       SET stock=EXCLUDED.stock,price=EXCLUDED.price,cost=EXCLUDED.cost`,
+      [companyId, product.id, variant.id, variant.stock, variant.price, variant.cost],
+    );
+  await c.query(
+    "DELETE FROM myfin.product_variants WHERE company_id=$1 AND product_id=$2 AND NOT (id=ANY($3::text[]))",
+    [companyId, product.id, product.variants.map((variant) => variant.id)],
+  );
+}
 const asRecord = (r) => ({
   ...r.data,
   id: r.id,
@@ -221,15 +235,7 @@ async function saveProduct(c, companyId, data, create = false) {
     );
     if (!r.rowCount) v.fail(404, "not_found");
   }
-  await c.query(
-    "DELETE FROM myfin.product_variants WHERE company_id=$1 AND product_id=$2",
-    [companyId, p.id],
-  );
-  for (const x of p.variants)
-    await c.query(
-      "INSERT INTO myfin.product_variants(company_id,product_id,id,stock,price,cost) VALUES($1,$2,$3,$4,$5,$6)",
-      [companyId, p.id, x.id, x.stock, x.price, x.cost],
-    );
+  await reconcileProductVariants(c, companyId, p);
   const old = prior.rows.find((x) => x.id === p.id)?.data;
   const movements = [];
   for (const target of p.variants.length ? p.variants : [p]) {
