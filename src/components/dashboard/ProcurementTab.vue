@@ -94,10 +94,10 @@ function newOrder() {
     expectedDate:'',notes:'',idempotencyKey:crypto.randomUUID(),lines:[newOrderLine()] };
   error.value = '';
 }
-function newOrderLine() { return { stockItemId:'',supplierItemReference:'',description:'',purchaseUnit:'carton',orderedQuantity:1,quantityInBase:1,unitPrice:'' }; }
+function newOrderLine() { return { stockItemId:'',unitVersion:0,supplierItemReference:'',description:'',purchaseUnit:'carton',orderedQuantity:1,quantityInBase:1,unitPrice:'' }; }
 function selectOrderItem(line) {
   const item = stockItems.value.find(row => row.id === line.stockItemId);
-  if (item) { line.description = item.name; line.purchaseUnit = item.baseUnit || 'unit'; line.quantityInBase = 1; }
+  if (item) { line.unitVersion=Number(item.unitVersion);line.description = item.name; line.purchaseUnit = item.baseUnit || 'unit'; line.quantityInBase = 1; }
 }
 async function createOrder() {
   if (busy.value || !orderForm.value || !requireOnline()) return;
@@ -106,13 +106,13 @@ async function createOrder() {
     const payload = { number:orderForm.value.number,supplierId:orderForm.value.supplierId,currencyCode:'MYR',
       expectedDate:orderForm.value.expectedDate,notes:orderForm.value.notes,idempotencyKey:orderForm.value.idempotencyKey,
       lines:orderForm.value.lines.map(line => ({
-      stockItemId:line.stockItemId,supplierItemReference:line.supplierItemReference,description:line.description,
+      stockItemId:line.stockItemId,unitVersion:Number(line.unitVersion),supplierItemReference:line.supplierItemReference,description:line.description,
       purchaseUnit:line.purchaseUnit,orderedQuantity:Number(line.orderedQuantity),quantityInBase:Number(line.quantityInBase),
       unitPriceSen:Math.round(Number(line.unitPrice) * 100),
     })) };
     await api(path('/purchase-orders'),{method:'POST',body:payload});
     orderForm.value = null; await load(); Store.notify('Purchase order draft created.');
-  } catch (failure) { error.value = failure.message || 'The purchase order could not be created.'; }
+  } catch (failure) { error.value = failure.message==='stock_unit_changed_reload'?'A stock item’s unit changed while this order was open. Close the order, reload, and enter its quantities again.':failure.message || 'The purchase order could not be created.'; }
   finally { busy.value = false; }
 }
 async function orderAction(order, action) {

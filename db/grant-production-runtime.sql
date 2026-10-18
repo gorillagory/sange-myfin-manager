@@ -7,9 +7,11 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.auth_user,myfin.auth_session,myfin.au
  myfin.clients,myfin.transactions,myfin.expenses,myfin.files,myfin.workspaces,myfin.workspace_memberships,
  myfin.tenant_hosts,myfin.pos_access_codes,myfin.pos_login_guards,myfin.pos_sessions,
  myfin.app_sessions,myfin.session_handoffs TO myfin_prod_runtime;
-GRANT SELECT,INSERT,UPDATE ON myfin.stock_items TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.stock_items TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON myfin.stock_packagings TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.stock_ledger TO myfin_prod_runtime;
+GRANT SELECT,INSERT ON myfin.stock_unit_corrections TO myfin_prod_runtime;
+GRANT SELECT,INSERT,UPDATE ON myfin.stock_internal_code_counters TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.orders TO myfin_prod_runtime;
 GRANT SELECT,INSERT ON myfin.order_events TO myfin_prod_runtime;
 GRANT SELECT,INSERT,UPDATE ON myfin.storefront_settings,myfin.storefront_hosts,myfin.shop_locations,

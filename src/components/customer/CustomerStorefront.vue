@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import CustomerAccountPanel from './CustomerAccountPanel.vue';
 import CustomerCart from './CustomerCart.vue';
 import {
   addPublicCartLine, cartRequestItems, customerOrderSubmission, formatCustomerMoney, normalizeStorefront,
-  accessibleStorefrontText, customerProductDisplayPrice, deliveryOrderDetails, publicCartLine, setPublicCartQuantity, storefrontFontStack,
+  accessibleStorefrontText, customerProductDisplayPrice, deliveryOrderDetails, publicCartLine, publicCartSummary,
+  setPublicCartQuantity, storefrontFontStack,
 } from '../../domain/customerOrdering';
 import { loadCustomerAccount, loadStorefront, quoteCustomerOrder, submitCustomerOrder } from '../../services/customerOrdering';
 
@@ -14,6 +15,7 @@ const menu = ref(null), lines = ref([]), quote = ref(null), quoteToken = ref('')
 const error = ref(''), notice = ref(''), category = ref('All'), query = ref(''), selectedLocationId = ref('');
 const serviceChoice = ref('pickup');
 const reviewing = ref(false), cartOpen = ref(false), online = ref(navigator.onLine), variantChoices = reactive({});
+const cartDialog = ref(null), cartClose = ref(null), reviewDialog = ref(null), reviewClose = ref(null);
 const account = ref({ authenticated: false }), accountOpen = ref(false), accountLoading = ref(true);
 const accountLoyaltyBalance = computed(() => Number(account.value.loyalty?.pointBalance ?? account.value.loyalty?.balance ?? account.value.loyalty?.stampBalance ?? 0));
 const accountLoyaltyUnit = computed(() => account.value.loyalty?.unitLabel || (account.value.loyalty?.stampBalance != null ? 'stamps' : 'points'));
@@ -26,7 +28,10 @@ const locationToken = computed(() => String(route.query.locationToken || route.q
 const storefront = computed(() => menu.value?.storefront || {});
 const slides = computed(() => menu.value?.slides || []);
 const activeSlideIndex = ref(0);
-const carouselPaused = ref(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
+const mobileMedia=globalThis.matchMedia?.('(max-width: 920px)');
+const mobileViewport=ref(mobileMedia?.matches??false);
+const carouselPaused = ref((globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
+  || mobileViewport.value);
 const activeSlide = computed(() => slides.value[activeSlideIndex.value] || null);
 const themeStyle = computed(() => {
   const theme = storefront.value.theme || {};
@@ -53,7 +58,8 @@ const visibleProducts = computed(() => (menu.value?.products || []).filter(produ
   const needle = query.value.trim().toLowerCase();
   return !needle || [product.name, product.description, product.category, product.subcategory].some(value => value.toLowerCase().includes(needle));
 }));
-const itemCount = computed(() => lines.value.reduce((sum, line) => sum + line.quantity, 0));
+const cartSummary = computed(() => publicCartSummary(lines.value));
+const itemCount = computed(() => cartSummary.value.itemCount);
 const orderBase = computed(() => ({
   ...(locationToken.value ? { locationToken: locationToken.value } : {}),
   ...(!lockedLocation.value && selectedLocationId.value ? { locationId: selectedLocationId.value } : {}),
@@ -62,6 +68,7 @@ const orderBase = computed(() => ({
   items: cartRequestItems(lines.value),
 }));
 let loadRequest = 0, retry = null, slideTimer = null;
+let cartReturnFocus = null, reviewReturnFocus = null, previousBodyOverflow = '', bodyLocked = false;
 
 function resetSlideTimer() {
   if (slideTimer) clearInterval(slideTimer);
@@ -72,12 +79,60 @@ function resetSlideTimer() {
   }, Number(storefront.value.carouselIntervalSeconds || 7) * 1000);
 }
 function toggleCarousel() { carouselPaused.value = !carouselPaused.value; resetSlideTimer(); }
+function viewportChanged(event){mobileViewport.value=event.matches;if(!event.matches&&cartOpen.value)closeCart();}
+function openCart(event) { cartReturnFocus = event?.currentTarget || document.activeElement; cartOpen.value = true; }
+function closeCart() { cartOpen.value = false; }
+function updateBodyLock() {
+  const shouldLock = reviewing.value || (cartOpen.value && mobileViewport.value);
+  if (shouldLock && !bodyLocked) {
+    previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    bodyLocked = true;
+  } else if (!shouldLock && bodyLocked) {
+    document.body.style.overflow = previousBodyOverflow;
+    bodyLocked = false;
+  }
+}
+function handleCartKeydown(event) {
+  if (!mobileViewport.value) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeCart(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...(cartDialog.value?.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]') || [])]
+    .filter(element => element.getClientRects().length);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+function handleReviewKeydown(event) {
+  if (event.key === 'Escape' && !placing.value) { event.preventDefault(); closeReview(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...(reviewDialog.value?.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]') || [])]
+    .filter(element => element.getClientRects().length);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
 
 function displayPrice(product, key) {
   return customerProductDisplayPrice(product,key);
 }
 function hasOnlineSaving(product) { return displayPrice(product, 'onlinePrice') < displayPrice(product, 'storePrice'); }
 function hasChannelPriceDifference(product) { return displayPrice(product, 'onlinePrice') !== displayPrice(product, 'storePrice'); }
+function onlineSavingLabel(product) {
+  const storePrice = displayPrice(product, 'storePrice');
+  const onlinePrice = displayPrice(product, 'onlinePrice');
+  if (!(storePrice > onlinePrice)) return '';
+  const percentage = Math.round(((storePrice - onlinePrice) / storePrice) * 100);
+  return percentage > 0 ? `Save ${percentage}% online` : 'Online offer';
+}
+function productCartCount(productId) {
+  return lines.value.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0);
+}
+function scrollToMenu() {
+  document.querySelector('#customer-menu')?.scrollIntoView({ behavior:'smooth', block:'start' });
+}
 function optionPriceLabel(option) {
   const online = formatCustomerMoney(option.onlinePrice, storefront.value.currency);
   return option.onlinePrice !== option.storePrice
@@ -170,8 +225,7 @@ function add(product) {
     const chosen = product.variants.length ? variantChoices[product.id] || '' : '';
     lines.value = addPublicCartLine(lines.value, publicCartLine(product, chosen));
     quote.value = null; quoteToken.value = ''; reviewing.value = false;
-    notice.value = `${product.name} added to your order.`;
-    if (window.innerWidth < 921) cartOpen.value = true;
+    notice.value = `${product.name} added. Your order now has ${itemCount.value} ${itemCount.value === 1 ? 'item' : 'items'}.`;
   } catch (caught) { error.value = caught.message; }
 }
 function setQuantity(key, value) {
@@ -188,6 +242,7 @@ async function review() {
     if (!result.quote || !result.quoteToken) throw new Error('invalid_quote_response');
     quote.value = result.quote;
     quoteToken.value = result.quoteToken;
+    reviewReturnFocus = cartReturnFocus || document.activeElement;
     reviewing.value = true;
     cartOpen.value = false;
   } catch (caught) { error.value = friendlyError(caught, 'The shop could not confirm this order. Review the items and try again.'); }
@@ -233,21 +288,44 @@ watch(serviceChoice, () => { quote.value = null; quoteToken.value = ''; reviewin
 watch([deliveryZoneId,delivery], () => { quote.value = null; quoteToken.value = ''; reviewing.value = false; retry = null; }, { deep:true });
 watch(voucherCode, () => { quote.value = null; quoteToken.value = ''; reviewing.value = false; retry = null; });
 watch([() => slides.value.length, () => storefront.value.carouselIntervalSeconds], resetSlideTimer);
-onMounted(() => { load(); refreshAccount(); window.addEventListener('online', networkChange); window.addEventListener('offline', networkChange); });
-onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer); window.removeEventListener('online', networkChange); window.removeEventListener('offline', networkChange); });
+watch([cartOpen,reviewing,mobileViewport],updateBodyLock);
+watch(cartOpen, async open => {
+  if (open&&mobileViewport.value) {
+    await nextTick();
+    cartClose.value?.focus();
+  } else if (!open&&!reviewing.value) {
+    await nextTick();
+    cartReturnFocus?.focus?.();
+    cartReturnFocus = null;
+  }
+});
+watch(reviewing, async open => {
+  await nextTick();
+  if (open) {
+    reviewClose.value?.focus();
+    return;
+  }
+  const target = reviewReturnFocus;
+  reviewReturnFocus = null;
+  if (target?.isConnected && target.getClientRects().length) target.focus();
+  else cartReturnFocus?.focus?.();
+  cartReturnFocus = null;
+});
+onMounted(() => { load(); refreshAccount(); mobileMedia?.addEventListener?.('change',viewportChanged);window.addEventListener('online', networkChange); window.addEventListener('offline', networkChange); });
+onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);if(bodyLocked)document.body.style.overflow=previousBodyOverflow;mobileMedia?.removeEventListener?.('change',viewportChanged); window.removeEventListener('online', networkChange); window.removeEventListener('offline', networkChange); });
 </script>
 
 <template>
   <div class="customer-shell" :style="themeStyle">
     <header class="customer-nav"><a href="/shop" class="customer-wordmark"><img v-if="storefront.logoUrl" :src="storefront.logoUrl" alt="" referrerpolicy="no-referrer"><i v-else aria-hidden="true"></i> {{ storefront.name || 'myfin' }} <small>order</small></a>
       <div class="customer-nav-actions"><button type="button" class="customer-account" :aria-expanded="accountOpen" @click="accountOpen=true"><span aria-hidden="true">◎</span> {{ account.authenticated ? (account.profile?.displayName || account.customer?.displayName || 'Account') : 'Sign in' }} <small v-if="account.authenticated && account.loyalty?.enabled">{{ accountLoyaltyBalance }} {{ accountLoyaltyUnit }}</small></button>
-        <button type="button" class="customer-mobile-cart" :aria-expanded="cartOpen" @click="cartOpen=!cartOpen">Order <b>{{ itemCount }}</b></button></div></header>
+        <button type="button" class="customer-mobile-cart" :aria-expanded="cartOpen" aria-controls="customer-cart-dialog" @click="cartOpen?closeCart():openCart($event)">Order <b>{{ itemCount }}</b></button></div></header>
 
     <main v-if="loading" class="customer-state" role="status"><span class="customer-loader"></span><h1>Opening the menu…</h1></main>
     <main v-else-if="!menu" class="customer-state"><span class="customer-state-mark">!</span><h1>Menu unavailable</h1><p>{{ error }}</p><button type="button" @click="load">Try again</button></main>
     <main v-else class="customer-main">
-      <section class="customer-hero" :class="{'with-image':storefront.hero?.imageUrl}"><div class="customer-hero-copy"><span class="customer-kicker">{{ storefront.hero?.eyebrow || `ORDER ONLINE / ${fulfillmentLabel}` }}</span><h1>{{ storefront.hero?.title || storefront.name }}</h1><p>{{ storefront.hero?.description || storefront.description || (deliveryAvailable ? 'Choose your favourites for pickup or delivery. Payment options appear after the shop accepts your order.' : 'Choose your favourites for pickup. Payment options appear after the shop accepts your order.') }}</p><div class="customer-auth-choice"><span>Order as a guest with no account required.</span><button v-if="!account.authenticated" type="button" @click="accountOpen=true">Sign in or create account</button><button v-else type="button" @click="accountOpen=true">View account & loyalty</button></div></div>
-        <img v-if="storefront.hero?.imageUrl" class="customer-hero-image" :src="storefront.hero.imageUrl" alt="" referrerpolicy="no-referrer">
+      <section class="customer-hero" :class="{'with-image':storefront.hero?.imageUrl}"><div class="customer-hero-copy"><span class="customer-kicker">{{ storefront.hero?.eyebrow || `ORDER ONLINE / ${fulfillmentLabel}` }}</span><h1>{{ storefront.hero?.title || storefront.name }}</h1><p>{{ storefront.hero?.description || storefront.description || (deliveryAvailable ? 'Choose your favourites for pickup or delivery. Payment options appear after the shop accepts your order.' : 'Choose your favourites for pickup. Payment options appear after the shop accepts your order.') }}</p><div class="customer-hero-actions"><button type="button" class="customer-browse-menu" @click="scrollToMenu">Browse menu <span aria-hidden="true">↓</span></button><div class="customer-auth-choice"><span>Guest checkout is available.</span><button v-if="!account.authenticated" type="button" @click="accountOpen=true">Sign in for loyalty</button><button v-else type="button" @click="accountOpen=true">Account & loyalty</button></div></div></div>
+        <img v-if="storefront.hero?.imageUrl" class="customer-hero-image" :src="storefront.hero.imageUrl" alt="" decoding="async" fetchpriority="high" referrerpolicy="no-referrer">
         <div class="customer-context"><span class="customer-kicker">COLLECT FROM</span>
           <strong v-if="lockedLocation">{{ selectedLocation?.name }}</strong>
           <select v-else-if="locations.length" v-model="selectedLocationId" aria-label="Collection location"><option v-for="place in locations" :key="place.id" :value="place.id">{{ place.name }} · Pickup</option></select>
@@ -265,7 +343,7 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer); 
 
       <section v-if="activeSlide" class="customer-promotion" :style="{backgroundColor:activeSlide.backgroundColor}" aria-roledescription="carousel" aria-label="Shop promotions">
         <div><span v-if="activeSlide.badge">{{ activeSlide.badge }}</span><h2>{{ activeSlide.title }}</h2><p v-if="activeSlide.description">{{ activeSlide.description }}</p><a v-if="activeSlide.ctaUrl" :href="activeSlide.ctaUrl">{{ activeSlide.ctaLabel }} <b aria-hidden="true">→</b></a></div>
-        <img v-if="activeSlide.imageUrl" :src="activeSlide.imageUrl" alt="" referrerpolicy="no-referrer">
+        <img v-if="activeSlide.imageUrl" :src="activeSlide.imageUrl" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">
         <nav v-if="slides.length>1" aria-label="Promotion slides"><button type="button" class="customer-carousel-toggle" :aria-label="carouselPaused ? 'Resume promotion carousel' : 'Pause promotion carousel'" @click="toggleCarousel">{{ carouselPaused ? 'Play' : 'Pause' }}</button><button v-for="(slide,index) in slides" :key="slide.id" type="button" :class="{active:index===activeSlideIndex}" :aria-label="`Show ${slide.title}`" @click="activeSlideIndex=index;resetSlideTimer()"></button></nav>
       </section>
 
@@ -287,31 +365,32 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer); 
       <div v-if="error" class="customer-banner error" role="alert">{{ error }} <button type="button" aria-label="Dismiss" @click="error=''">×</button></div>
       <div v-else-if="notice" class="customer-sr-status" role="status">{{ notice }}</div>
 
-      <section class="customer-tools"><label><span aria-hidden="true">⌕</span><input v-model="query" type="search" placeholder="Search the menu" aria-label="Search the menu"></label>
+      <section id="customer-menu" class="customer-tools"><label><span aria-hidden="true">⌕</span><input v-model="query" type="search" placeholder="Search dishes and drinks" aria-label="Search the menu"></label>
         <div class="customer-categories" aria-label="Menu categories"><button v-for="item in categories" :key="item" type="button" :class="{active:category===item}" :aria-pressed="category===item" @click="category=item">{{ item }}</button></div></section>
 
       <div class="customer-order-layout">
         <section class="customer-products" aria-live="polite">
-          <article v-for="product in visibleProducts" :key="product.id" class="customer-product" :class="{unavailable:!product.available}">
-            <div v-if="product.imageUrl" class="customer-product-image"><img :src="product.imageUrl" :alt="product.name" referrerpolicy="no-referrer"></div>
+          <article v-for="product in visibleProducts" :key="product.id" class="customer-product" :class="{unavailable:!product.available,'without-image':!product.imageUrl}">
+            <div v-if="product.imageUrl" class="customer-product-image"><img :src="product.imageUrl" :alt="product.name" loading="lazy" decoding="async" referrerpolicy="no-referrer"></div>
             <div class="customer-product-copy"><div><span>{{ product.subcategory || product.category }}</span><h2>{{ product.name }}</h2><p v-if="product.description">{{ product.description }}</p></div>
-              <div class="customer-product-buy"><div class="customer-price"><s v-if="hasOnlineSaving(product)">{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</s><span v-else-if="hasChannelPriceDifference(product)">Store {{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</span><strong>{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'onlinePrice'), storefront.currency) }}</strong><small v-if="hasChannelPriceDifference(product)">Online price</small></div>
+              <div class="customer-product-buy"><div class="customer-price"><s v-if="hasOnlineSaving(product)">{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</s><span v-else-if="hasChannelPriceDifference(product)">In store {{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</span><strong>{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'onlinePrice'), storefront.currency) }}</strong><small v-if="hasChannelPriceDifference(product)">{{ onlineSavingLabel(product) || 'Online price' }}</small></div>
                 <template v-if="product.available">
                   <select v-if="product.variants.length" v-model="variantChoices[product.id]" :aria-label="`Choose an option for ${product.name}`"><option value="" disabled>Choose an option</option><option v-for="option in product.variants" :key="option.id" :value="option.id" :disabled="!option.available">{{ option.name }} · {{ optionPriceLabel(option) }}{{ option.available ? '' : ' · Sold out' }}</option></select>
-                  <button type="button" @click="add(product)">Add <span aria-hidden="true">+</span></button>
+                  <button type="button" :aria-label="`Add ${product.name} to order`" @click="add(product)"><span v-if="productCartCount(product.id)" class="customer-product-count">{{ productCartCount(product.id) }}</span>{{ productCartCount(product.id) ? 'Add another' : 'Add' }} <span aria-hidden="true">+</span></button>
                 </template><span v-else class="customer-sold-out">Sold out</span>
               </div></div>
           </article>
           <div v-if="!visibleProducts.length" class="customer-no-results"><strong>No menu items found</strong><p>Try another search or category.</p></div>
         </section>
-        <div class="customer-cart-wrap" :class="{open:cartOpen}"><button type="button" class="customer-cart-close" aria-label="Close order" @click="cartOpen=false">×</button><div class="customer-voucher"><label for="customer-voucher-code">Voucher code</label><input id="customer-voucher-code" v-model.trim="voucherCode" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter a code"><small>The discount is confirmed when you review the order.</small></div><CustomerCart :lines="lines" :currency="storefront.currency" :quote="quote" :busy="busy" @quantity="setQuantity" @review="review" /></div>
+        <div id="customer-cart-dialog" ref="cartDialog" class="customer-cart-wrap" :class="{open:cartOpen}" :role="mobileViewport?'dialog':undefined" :aria-modal="mobileViewport?'true':undefined" aria-label="Your order" :aria-hidden="mobileViewport&&!cartOpen?'true':undefined" @keydown="handleCartKeydown" @click.self="closeCart"><button ref="cartClose" type="button" class="customer-cart-close" aria-label="Close order" @click="closeCart">×</button><div class="customer-cart-panel"><div class="customer-voucher"><label for="customer-voucher-code">Have a voucher?</label><input id="customer-voucher-code" v-model.trim="voucherCode" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter voucher code"><small>We confirm the discount when you review the order.</small></div><CustomerCart :lines="lines" :currency="storefront.currency" :quote="quote" :busy="busy" @quantity="setQuantity" @review="review" /></div></div>
       </div>
-      <footer class="customer-footer"><p>{{ storefront.pickupInstructions || "The shop confirms your order first. Then choose secure online payment when available or follow the shop's payment instructions." }}</p><p>Order as a guest or use one MyFin customer account across participating finn3 shops. Each workspace keeps its own loyalty balance. <RouterLink to="/privacy">Privacy notice</RouterLink></p></footer>
+      <footer class="customer-footer"><p>{{ storefront.pickupInstructions || "The shop confirms your order first. Then choose secure online payment when available or follow the shop's payment instructions." }}</p><p>Order as a guest or sign in for order history and loyalty. <RouterLink to="/privacy">Privacy notice</RouterLink></p></footer>
+      <button v-if="itemCount" type="button" class="customer-mobile-order-bar" :aria-expanded="cartOpen" aria-controls="customer-cart-dialog" @click="openCart($event)"><span><small>Your order · {{ itemCount }} {{ itemCount===1?'item':'items' }}</small><strong>{{ formatCustomerMoney(cartSummary.estimatedTotal,storefront.currency) }}</strong></span><b>View order <span aria-hidden="true">→</span></b></button>
     </main>
 
     <div v-if="reviewing" class="customer-review-backdrop" role="presentation" @mousedown.self="closeReview">
-      <section class="customer-review" role="dialog" aria-modal="true" aria-labelledby="customer-review-title">
-        <header><div><span class="customer-kicker">REVIEW</span><h2 id="customer-review-title">Place your order</h2></div><button type="button" aria-label="Close" :disabled="placing" @click="closeReview">×</button></header>
+      <section ref="reviewDialog" class="customer-review" role="dialog" aria-modal="true" aria-labelledby="customer-review-title" @keydown="handleReviewKeydown">
+        <header><div><span class="customer-kicker">REVIEW</span><h2 id="customer-review-title">Place your order</h2></div><button ref="reviewClose" type="button" aria-label="Close" :disabled="placing" @click="closeReview">×</button></header>
         <div class="customer-review-body">
           <div class="customer-review-location"><span>{{ fulfillmentMode==='delivery'?'Dispatch shop':'Collection' }}</span><strong>{{ selectedLocation?.name || 'Shop counter' }}</strong><small>{{ fulfillmentMode === 'table' ? 'Table service after staff acceptance · choose payment next' : fulfillmentMode==='delivery' ? `${quote?.delivery?.zoneName || ''} · about ${quote?.delivery?.leadTimeMinutes || 0} minutes after acceptance · choose payment next` : 'Preparation starts after staff acceptance · choose payment next' }}</small></div>
           <div v-if="fulfillmentMode==='delivery'" class="customer-review-location customer-delivery-summary"><span>Deliver to</span><strong>{{ delivery.postcode }} {{ delivery.city }}, {{ delivery.state }}</strong><small>{{ delivery.addressLine1 }}<template v-if="delivery.addressLine2"> · {{ delivery.addressLine2 }}</template></small></div>
@@ -346,4 +425,23 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer); 
 @media(max-width:1150px){.customer-products{grid-template-columns:1fr}.customer-product{min-height:180px}.customer-product-image{min-height:180px}.customer-order-layout{grid-template-columns:minmax(0,1fr) 330px}}
 @media(max-width:920px){.customer-nav,.customer-main{padding-inline:20px}.customer-mobile-cart{display:block}.customer-account{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.customer-account small{display:none}.customer-hero,.customer-hero.with-image{grid-template-columns:1fr;padding-top:38px}.customer-hero-image{height:220px}.customer-context{border-left:0;border-top:1px solid var(--customer-line);padding:20px 0 0}.customer-promotion{grid-template-columns:1fr}.customer-promotion>img{max-height:220px}.customer-delivery-panel{grid-template-columns:1fr}.customer-tools{align-items:stretch;flex-direction:column}.customer-tools>label{width:100%}.customer-order-layout{display:block}.customer-cart-wrap{position:fixed;inset:0;z-index:500;background:#102b2399;padding:70px 14px 14px;visibility:hidden;opacity:0;transition:opacity .15s}.customer-cart-wrap.open{visibility:visible;opacity:1}.customer-cart-wrap :deep(.customer-cart){max-height:calc(100dvh - 84px);overflow:auto}.customer-cart-close{display:grid;position:absolute;right:22px;top:20px;width:40px;height:40px;place-items:center;border:1px solid #ffffff55;border-radius:50%;background:#102b23;color:white;font-size:25px}.customer-footer{flex-direction:column}}
 @media(max-width:600px){.customer-nav{height:68px;padding-inline:14px}.customer-wordmark{max-width:150px;overflow:hidden;white-space:nowrap}.customer-wordmark small{display:none}.customer-nav-actions{gap:6px}.customer-account,.customer-mobile-cart{padding-inline:10px}.customer-account{max-width:115px}.customer-main{padding-inline:14px}.customer-hero h1{font-size:50px}.customer-promotion{border-radius:14px}.customer-promotion>div{padding:28px 22px 42px}.customer-promotion nav{left:22px}.customer-delivery-panel{padding:17px}.customer-delivery-fields{grid-template-columns:1fr}.customer-delivery-fields .wide{grid-column:auto}.customer-products{gap:10px}.customer-product{grid-template-columns:1fr;min-height:0}.customer-product-image{height:170px;min-height:0}.customer-product-copy{padding:17px}.customer-footer{padding-bottom:95px}.customer-review-backdrop{padding:0;align-items:end}.customer-review{max-height:94dvh;border-radius:18px 18px 0 0}.customer-review>header,.customer-review-body,.customer-review>footer{padding-inline:20px}.customer-review>footer{display:grid;grid-template-columns:1fr 1.6fr}.customer-review>footer button,.customer-review>footer .customer-primary{min-width:0;width:100%;padding-inline:10px}.customer-form-grid{grid-template-columns:1fr}.customer-form-grid label:first-child,.customer-form-grid .wide{grid-column:auto}.customer-context select{font-size:16px}}
+
+.customer-hero-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:22px}.customer-hero-actions .customer-auth-choice{margin:0}.customer-browse-menu{min-height:42px;border:0;border-radius:999px;padding:0 17px;background:var(--customer-accent);color:var(--customer-accent-ink);font:750 11px var(--customer-font)}.customer-browse-menu span{margin-left:8px}.customer-product-count{display:grid;place-items:center;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:var(--customer-accent-ink);color:var(--customer-accent);font-size:9px}.customer-mobile-order-bar{display:none}
+@media(max-width:920px){
+  .customer-nav{position:sticky;top:0;z-index:120;height:68px;background:color-mix(in srgb,var(--customer-background) 94%,transparent);backdrop-filter:blur(14px)}
+  .customer-account,.customer-mobile-cart,.customer-service-choice button,.customer-categories button{min-height:44px}
+  .customer-hero,.customer-hero.with-image{gap:20px;padding:25px 0 23px}.customer-hero h1{font-size:clamp(38px,10vw,58px);margin-block:8px 12px}.customer-hero-copy>p{font-size:13px;line-height:1.5}.customer-hero-actions{margin-top:16px}.customer-browse-menu{min-height:44px}
+  .customer-context{padding-top:16px}.customer-context strong{font-size:19px}.customer-service-choice button{font-size:11px}
+  .customer-promotion{min-height:170px;margin-bottom:14px}.customer-promotion>div{padding:25px 25px 42px}.customer-promotion h2{font-size:30px}.customer-promotion>img{min-height:170px}
+  .customer-tools{position:sticky;top:68px;z-index:100;gap:9px;margin-inline:-20px;padding:10px 20px 9px;background:color-mix(in srgb,var(--customer-background) 96%,transparent);border-top:1px solid var(--customer-line);box-shadow:0 8px 20px #183d2a0d;backdrop-filter:blur(14px);scroll-margin-top:68px}.customer-tools input{height:46px;font-size:16px}.customer-categories{width:100%;margin-inline:-3px;scrollbar-width:none}.customer-categories::-webkit-scrollbar{display:none}.customer-categories button{padding-inline:16px}
+  .customer-order-layout{padding-top:18px}.customer-cart-wrap{display:flex;align-items:flex-end;padding:0;background:#102b23aa}.customer-cart-panel{width:100%;max-height:92dvh;overflow:auto;background:white;border-radius:22px 22px 0 0;padding-top:12px;padding-bottom:env(safe-area-inset-bottom)}.customer-cart-wrap :deep(.customer-cart){max-height:none;overflow:visible}.customer-cart-close{z-index:3;right:18px;top:max(14px,env(safe-area-inset-top));width:44px;height:44px}.customer-voucher{margin:0 20px 10px;padding:12px}.customer-voucher input{height:44px;font-size:16px}
+  .customer-mobile-order-bar{position:fixed;z-index:400;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:66px;border:0;border-radius:18px;padding:10px 12px 10px 17px;background:var(--customer-accent);color:var(--customer-accent-ink);box-shadow:0 18px 50px #102b2355;text-align:left}.customer-mobile-order-bar span{display:grid;gap:2px}.customer-mobile-order-bar small{font-size:10px;opacity:.82}.customer-mobile-order-bar strong{font-size:16px}.customer-mobile-order-bar b{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 13px;border-radius:12px;background:var(--customer-accent-ink);color:var(--customer-accent);font-size:12px}.customer-footer{padding-bottom:115px}
+}
+@media(max-width:600px){
+  .customer-main{padding-inline:12px}.customer-wordmark{max-width:130px}.customer-account{max-width:105px}.customer-mobile-cart{font-size:0}.customer-mobile-cart::before{content:'Cart';font-size:11px}.customer-mobile-cart b{font-size:10px}
+  .customer-hero,.customer-hero.with-image{gap:14px}.customer-hero h1{font-size:38px}.customer-hero-copy>p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.customer-hero-image{height:150px}.customer-auth-choice>span{display:none}.customer-context{gap:6px}.customer-context small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .customer-promotion{display:grid;grid-template-columns:minmax(0,1fr) 92px;min-height:145px;border-radius:14px}.customer-promotion>div{min-height:145px;padding:21px 20px 38px}.customer-promotion h2{font-size:26px;margin-block:7px}.customer-promotion p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:10px}.customer-promotion>img{display:block;min-height:145px;height:100%}.customer-promotion nav{left:20px;bottom:12px}
+  .customer-tools{margin-inline:-12px;padding-inline:12px}.customer-products{gap:9px}.customer-product{grid-template-columns:104px minmax(0,1fr);min-height:148px;border-radius:13px}.customer-product.without-image{grid-template-columns:1fr}.customer-product-image{height:auto;min-height:148px}.customer-product-copy{padding:13px}.customer-product h2{font-size:18px;margin:5px 0 6px}.customer-product p{-webkit-line-clamp:1}.customer-product-buy{margin-top:11px}.customer-product-buy select{grid-column:1/-1;height:44px;font-size:16px}.customer-product-buy button{height:44px;padding-inline:13px;border-radius:10px}.customer-price{gap:6px}.customer-price strong{font-size:14px}.customer-price small{font-size:7px}.customer-sold-out{min-height:44px;display:flex;align-items:center}
+}
+@media(prefers-reduced-motion:reduce){.customer-product,.customer-cart-wrap{transition:none}.customer-product:hover{transform:none}}
 </style>

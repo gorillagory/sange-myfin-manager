@@ -1,5 +1,33 @@
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
 
+function validDay(value) {
+  const text=String(value || ''),stamp=Date.parse(text);
+  return dayPattern.test(text) && Number.isFinite(stamp)
+    && new Date(stamp).toISOString().slice(0,10)===text;
+}
+
+export function recentAnalyticsRange(to, days = 30) {
+  const end=String(to || ''),count=Number(days);
+  if (!validDay(end) || !Number.isInteger(count) || count<1 || count>366)
+    throw new Error('Choose a valid recent analytics range.');
+  const start=new Date(Date.parse(end));
+  start.setUTCDate(start.getUTCDate()-(count-1));
+  return { from:start.toISOString().slice(0,10),to:end };
+}
+
+export function analyticsErrorMessage(error) {
+  const message=typeof error==='string' ? error : error?.message;
+  if (message==='analytics_range_too_dense')
+    return 'This range contains too many sales to analyze at once. Choose a shorter date range.';
+  if (message==='analytics_product_range_too_dense')
+    return 'This range contains too many products to analyze at once. Choose a shorter date range.';
+  if (message==='analytics_pricing_snapshot_mismatch')
+    return 'Stored pricing evidence is incomplete for this range. Ask an administrator to review the affected sales.';
+  if (message==='invalid_analytics_range')
+    return 'Choose valid analytics dates spanning no more than 366 days.';
+  return message || 'Business analytics could not be loaded.';
+}
+
 export function advancedAnalyticsQuery(from, to) {
   if (!dayPattern.test(String(from || '')) || !dayPattern.test(String(to || '')))
     throw new Error('Choose valid analytics dates.');
@@ -25,6 +53,25 @@ export function formatMilliQuantity(value) {
 export function basisPointPercent(value) {
   const points = Math.max(0,Math.min(10000,Number(value)||0));
   return `${(points/100).toLocaleString('en-MY',{minimumFractionDigits:0,maximumFractionDigits:2})}%`;
+}
+
+export function changePresentation(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value)))
+    return { comparable:false,label:'No prior-period baseline',tone:'neutral' };
+  const points=Number(value),percentage=Math.abs(points/100).toLocaleString('en-MY',{
+    minimumFractionDigits:0,maximumFractionDigits:1,
+  });
+  if (points===0) return { comparable:true,label:'No change vs prior period',tone:'neutral' };
+  return { comparable:true,label:`${points>0?'Up':'Down'} ${percentage}% vs prior period`,
+    tone:points>0?'positive':'negative' };
+}
+
+export function ratioPercent(part, whole) {
+  const numerator=Math.max(0,Number(part)||0),denominator=Math.max(0,Number(whole)||0);
+  if (!denominator) return '0%';
+  return `${Math.min(100,numerator*100/denominator).toLocaleString('en-MY',{
+    minimumFractionDigits:0,maximumFractionDigits:1,
+  })}%`;
 }
 
 export function costCoveragePresentation(costs = {}) {

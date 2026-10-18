@@ -15,6 +15,7 @@ export function normalizeStockItem(input={}) {
     ...(input.id?{id:input.id}:{}),
     ...(input.company_id?{company_id:input.company_id}:{}),
     ...(input.version?{version:Number(input.version)}:{}),
+    ...(input.unitVersion?{unitVersion:Number(input.unitVersion)}:{}),
     ...(clean(input.internalCode)?{internalCode:clean(input.internalCode)}:{}),
     name:clean(input.name),category:clean(input.category)||'General',trackingMode:mode,
     baseUnit:clean(input.baseUnit)||defaultStockUnit(mode),barcode:clean(input.barcode),
@@ -23,6 +24,8 @@ export function normalizeStockItem(input={}) {
     packagings:(input.packagings||[]).map(item=>({
       ...(item.id?{id:item.id}:{}),label:clean(item.label),barcode:clean(item.barcode),quantityInBase:amount(item.quantityInBase),
     })),
+    ...(input.unitCorrection?{unitCorrection:{strategy:input.unitCorrection.strategy==='convert'?'convert':'relabel',
+      conversionFactor:Number(input.unitCorrection.conversionFactor),reason:clean(input.unitCorrection.reason)}}:{}),
   };
 }
 
@@ -40,11 +43,23 @@ export function validateStockItem(input, existing=[]) {
     if(!label||labels.has(label)||!Number.isFinite(pack.quantityInBase)||pack.quantityInBase<=0)throw new Error('Each packaging needs a unique label and a quantity greater than zero.');
     labels.add(label);
   }
-  if(item.trackingMode==='count'&&(!Number.isInteger(item.onHand)||!Number.isInteger(item.reorderLevel)||item.packagings.some(pack=>!Number.isInteger(pack.quantityInBase))))
+  if(item.unitCorrection&&(!Number.isFinite(item.unitCorrection.conversionFactor)||item.unitCorrection.conversionFactor<=0||item.unitCorrection.conversionFactor>1e9||
+    item.unitCorrection.reason.length<8||item.unitCorrection.reason.length>1000))throw new Error('Explain the unit correction and enter a valid conversion factor.');
+  if(item.unitCorrection?.strategy==='relabel'&&item.unitCorrection.conversionFactor!==1)throw new Error('A label-only correction must keep the quantity unchanged.');
+  const unitFactor=item.unitCorrection?.strategy==='convert'?item.unitCorrection.conversionFactor:1;
+  if(item.trackingMode==='count'&&(!Number.isInteger(amount(item.onHand*unitFactor))||!Number.isInteger(amount(item.reorderLevel*unitFactor))||item.packagings.some(pack=>!Number.isInteger(amount(pack.quantityInBase*unitFactor)))))
     throw new Error('Counted stock and its package conversions must use whole base units.');
   const used=new Set(existing.filter(other=>other.id!==item.id).flatMap(other=>[other.internalCode,other.barcode,...(other.packagings||[]).map(pack=>pack.barcode)]).filter(Boolean).map(code=>String(code).toLocaleUpperCase()));
   if(codes.some(code=>used.has(code)))throw new Error('A barcode is already assigned to another stock item.');
   return item;
+}
+
+export function stockUnitCorrectionPreview(item={},correction={}){
+  const strategy=correction.strategy==='convert'?'convert':'relabel',factor=strategy==='convert'?Number(correction.conversionFactor):1;
+  if(!Number.isFinite(factor)||factor<=0||factor>1e9)return null;
+  const convert=value=>amount(Number(value||0)*factor);
+  return {strategy,factor,onHand:convert(item.onHand),reorderLevel:convert(item.reorderLevel),
+    packagings:(item.packagings||[]).map(pack=>({...pack,quantityInBase:convert(pack.quantityInBase)}))};
 }
 
 export function findStockCode(items, code) {

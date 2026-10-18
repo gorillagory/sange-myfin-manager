@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0044_dynamic_module_access.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0045_stock_unit_corrections.sql';
 
 const tableGroups = [
   {
@@ -7,7 +7,7 @@ const tableGroups = [
       'auth_user', 'auth_session', 'auth_account', 'auth_verification',
       'companies', 'app_identities', 'identity_mappings', 'memberships', 'membership_module_grants',
       'products', 'product_variants', 'clients', 'transactions', 'expenses', 'files',
-      'stock_packagings',
+      'stock_packagings', 'stock_items',
       'workspaces', 'workspace_memberships', 'tenant_hosts', 'pos_access_codes',
       'pos_login_guards', 'pos_sessions', 'app_sessions', 'session_handoffs',
       'storefront_product_variants',
@@ -17,7 +17,7 @@ const tableGroups = [
   {
     privileges: ['SELECT', 'INSERT', 'UPDATE'],
     objects: [
-      'stock_items', 'orders',
+      'orders',
       'storefront_settings', 'storefront_hosts', 'shop_locations', 'storefront_products',
       'storefront_delivery_zones', 'customer_guest_sessions', 'customer_accounts',
       'customer_credentials', 'customer_sessions', 'customer_workspace_profiles',
@@ -25,6 +25,7 @@ const tableGroups = [
       'workspace_loyalty_settings', 'document_number_sequences', 'document_templates',
       'document_template_defaults', 'receipt_reviews', 'integration_connections',
       'inventory_recipes', 'stock_identifiers', 'purchase_orders', 'inventory_weighted_costs',
+      'stock_internal_code_counters',
       'low_stock_alerts', 'report_schedules', 'report_runs', 'student_eligibilities',
       'promotions', 'promotion_vouchers', 'customer_order_recipe_reservations',
       'marketing_audiences', 'marketing_campaigns', 'loyalty_point_reservations',
@@ -41,7 +42,7 @@ const tableGroups = [
   {
     privileges: ['SELECT', 'INSERT'],
     objects: [
-      'stock_ledger', 'order_events', 'customer_identities', 'customer_company_links',
+      'stock_ledger', 'stock_unit_corrections', 'order_events', 'customer_identities', 'customer_company_links',
       'customer_consent_events', 'customer_loyalty_events',
       'customer_order_events', 'customer_order_payments', 'expense_import_batches',
       'expense_events', 'activities', 'stock_movements', 'company_enrollments',

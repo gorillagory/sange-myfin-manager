@@ -211,6 +211,17 @@ export function setPublicCartQuantity(lines = [], key, quantity) {
   });
 }
 
+export function publicCartSummary(lines = []) {
+  const summary=lines.reduce((result, line) => {
+    const quantity = Math.max(0, Math.floor(Number(line?.quantity) || 0));
+    const priceSen = Math.max(0, Math.round((Number(line?.price) || 0) * 100));
+    result.itemCount += quantity;
+    result.estimatedTotalSen += priceSen * quantity;
+    return result;
+  }, { itemCount: 0, estimatedTotalSen: 0 });
+  return {itemCount:summary.itemCount,estimatedTotal:summary.estimatedTotalSen/100};
+}
+
 export const cartRequestItems = lines => lines.map(line => ({
   productId: line.productId,
   ...(line.variantId ? { variantId: line.variantId } : {}),

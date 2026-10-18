@@ -210,7 +210,7 @@ test('startup readiness consumes every parameterized shared-manifest predicate',
   assert.equal((check.predicate.match(/has_(?:schema|table|sequence|function)_privilege/g) || []).length,
     expectedPredicateCount);
   assert.equal(check.parameters.length, expectedPredicateCount * 2);
-  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0044_dynamic_module_access.sql');
+  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0045_stock_unit_corrections.sql');
 });
 
 test('the dynamic SQL allowlist stays narrow and reviewable', () => {

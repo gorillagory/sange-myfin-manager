@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   accessibleStorefrontText, addPublicCartLine, cartRequestItems, customerOrderSubmission, customerProductDisplayPrice, deliveryOrderDetails, isCustomerSurfacePath, isStorefrontHostname, normalizeStorefront,
   orderProgress, publicCartLine, setPublicCartQuantity, storefrontContrastIssues, storefrontContrastRatio,
-  storefrontFontStack, validateGuestOrder,
+  storefrontFontStack, publicCartSummary, validateGuestOrder,
 } from '../src/domain/customerOrdering.js';
 import {
   loadCustomerAccount, loadCustomerOrders, loadCustomerOrderStatus, loadStorefront, registerCustomerAccount,
@@ -82,8 +82,8 @@ test('storefront and display make guest, account, reusable QR, and channel prici
     readFile(new URL('../src/components/dashboard/StorefrontAdmin.vue',import.meta.url),'utf8'),
     readFile(new URL('../src/components/customer/CustomerOrderStatus.vue',import.meta.url),'utf8'),
   ]);
-  assert.match(storefront,/Order as a guest with no account required/);
-  assert.match(storefront,/Sign in or create account/);
+  assert.match(storefront,/Guest checkout is available/);
+  assert.match(storefront,/Sign in for loyalty/);
   assert.match(storefront,/--customer-page-ink/);
   assert.match(storefront,/--customer-accent-ink/);
   assert.match(storefront,/Online price/);
@@ -91,6 +91,16 @@ test('storefront and display make guest, account, reusable QR, and channel prici
   assert.match(storefront,/<s v-if="hasOnlineSaving\(product\)"/);
   assert.match(storefront,/>Order total</);
   assert.match(storefront,/'Place order'/);
+  assert.match(storefront,/customer-mobile-order-bar/);
+  assert.match(storefront,/:role="mobileViewport\?'dialog'/);
+  assert.match(storefront,/event\.key === 'Escape'/);
+  assert.match(storefront,/document\.body\.style\.overflow = 'hidden'/);
+  assert.match(storefront,/else if \(!open&&!reviewing\.value\)/);
+  assert.match(storefront,/watch\(reviewing, async open =>/);
+  assert.match(storefront,/reviewClose\.value\?\.focus\(\)/);
+  assert.match(storefront,/reviewReturnFocus = cartReturnFocus \|\| document\.activeElement/);
+  assert.match(storefront,/@keydown="handleReviewKeydown"/);
+  assert.match(storefront,/loading="lazy" decoding="async"/);
   assert.doesNotMatch(storefront,/pay at the counter|pay later|Total due at counter/i);
   assert.match(display,/shopUrl/);assert.match(display,/Print banner/);assert.match(display,/Download PNG/);
   assert.match(display,/loadCanvasImage\(slide\.value\?\.imageUrl\)/);
@@ -101,10 +111,23 @@ test('storefront and display make guest, account, reusable QR, and channel prici
   assert.match(display,/Pause promotion carousel/);
   assert.match(display,/visibilitychange/);
   assert.match(display,/if\(withdrawn\)\{menu\.value=null;qrImage\.value=''/);
-  assert.match(admin,/Reusable shop QR/);assert.match(admin,/Reset to store price/);
+  assert.match(admin,/>Shop QR</);assert.match(admin,/Reset to store price/);
+  assert.match(admin,/Store readiness/i);assert.match(admin,/Menu & prices/);
+  assert.match(admin,/label:'Web address',panel:'basics'/);
+  assert.match(admin,/row=>row\.active&&\['pickup','both'\]\.includes\(row\.fulfillmentMode\)/);
+  assert.match(admin,/filteredProducts/);assert.match(admin,/applyTheme/);
+  assert.match(admin,/privacyNoticeEn\.trim\(\).*privacyNoticeMs\.trim\(\)/s);
   assert.match(status,/reconciliation_required/);
   assert.match(status,/Do not start another payment or pay at the counter/);
   assert.doesNotMatch(status,/status === 503\) sessionStorage\.removeItem/);
+});
+
+test('mobile cart summary uses the customer-visible quantities and prices', () => {
+  assert.deepEqual(publicCartSummary([
+    { quantity: 2, price: 9.9 },
+    { quantity: 1, price: 4.5 },
+    { quantity: -4, price: 100 },
+  ]), { itemCount: 3, estimatedTotal: 24.3 });
 });
 
 test('a scanned dual-purpose location preserves the table or pickup choice', () => {

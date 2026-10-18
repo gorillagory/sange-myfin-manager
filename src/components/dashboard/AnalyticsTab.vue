@@ -5,13 +5,15 @@ import { api, companyPath } from '../../services/api';
 import { businessDate, money } from '../../domain/pos';
 import { reportBuckets, reportBucketLabel, reportRange } from '../../domain/financialReport';
 import { analyticsFilterLabels, analyticsReportQuery, analyticsSubcategoryOptions } from '../../domain/analyticsFilters';
+import { recentAnalyticsRange } from '../../domain/advancedAnalytics';
 import Modal from '../ui/EditionModal.vue';
 import ReportAutomationTab from './ReportAutomationTab.vue';
 import AdvancedAnalyticsPanel from './AdvancedAnalyticsPanel.vue';
 
 const today = businessDate();
-const from = ref(`${today.slice(0, 4)}-01-01`);
-const to = ref(today);
+const initialRange = recentAnalyticsRange(today);
+const from = ref(initialRange.from);
+const to = ref(initialRange.to);
 const cadence = ref('day');
 const channel = ref(''), paymentMethod = ref(''), category = ref(''), subcategory = ref('');
 const report = ref(null), loading = ref(false), error = ref('');
@@ -48,17 +50,18 @@ function applyPreset(name) {
   const end = businessDate(), year = end.slice(0, 4), month = end.slice(0, 7);
   to.value = end;
   if (name === 'week') from.value = businessDate(new Date(Date.now() - 6 * 86400000));
+  if (name === 'thirty') from.value = recentAnalyticsRange(end).from;
   if (name === 'month') from.value = `${month}-01`;
   if (name === 'year') from.value = `${year}-01-01`;
   if (name === 'twelve') from.value = businessDate(new Date(Date.now() - 365 * 86400000));
-  cadence.value = name === 'week' ? 'day' : name === 'month' ? 'day' : 'month';
+  cadence.value = ['week','thirty','month'].includes(name) ? 'day' : 'month';
   refresh();
 }
 
 async function refresh() {
   const request = ++generation;
   loading.value = false;
-  error.value = reportRange(from.value, to.value);
+  error.value = reportRange(from.value, to.value, 365);
   if (error.value) return;
   report.value = null;
   closeBucket();
@@ -99,7 +102,7 @@ onBeforeUnmount(() => { ++generation; ++detailGeneration; });
 <template>
   <div v-if="Store.can('financialReports') && Store.state.online" class="ed-page report-page">
     <header class="ed-page-head"><div><div class="ed-eyebrow">ANALYTICS / FINANCIAL ANALYSIS</div><h1>Sales and cash, clearly.</h1><p>Sales, tax, expenses and cash flow for {{ Store.state.selectedCompany?.name || 'this company' }}.</p></div><button class="ed-btn" :disabled="loading" @click="refresh">{{ loading ? 'Loading…' : 'Refresh report' }}</button></header>
-    <div class="report-presets ed-actions" aria-label="Report date presets"><button class="ed-btn small" type="button" @click="applyPreset('week')">Last 7 days</button><button class="ed-btn small" type="button" @click="applyPreset('month')">This month</button><button class="ed-btn small" type="button" @click="applyPreset('year')">Year to date</button><button class="ed-btn small" type="button" @click="applyPreset('twelve')">Last 12 months</button></div>
+    <div class="report-presets ed-actions" aria-label="Report date presets"><button class="ed-btn small" type="button" @click="applyPreset('week')">Last 7 days</button><button class="ed-btn small" type="button" @click="applyPreset('thirty')">Last 30 days</button><button class="ed-btn small" type="button" @click="applyPreset('month')">This month</button><button class="ed-btn small" type="button" @click="applyPreset('year')">Year to date</button><button class="ed-btn small" type="button" @click="applyPreset('twelve')">Last 12 months</button></div>
     <form class="report-controls ed-filters" @submit.prevent="refresh">
       <fieldset class="report-interval"><legend>Group by</legend><div class="ed-segmented"><button v-for="choice in [{ value: 'day', title: 'Daily' }, { value: 'week', title: 'Weekly' }, { value: 'month', title: 'Monthly' }]" :key="choice.value" type="button" :class="{ active: cadence === choice.value }" :aria-pressed="cadence === choice.value" @click="cadence = choice.value">{{ choice.title }}</button></div></fieldset>
       <label class="ed-field"><span>Date from</span><input v-model="from" type="date" required></label>

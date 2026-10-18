@@ -23,16 +23,19 @@ test('migration backfills collision-free internal stock codes and extends the sc
 });
 
 test('server generator skips any occupied scan value and returns the next tenant sequence',async()=>{
-  const candidates=[];
+  const candidates=[];let value=6;
   const db={query:async(sql,args)=>{
-    if(sql.includes('max(substring'))return {rows:[{next:'7'}],rowCount:1};
+    if(sql.includes('stock_internal_code_counters'))return {rows:[{last_value:String(++value)}],rowCount:1};
     candidates.push(args[1]);
     return {rows:candidates.length===1?[{conflict:1}]:[],rowCount:candidates.length===1?1:0};
   }};
   assert.equal(await nextInternalCode(db,'company'),'STK-000008');
   assert.deepEqual(candidates,['STK-000007','STK-000008']);
   const source=await read('../src/stock.js');
-  assert.match(source,/internal_code ~ '\^STK-\[0-9\]\{6,18\}\$'/);
+  assert.match(source,/INSERT INTO myfin\.stock_internal_code_counters/);
+  const correction=await read('../../db/migrations/0045_stock_unit_corrections.sql');
+  assert.match(correction,/CREATE TABLE myfin\.stock_internal_code_counters/);
+  assert.match(correction,/CREATE OR REPLACE FUNCTION myfin\.assign_stock_internal_code/);
 });
 
 test('stock create serializes code allocation and returns the immutable server code',async()=>{
@@ -54,5 +57,5 @@ test('procurement lookup resolves generated stock codes and prevents identifier 
 
 test('existing runtime grants already cover the new stock_items column',async()=>{
   const grants=await Promise.all([read('../../db/grant-development-runtime.sql'),read('../../db/grant-production-runtime.sql')]);
-  for(const sql of grants)assert.match(sql,/GRANT SELECT,\s*INSERT,\s*UPDATE ON myfin\.stock_items/i);
+  for(const sql of grants)assert.match(sql,/GRANT SELECT,\s*INSERT,\s*UPDATE,\s*DELETE ON myfin\.stock_items/i);
 });

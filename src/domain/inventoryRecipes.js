@@ -8,7 +8,7 @@ export function normalizeRecipeDraft(input={}){
     productId:clean(input.productId),variantId:clean(input.variantId),
     version:Number(input.version||0),enabled:input.enabled===true,
     components:(input.components||[]).map(component=>({
-      stockItemId:clean(component.stockItemId),quantityPerUnit:quantity(component.quantityPerUnit),
+      stockItemId:clean(component.stockItemId),unitVersion:Number(component.unitVersion||0),quantityPerUnit:quantity(component.quantityPerUnit),
     })),
   };
   if(!draft.productId)throw new Error('Choose a sellable product or variant.');
@@ -17,6 +17,7 @@ export function normalizeRecipeDraft(input={}){
   const ids=new Set();
   for(const component of draft.components){
     if(!component.stockItemId||ids.has(component.stockItemId))throw new Error('Choose each stock item once.');
+    if(!Number.isInteger(component.unitVersion)||component.unitVersion<1)throw new Error('Reload stock before saving this recipe.');
     if(!Number.isFinite(component.quantityPerUnit)||component.quantityPerUnit<=0||component.quantityPerUnit>1e12)
       throw new Error('Each component needs a quantity greater than zero.');
     ids.add(component.stockItemId);

@@ -5,8 +5,8 @@ import { createPurchaseOrder, orderStatusAfterReceiptReversal, registerProcureme
 
 const input={number:'PO-100',supplierId:'supplier',currencyCode:'MYR',expectedDate:'2026-10-20',notes:'Weekly order',
   idempotencyKey:'po-request-100',lines:[
-    {id:'line-b',stockItemId:'milk',supplierItemReference:'MILK-C',description:'Milk carton',purchaseUnit:'carton',orderedQuantity:2.5,quantityInBase:1000,unitPriceSen:850},
-    {id:'line-a',stockItemId:'cups',supplierItemReference:'CUP-C',description:'Cup carton',purchaseUnit:'carton',orderedQuantity:2,quantityInBase:50,unitPriceSen:1200},
+    {id:'line-b',stockItemId:'milk',unitVersion:1,supplierItemReference:'MILK-C',description:'Milk carton',purchaseUnit:'carton',orderedQuantity:2.5,quantityInBase:1000,unitPriceSen:850},
+    {id:'line-a',stockItemId:'cups',unitVersion:1,supplierItemReference:'CUP-C',description:'Cup carton',purchaseUnit:'carton',orderedQuantity:2,quantityInBase:50,unitPriceSen:1200},
   ]};
 
 class PurchaseDatabase {
@@ -16,7 +16,7 @@ class PurchaseDatabase {
     if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
     if(sql.includes('SELECT id,request_digest FROM myfin.purchase_orders'))return {rows:this.order?[{id:this.order.id,request_digest:this.order.request_digest}]:[],rowCount:this.order?1:0};
     if(sql.includes('FROM myfin.clients')&&sql.includes('FOR KEY SHARE'))return {rows:[{id:'supplier',data:{type:'Supplier',name:'Supplier'}}],rowCount:1};
-    if(sql.includes('FROM myfin.stock_items')&&sql.includes('FOR KEY SHARE'))return {rows:[...args[1]].map(id=>({id,active:true})),rowCount:args[1].length};
+    if(sql.includes('FROM myfin.stock_items')&&sql.includes('FOR KEY SHARE'))return {rows:[...args[1]].map(id=>({id,active:true,unit_version:1})),rowCount:args[1].length};
     if(sql.startsWith('INSERT INTO myfin.purchase_orders')){
       this.orderInserts++;this.order={id:args[1],request_digest:args[9],number:args[2],supplier_id:args[3],status:'draft',
         currency_code:args[4],total_sen:args[5],expected_date:args[6],notes:args[7],version:1,created_at:'2026-10-09T00:00:00Z',submitted_at:null,cancelled_at:null};
@@ -49,6 +49,18 @@ test('owner purchase-order creation is tenant-idempotent and locks referenced st
   await assert.rejects(()=>createPurchaseOrder(db,who,'company',{...input,notes:'changed'}),
     error=>error.statusCode===409&&error.message==='purchase_order_payload_changed');
   assert.equal(audits.length,1);
+});
+
+test('a purchase-order draft opened before a stock unit correction is rejected',async()=>{
+  const db={async query(sql,args=[]){
+    if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
+    if(sql.includes('SELECT id,request_digest FROM myfin.purchase_orders'))return {rows:[],rowCount:0};
+    if(sql.includes('FROM myfin.clients'))return {rows:[{id:'supplier',data:{type:'Supplier'}}],rowCount:1};
+    if(sql.includes('FROM myfin.stock_items'))return {rows:args[1].map(id=>({id,active:true,unit_version:2})),rowCount:args[1].length};
+    throw Error(`Unexpected SQL: ${sql}`);
+  }};
+  await assert.rejects(()=>createPurchaseOrder(db,{id:'owner',role:'workspace_owner'},'company',input),
+    error=>error.statusCode===409&&error.message==='stock_unit_changed_reload');
 });
 
 test('purchase costs are owner-only while the receiving queue omits them for inventory staff',async()=>{

@@ -91,7 +91,7 @@ const itemPayload = (id, overrides = {}) => ({
 });
 const movement = (key, overrides = {}) => ({
   kind: 'receive', quantity: 2, packagingId: beans.packagings[0].id,
-  supplierId: supplierA.id, reason: 'Supplier delivery', idempotencyKey: key,
+  supplierId: supplierA.id, unitVersion:beans.unitVersion, reason: 'Supplier delivery', idempotencyKey: key,
   ...overrides,
 });
 async function listed(company, host, cookie, path) {
@@ -199,7 +199,7 @@ try {
     const independent = await ok(hostB, url(companyB, `/stock_items/${brandB.id}/movements`), {
       cookie: cookieB, method: 'POST', body: {
         kind: 'receive', quantity: 2, packagingId: brandB.packagings[0].id,
-        supplierId: supplierB.id, reason: 'Brand B delivery', idempotencyKey: key,
+        supplierId: supplierB.id, unitVersion:brandB.unitVersion, reason: 'Brand B delivery', idempotencyKey: key,
       },
     });
     assert.equal(independent.duplicate, false);
@@ -217,7 +217,7 @@ try {
     }, 409, 'used_packaging_immutable');
     await reject(hostA, url(companyA, `/stock_items/${beans.id}`), {
       cookie: cookieA, method: 'PUT', body: { ...beans, baseUnit: 'kg' },
-    }, 409, 'stock_unit_immutable_after_movements');
+    }, 409, 'stock_unit_correction_required');
     beans = await ok(hostA, url(companyA, `/stock_items/${beans.id}`), {
       cookie: cookieA, method: 'PUT', body: {
         ...beans, name: 'Arabica beans, roast 2',
@@ -238,25 +238,90 @@ try {
     }, 400, 'counted_stock_requires_whole_units');
     await reject(hostA, url(companyA, `/stock_items/${cups.id}/movements`), {
       cookie: cookieA, method: 'POST', body: {
-        kind: 'receive', quantity: 0.5, reason: 'Half sleeve', idempotencyKey: `half-${tag}`,
+        kind: 'receive', quantity: 0.5, unitVersion:cups.unitVersion, reason: 'Half sleeve', idempotencyKey: `half-${tag}`,
       },
     }, 400, 'counted_stock_requires_whole_units');
     const receipt = await ok(hostA, url(companyA, `/stock_items/${cups.id}/movements`), {
       cookie: cookieA, method: 'POST', body: {
         kind: 'receive', quantity: 2, packagingId: cups.packagings[0].id,
-        reason: 'Two sleeves', idempotencyKey: `sleeves-${tag}`,
+        unitVersion:cups.unitVersion, reason: 'Two sleeves', idempotencyKey: `sleeves-${tag}`,
       },
     });
     assert.equal(receipt.movement.inputQuantity, 24);
     assert.equal(receipt.item.onHand, 36);
     const count = await ok(hostA, url(companyA, `/stock_items/${cups.id}/movements`), {
       cookie: cookieA, method: 'POST', body: {
-        kind: 'count', quantity: 35, reason: 'Physical count', idempotencyKey: `count-${tag}`,
+        kind: 'count', quantity: 35, unitVersion:cups.unitVersion, reason: 'Physical count', idempotencyKey: `count-${tag}`,
       },
     });
     assert.equal(count.movement.delta, -1);
     assert.equal(count.movement.quantityAfter, 35);
     assert.equal((await listed(companyA, hostA, cookieA, '/stock_items')).find(row => row.id === cups.id).onHand, 35);
+  });
+
+  await test('unit correction preserves old movement units and rejects a stale device form', async () => {
+    const milk = await ok(hostA, url(companyA, '/stock_items'), {
+      cookie: cookieA, method: 'POST', body: itemPayload(`milk-${tag}`, {
+        name: 'Fresh milk', trackingMode: 'volume', baseUnit: 'L', barcode: `MILK-${tag}`,
+        onHand: 1.25, reorderLevel: 0.25,
+        packagings: [{ label: 'One litre carton', barcode: `MILK-CARTON-${tag}`, quantityInBase: 1 }],
+      }),
+    });
+    const corrected = await ok(hostA, url(companyA, `/stock_items/${milk.id}`), {
+      cookie: cookieA, method: 'PUT', body: {
+        ...milk, baseUnit: 'ml',
+        unitCorrection: { strategy: 'convert', conversionFactor: 1000, reason: 'Use millilitres for recipe accuracy' },
+      },
+    });
+    assert.equal(corrected.unitVersion, milk.unitVersion + 1);
+    assert.equal(corrected.onHand, 1250);
+    assert.equal(corrected.reorderLevel, 250);
+    assert.equal(corrected.packagings[0].quantityInBase, 1000);
+    await reject(hostA, url(companyA, `/stock_items/${milk.id}/movements`), {
+      cookie: cookieA, method: 'POST', body: {
+        kind: 'receive', quantity: 1, unitVersion: milk.unitVersion,
+        reason: 'Stale device delivery', idempotencyKey: `stale-unit-${tag}`,
+      },
+    }, 409, 'stock_unit_changed_reload');
+    const received = await ok(hostA, url(companyA, `/stock_items/${milk.id}/movements`), {
+      cookie: cookieA, method: 'POST', body: {
+        kind: 'receive', quantity: 1, packagingId: corrected.packagings[0].id,
+        unitVersion: corrected.unitVersion, reason: 'Supplier carton', idempotencyKey: `new-unit-${tag}`,
+      },
+    });
+    assert.equal(received.movement.inputQuantity, 1000);
+    assert.equal(received.item.onHand, 2250);
+    const history = (await listed(companyA, hostA, cookieA, '/stock_ledger')).filter(row => row.itemId === milk.id);
+    assert.equal(history.length, 2);
+    const opening = history.find(row => row.kind === 'adjust'), delivery = history.find(row => row.kind === 'receive');
+    assert.deepEqual([opening.baseUnitAtTime, opening.unitVersionAtTime, opening.quantityAfter], ['L', 1, 1.25]);
+    assert.deepEqual([delivery.baseUnitAtTime, delivery.unitVersionAtTime, delivery.packagingQuantityAtTime], ['ml', 2, 1000]);
+  });
+
+  await test('owner purge deletes only an unused archived item and never reuses its printed code', async () => {
+    const unused = await ok(hostA, url(companyA, '/stock_items'), {
+      cookie: cookieA, method: 'POST', body: itemPayload(`unused-${tag}`, {
+        name: 'Unused sample', barcode: '', onHand: 0, reorderLevel: 0,
+        preferredSupplierId: '', packagings: [],
+      }),
+    });
+    const activeCheck = await ok(hostA, url(companyA, `/stock_items/${unused.id}/purge-check`), { cookie: cookieA });
+    assert.equal(activeCheck.canPurge, false);
+    await reject(hostA, url(companyA, `/stock_items/${unused.id}/purge`), {
+      cookie: cookieA, method: 'DELETE',
+    }, 409, 'archive_stock_item_before_purge');
+    await ok(hostA, url(companyA, `/stock_items/${unused.id}`), { cookie: cookieA, method: 'DELETE' });
+    const archivedCheck = await ok(hostA, url(companyA, `/stock_items/${unused.id}/purge-check`), { cookie: cookieA });
+    assert.equal(archivedCheck.canPurge, true);
+    await ok(hostA, url(companyA, `/stock_items/${unused.id}/purge`), { cookie: cookieA, method: 'DELETE' });
+    const replacement = await ok(hostA, url(companyA, '/stock_items'), {
+      cookie: cookieA, method: 'POST', body: itemPayload(`replacement-${tag}`, {
+        name: 'Replacement sample', barcode: '', onHand: 0, reorderLevel: 0,
+        preferredSupplierId: '', packagings: [],
+      }),
+    });
+    const codeNumber = row => BigInt(row.internalCode.slice(4));
+    assert.ok(codeNumber(replacement) > codeNumber(unused));
   });
 
   await test('supplier-linked CSV import repeats by batch key and remains tenant isolated', async () => {

@@ -21,7 +21,7 @@ const identifierSchema = z.strictObject({
   packagingId: z.union([v.id,z.literal('')]).default(''),
 });
 const orderLineSchema = z.strictObject({
-  id: v.id.optional(), stockItemId: v.id,
+  id: v.id.optional(), stockItemId: v.id, unitVersion:z.number().int().positive(),
   supplierItemReference: z.string().trim().max(128).default(''),
   description: z.string().trim().min(1).max(500), purchaseUnit: z.string().trim().min(1).max(32),
   orderedQuantity: quantity, quantityInBase: quantity,
@@ -140,10 +140,12 @@ export async function createPurchaseOrder(c, who, companyId, input, audit=async(
   }
   await assertSupplier(c,companyId,data.supplierId);
   const stockIds=[...new Set(data.lines.map(line=>line.stockItemId))].sort();
-  const stock=(await c.query(`SELECT id,active FROM myfin.stock_items
+  const stock=(await c.query(`SELECT id,active,unit_version FROM myfin.stock_items
     WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR KEY SHARE`,[companyId,stockIds])).rows;
   if(stock.length!==stockIds.length)v.fail(404,'stock_item_not_found');
   if(stock.some(row=>!row.active))v.fail(409,'stock_item_archived');
+  const stockVersions=new Map(stock.map(row=>[row.id,Number(row.unit_version)]));
+  if(data.lines.some(line=>stockVersions.get(line.stockItemId)!==line.unitVersion))v.fail(409,'stock_unit_changed_reload');
   const lineIds=new Set(),prepared=data.lines.map((line,index)=>{
     const id=line.id||randomUUID();
     if(lineIds.has(id))v.fail(400,'duplicate_purchase_order_line');

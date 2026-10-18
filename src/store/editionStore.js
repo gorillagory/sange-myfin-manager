@@ -837,6 +837,8 @@ export const Store = reactive({
   addStockItem(item) { return stockModule.addItem(this,item); },
   updateStockItem(item) { return stockModule.updateItem(this,item); },
   archiveStockItem(id) { return stockModule.archiveItem(this,id); },
+  stockPurgeCheck(id) { return stockModule.purgeCheck(this,id); },
+  purgeStockItem(id) { return stockModule.purgeItem(this,id); },
   recordStockMovement(itemId,movement) { return stockModule.move(this,itemId,movement); },
   addClient(c) {
     return financeModule.addClient(this, c);

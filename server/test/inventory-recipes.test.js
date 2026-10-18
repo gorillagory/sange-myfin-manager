@@ -84,12 +84,12 @@ test('recipe enablement rejects inferred catalog tracking before writing history
   const db={async query(sql,args=[]){
     if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
     if(sql.includes('FROM myfin.products')&&sql.includes('FOR UPDATE'))return {rows:[{id:'latte',company_id:'company',data:{name:'Legacy latte',stock:0,variants:[]}}],rowCount:1};
-    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'milk',active:true}],rowCount:1};
+    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'milk',active:true,unit_version:1}],rowCount:1};
     if(/^\s*(INSERT|UPDATE)/.test(sql)){writes.push({sql,args});return {rows:[],rowCount:1};}
     throw Error(`Unexpected SQL: ${sql}`);
   }};
   await assert.rejects(()=>saveRecipe(db,{id:'manager'},'company',{
-    productId:'latte',variantId:'',version:0,enabled:true,components:[{stockItemId:'milk',quantityPerUnit:200}],
+    productId:'latte',variantId:'',version:0,enabled:true,components:[{stockItemId:'milk',unitVersion:1,quantityPerUnit:200}],
   },async()=>{}),error=>error.statusCode===409&&error.message==='recipe_requires_catalog_stock_disabled');
   assert.equal(writes.length,0);
 });
@@ -99,14 +99,27 @@ test('counted recipe fractions are rejected when the recipe is saved',async()=>{
   const db={async query(sql){
     if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
     if(sql.includes('FROM myfin.products')&&sql.includes('FOR UPDATE'))return {rows:[{id:'latte',data:{name:'Latte',trackStock:false,variants:[]}}],rowCount:1};
-    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'pump',active:true,tracking_mode:'count'}],rowCount:1};
+    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'pump',active:true,tracking_mode:'count',unit_version:1}],rowCount:1};
     if(/^\s*(INSERT|UPDATE)/.test(sql)){writes.push(sql);return {rows:[],rowCount:1};}
     throw Error(`Unexpected SQL: ${sql}`);
   }};
   await assert.rejects(()=>saveRecipe(db,{id:'manager'},'company',{
-    productId:'latte',variantId:'',version:0,enabled:true,components:[{stockItemId:'pump',quantityPerUnit:.5}],
+    productId:'latte',variantId:'',version:0,enabled:true,components:[{stockItemId:'pump',unitVersion:1,quantityPerUnit:.5}],
   },async()=>{}),error=>error.statusCode===400&&error.message==='recipe_count_requires_whole_units');
   assert.equal(writes.length,0);
+});
+
+test('a recipe form opened before a stock unit correction is rejected',async()=>{
+  const db={async query(sql){
+    if(sql.includes('pg_advisory_xact_lock'))return {rows:[],rowCount:1};
+    if(sql.includes('FROM myfin.products')&&sql.includes('FOR UPDATE'))return {rows:[{id:'latte',data:{name:'Latte',trackStock:false,variants:[]}}],rowCount:1};
+    if(sql.includes('FROM myfin.stock_items'))return {rows:[{id:'milk',active:true,tracking_mode:'volume',unit_version:2}],rowCount:1};
+    throw Error(`Unexpected SQL: ${sql}`);
+  }};
+  await assert.rejects(()=>saveRecipe(db,{id:'manager'},'company',{
+    productId:'latte',variantId:'',version:0,enabled:true,
+    components:[{stockItemId:'milk',unitVersion:1,quantityPerUnit:200}],
+  },async()=>{}),error=>error.statusCode===409&&error.message==='stock_unit_changed_reload');
 });
 
 test('recipe planning converts four coffees into one litre of milk and four syrup pumps',()=>{
@@ -122,7 +135,7 @@ test('recipe projections expose quantities and availability without confidential
     if(sql.includes('FROM myfin.inventory_recipes r JOIN myfin.products'))return {rows:[{id:'r',product_id:'latte',variant_id:null,
       version:1,enabled:false,product_data:{name:'Latte',cost:93847,variants:[{id:'iced',name:'Iced',cost:93847}]}}]};
     if(sql.includes('FROM myfin.inventory_recipe_components c'))return {rows:[{recipe_id:'r',stock_item_id:'milk',quantity_per_unit:'200',
-      stock_item_name:'Milk',base_unit:'ml',on_hand:'1000',active:true,unit_cost:93847}]};
+      stock_item_name:'Milk',base_unit:'ml',unit_version:'1',on_hand:'1000',active:true,unit_cost:93847}]};
     throw Error(`Unexpected SQL: ${sql}`);
   }};
   const result=await recipeRows(db,'company');

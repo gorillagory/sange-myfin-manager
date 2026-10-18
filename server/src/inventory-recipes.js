@@ -5,7 +5,7 @@ import { normalizeRecipeDraft, recipeAvailability, validateRecipeStockUnits } fr
 import { requireCapability } from './access.js';
 import * as v from './validation.js';
 
-const componentSchema=z.strictObject({stockItemId:v.id,quantityPerUnit:z.number().finite().positive().max(1e12)
+const componentSchema=z.strictObject({stockItemId:v.id,unitVersion:z.number().int().positive(),quantityPerUnit:z.number().finite().positive().max(1e12)
   .refine(value=>Math.abs(value*1e6-Math.round(value*1e6))<1e-5)});
 const recipeSchema=z.strictObject({productId:v.id,variantId:z.union([v.id,z.literal('')]).default(''),
   version:z.number().int().min(0),enabled:z.boolean(),components:z.array(componentSchema).max(50)});
@@ -258,7 +258,7 @@ async function recipeRows(c,companyId){
     FROM myfin.inventory_recipes r JOIN myfin.products p ON p.company_id=r.company_id AND p.id=r.product_id
     WHERE r.company_id=$1 ORDER BY p.data->>'name',r.product_id,r.variant_id NULLS FIRST`,[companyId])).rows;
   if(!recipes.length)return [];
-  const components=(await c.query(`SELECT c.*,s.name AS stock_item_name,s.base_unit,s.on_hand,s.active
+  const components=(await c.query(`SELECT c.*,s.name AS stock_item_name,s.base_unit,s.unit_version,s.on_hand,s.active
     FROM myfin.inventory_recipe_components c
     JOIN myfin.inventory_recipes r ON r.company_id=c.company_id AND r.id=c.recipe_id AND r.version=c.recipe_version
     JOIN myfin.stock_items s ON s.company_id=c.company_id AND s.id=c.stock_item_id
@@ -266,7 +266,7 @@ async function recipeRows(c,companyId){
   const byRecipe=new Map();
   for(const row of components){
     if(!byRecipe.has(row.recipe_id))byRecipe.set(row.recipe_id,[]);
-    byRecipe.get(row.recipe_id).push({stockItemId:row.stock_item_id,quantityPerUnit:number(row.quantity_per_unit),
+    byRecipe.get(row.recipe_id).push({stockItemId:row.stock_item_id,unitVersion:Number(row.unit_version),quantityPerUnit:number(row.quantity_per_unit),
       stockItemName:row.stock_item_name,baseUnit:row.base_unit,onHand:number(row.on_hand),active:row.active});
   }
   return recipes.map(row=>{
@@ -298,9 +298,11 @@ async function saveRecipe(c,who,companyId,input,audit){
   }
   const componentIds=[...new Set(data.components.map(row=>row.stockItemId))].sort();
   if(componentIds.length!==data.components.length)v.fail(400,'duplicate_recipe_stock_item');
-  const stock=componentIds.length?(await c.query('SELECT id,active,tracking_mode FROM myfin.stock_items WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE',[companyId,componentIds])).rows:[];
+  const stock=componentIds.length?(await c.query('SELECT id,active,tracking_mode,unit_version FROM myfin.stock_items WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE',[companyId,componentIds])).rows:[];
   if(stock.length!==componentIds.length)v.fail(404,'stock_item_not_found');
   if(stock.some(row=>!row.active))v.fail(409,'stock_item_archived');
+  const stockVersions=new Map(stock.map(row=>[row.id,Number(row.unit_version)]));
+  if(data.components.some(component=>stockVersions.get(component.stockItemId)!==component.unitVersion))v.fail(409,'stock_unit_changed_reload');
   try{validateRecipeStockUnits(data,stock);}catch{v.fail(400,'recipe_count_requires_whole_units');}
   if(data.enabled&&!data.components.length)v.fail(400,'recipe_components_required');
   if(data.enabled&&catalogTracksStock(product.data))v.fail(409,'recipe_requires_catalog_stock_disabled');

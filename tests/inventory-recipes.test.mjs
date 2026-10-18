@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import {aggregateRecipeConsumption,normalizeRecipeDraft,recipeAvailability,recipeTargetKey} from '../src/domain/inventoryRecipes.js';
 
 test('recipe drafts are opt-in, versioned and reject duplicate stock items',()=>{
-  assert.deepEqual(normalizeRecipeDraft({productId:'latte',components:[{stockItemId:'beans',quantityPerUnit:18}]}),{
-    productId:'latte',variantId:'',version:0,enabled:false,components:[{stockItemId:'beans',quantityPerUnit:18}],
+  assert.deepEqual(normalizeRecipeDraft({productId:'latte',components:[{stockItemId:'beans',unitVersion:1,quantityPerUnit:18}]}),{
+    productId:'latte',variantId:'',version:0,enabled:false,components:[{stockItemId:'beans',unitVersion:1,quantityPerUnit:18}],
   });
   assert.throws(()=>normalizeRecipeDraft({productId:'latte',enabled:true,components:[]}),/at least one/);
   assert.throws(()=>normalizeRecipeDraft({productId:'latte',components:[
-    {stockItemId:'milk',quantityPerUnit:200},{stockItemId:'milk',quantityPerUnit:100},
+    {stockItemId:'milk',unitVersion:1,quantityPerUnit:200},{stockItemId:'milk',unitVersion:1,quantityPerUnit:100},
   ]}),/each stock item once/);
   assert.equal(recipeTargetKey('latte','iced'),'latte\u0000iced');
 });
