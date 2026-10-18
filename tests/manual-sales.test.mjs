@@ -38,6 +38,8 @@ test('manual sale entry compiles and exposes fixed occurrence, payment and inven
   assert.match(modalSource, /manualSaleOccurredAt\(form\.occurredAt\)/);
   assert.match(modalSource, /Malaysia time\. This date drives sales and tax reporting/);
   assert.match(modalSource, /:min="minOccurred"/);
+  assert.match(modalSource, /filter\(product => product\.active !== false\)/);
+  assert.match(modalSource, /product_inactive: 'This product is inactive/);
 });
 
 test('manual sale calendar input is interpreted in the business timezone', () => {

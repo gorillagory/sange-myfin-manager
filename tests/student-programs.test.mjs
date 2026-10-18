@@ -94,13 +94,16 @@ test('voucher create sends plaintext once while edits cannot rotate a code', () 
     maxRedemptions:100, perCustomerLimit:1,
   }, { creating:true });
   assert.equal(created.code, 'STUDENT-10');
+  assert.equal(voucherPayload({code:'STAFF',campaignId:'campaign-1',enabled:true,validFrom:'2026-10-09T00:00:00Z'},{creating:true}).campaignId,'campaign-1');
   const edited = voucherPayload({
     code:'SHOULD-NOT-LEAVE-THE-FORM', expectedVersion:4, enabled:false,
     validFrom:'2026-10-09T00:00:00Z',
   });
   assert.equal('code' in edited, false);
   assert.equal(edited.expectedVersion, 4);
-  assert.throws(() => voucherPayload({ code:'bad code', validFrom:'2026-10-09' }, { creating:true }), /letters/);
+  assert.equal(voucherPayload({ code:'staff', enabled:true, validFrom:'2026-10-09T00:00:00Z' }, { creating:true }).code,'STAFF');
+  for (const code of ['bad code','-STAFF','STAFF-'])
+    assert.throws(() => voucherPayload({ code, validFrom:'2026-10-09' }, { creating:true }), /start and end/);
 });
 
 test('money entry converts to integer sen without floating point rounding', () => {
@@ -119,8 +122,10 @@ test('student programs UI explains live storefront pricing and never captures id
   assert.match(legacy, /Student Programs moved/);
   assert.match(legacy, /\/marketing\?tab=eligibility/);
   assert.match(component, /Customer eligibility/);
-  assert.match(component, /OFFERS & VOUCHERS/);
+  assert.match(component, /OFFERS &amp; REUSABLE CODES/);
   assert.match(component, /never enter or upload/i);
-  assert.match(component, /type="password"/);
+  assert.match(component, /type="text" minlength="3"/);
+  assert.match(component, /Copy code/);
+  assert.match(component, /Download QR/);
   assert.doesNotMatch(component, /type="file"|accept="image|FormData/);
 });

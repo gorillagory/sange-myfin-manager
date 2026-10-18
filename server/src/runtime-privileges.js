@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0046_stock_baselines_and_build_versions.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0048_storefront_asset_library.sql';
 
 const tableGroups = [
   {

@@ -3,7 +3,7 @@ import { normalizeProduct } from "../domain/pos";
 import { stripConfidential } from "../domain/permissions";
 const permitted = s => { if (!s.can("inventoryWrite")) throw new Error("This account can view inventory; ask a manager to change it."); };
 const fields = (value, keys) => Object.fromEntries(keys.filter(key => value[key] !== undefined).map(key => [key, value[key]]));
-const productFields = ["id","company_id","version","name","sku","code","barcode","category","subcategory","unit","price","cost","stock","trackStock","hasVariants","description","imageUrl","imagePath"];
+const productFields = ["id","company_id","version","active","name","sku","code","barcode","category","subcategory","unit","price","cost","stock","trackStock","hasVariants","description","imageUrl","imagePath"];
 const variantFields = ["id","name","sku","barcode","price","cost","stock"];
 export function productWritePayload(value) {
   const normalized = normalizeProduct(value);

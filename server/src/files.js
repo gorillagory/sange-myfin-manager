@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { open, lstat, realpath, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
+import { z } from "zod";
 import { authorize, audit } from "./business.js";
 import { parse, id, fail } from "./validation.js";
 import { managementLock,managementSession } from "./management.js";
@@ -11,6 +12,24 @@ import { owner,manager,operator,requireCapability,recordVisible } from "./access
 
 export async function registerFiles(app, { database: db, uploadDir }) {
   const sessionGuard=async(c,req)=>{await managementLock(c);await managementSession(c,req);};
+  const assetMetadata = z.strictObject({
+    label: z.string().trim().max(120).default(""),
+    altText: z.string().trim().max(300).default(""),
+  });
+  const capabilityFor = kind => kind === "products" ? "inventoryWrite"
+    : kind === "assets" ? "storefrontManage" : "expensesCreate";
+  const publicAssetUrl = fileId => `/api/public/storefront-assets/${fileId}`;
+  const fileUrl = fileId => `/api/files/${fileId}`;
+  const assetOutput = row => ({
+    id: row.id,
+    label: row.label || "",
+    altText: row.alt_text || "",
+    mime: row.mime,
+    size: Number(row.size),
+    url: fileUrl(row.id),
+    publicUrl: publicAssetUrl(row.id),
+    createdAt: row.created_at,
+  });
   const root = resolve(uploadDir);
   const stat = await lstat(root);
   if (
@@ -28,10 +47,10 @@ export async function registerFiles(app, { database: db, uploadDir }) {
     async (req) => {
       const company = parse(id, req.params.company),
         kind = req.params.kind;
-      if (!["products", "receipts"].includes(kind))
+      if (!["products", "receipts", "assets"].includes(kind))
         fail(400, "invalid_file_kind");
       // Authorize before consuming upload bytes and recheck inside metadata transaction.
-      await db.transaction(async(c) => {await sessionGuard(c,req);await authorize(c, req.identity, company);requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesCreate");});
+      await db.transaction(async(c) => {await sessionGuard(c,req);await authorize(c, req.identity, company);requireCapability(req.identity,capabilityFor(kind));});
       const file = await req.file();
       if (!file) fail(400, "file_required");
       const bytes = await file.toBuffer();
@@ -73,10 +92,12 @@ export async function registerFiles(app, { database: db, uploadDir }) {
         await db.transaction(async (c) => {
           await sessionGuard(c,req);
           await authorize(c, req.identity, company);
-          requireCapability(req.identity,kind==="products"?"inventoryWrite":"expensesCreate");
+          requireCapability(req.identity,capabilityFor(kind));
+          const label = kind === "assets" ? String(file.filename || "")
+            .replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120) : "";
           await c.query(
-            "INSERT INTO myfin.files(id,company_id,actor_id,kind,mime,size) VALUES($1,$2,$3,$4,$5,$6)",
-            [fileId, company, req.identity.id, kind, type.mime, bytes.length],
+            "INSERT INTO myfin.files(id,company_id,actor_id,kind,mime,size,label) VALUES($1,$2,$3,$4,$5,$6,$7)",
+            [fileId, company, req.identity.id, kind, type.mime, bytes.length, label],
           );
           await audit(c, req.identity, company, "Upload file", fileId);
         });
@@ -84,9 +105,66 @@ export async function registerFiles(app, { database: db, uploadDir }) {
         if (created) await unlink(path).catch(() => {});
         throw error;
       }
-      return { url: `/api/files/${fileId}`, path: fileId };
+      if (kind === "assets") return {
+        id: fileId, label: String(file.filename || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120),
+        altText: "", mime: type.mime, size: bytes.length, url: fileUrl(fileId),
+        publicUrl: publicAssetUrl(fileId), createdAt: new Date().toISOString(), path: fileId,
+      };
+      return { url: fileUrl(fileId), path: fileId };
     },
   );
+  app.get("/api/companies/:company/storefront/assets", async req => {
+    const company = parse(id, req.params.company);
+    return db.transaction(async c => {
+      await sessionGuard(c, req);
+      await authorize(c, req.identity, company);
+      requireCapability(req.identity, "storefrontManage");
+      const rows = await c.query(
+        `SELECT id,label,alt_text,mime,size,created_at FROM myfin.files
+          WHERE company_id=$1 AND kind='assets' ORDER BY created_at DESC,id DESC`, [company],
+      );
+      return { assets: rows.rows.map(assetOutput) };
+    });
+  });
+  app.patch("/api/companies/:company/storefront/assets/:id", async req => {
+    const company = parse(id, req.params.company), fileId = parse(id, req.params.id);
+    const input = parse(assetMetadata, req.body);
+    return db.transaction(async c => {
+      await sessionGuard(c, req);
+      await authorize(c, req.identity, company);
+      requireCapability(req.identity, "storefrontManage");
+      const result = await c.query(
+        `UPDATE myfin.files SET label=$3,alt_text=$4
+          WHERE company_id=$1 AND id=$2 AND kind='assets'
+          RETURNING id,label,alt_text,mime,size,created_at`,
+        [company, fileId, input.label, input.altText],
+      );
+      if (!result.rowCount) fail(404, "asset_not_found");
+      await audit(c, req.identity, company, "Storefront asset metadata", fileId);
+      return { asset: assetOutput(result.rows[0]) };
+    });
+  });
+  app.get("/api/public/storefront-assets/:id", async (req, reply) => {
+    const fileId = parse(z.uuid(), req.params.id);
+    const meta = await db.transaction(async c => (await c.query(
+      "SELECT id,mime,size FROM myfin.files WHERE id=$1 AND kind='assets'", [fileId],
+    )).rows[0]);
+    if (!meta) fail(404, "not_found");
+    const handle = await open(join(root, fileId), constants.O_RDONLY | constants.O_NOFOLLOW)
+      .catch(() => fail(404, "not_found"));
+    const st = await handle.stat();
+    if (!st.isFile() || st.size !== meta.size) {
+      await handle.close();
+      fail(404, "not_found");
+    }
+    reply.header("Content-Type", meta.mime)
+      .header("Content-Length", meta.size)
+      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Security-Policy", "default-src 'none'; sandbox")
+      .header("Content-Disposition", `inline; filename="${fileId}.${meta.mime.split("/")[1]}"`);
+    return reply.send(handle.createReadStream());
+  });
   app.get("/api/files/:id", async (req, reply) => {
     const fileId = parse(id, req.params.id);
     const meta = await db.transaction(async (c) => {
@@ -97,6 +175,7 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       if (!r.rowCount) fail(404, "not_found");
       await authorize(c, req.identity, r.rows[0].company_id);
       if(r.rows[0].kind==="products")requireCapability(req.identity,"catalogRead");
+      if(r.rows[0].kind==="assets")requireCapability(req.identity,"storefrontManage");
       if(!owner(req.identity)){
         const url="/api/files/"+fileId,co=r.rows[0].company_id;
         const expense=await c.query("SELECT created_by FROM myfin.expenses WHERE company_id=$1 AND (data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3) LIMIT 1",[co,fileId,url]);
@@ -138,8 +217,8 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       );
       if (!r.rowCount) fail(404, "not_found");
       await authorize(c, req.identity, r.rows[0].company_id);
-      requireCapability(req.identity,r.rows[0].kind==="products"?"inventoryWrite":"expensesCreate");
-      if(!owner(req.identity)&&r.rows[0].actor_id!==req.identity.id)fail(403,"access_denied");
+      requireCapability(req.identity,capabilityFor(r.rows[0].kind));
+      if(r.rows[0].kind!=="assets"&&!owner(req.identity)&&r.rows[0].actor_id!==req.identity.id)fail(403,"access_denied");
       for (const table of ["products", "expenses", "transactions"]) {
         const refs = await c.query(
           `SELECT id FROM myfin.${table} WHERE company_id=$1 AND (data->>'imagePath'=$2 OR data->>'receiptPath'=$2 OR data->>'attachmentPath'=$2 OR data->>'imageUrl'=$3 OR data->>'receiptUrl'=$3 OR data->>'attachmentUrl'=$3) LIMIT 1`,
@@ -152,6 +231,18 @@ export async function registerFiles(app, { database: db, uploadDir }) {
       if(snapshots.rowCount)fail(409,"file_is_referenced");
       const companyRefs = await c.query("SELECT id FROM myfin.companies WHERE id=$1 AND (data->>'logo'=$2 OR data->>'qrCode'=$2 OR data->>'qrCodeUrl'=$2) LIMIT 1", [r.rows[0].company_id, "/api/files/" + fileId]);
       if (companyRefs.rowCount) fail(409, "file_is_referenced");
+      if (r.rows[0].kind === "assets") {
+        const publicUrl = publicAssetUrl(fileId);
+        const storefrontRefs = await c.query(
+          `SELECT 1 FROM myfin.storefront_settings
+            WHERE company_id=$1 AND (logo_url=$2 OR hero_image_url=$2)
+           UNION ALL
+           SELECT 1 FROM myfin.storefront_carousel_slides
+            WHERE company_id=$1 AND image_url=$2 LIMIT 1`,
+          [r.rows[0].company_id, publicUrl],
+        );
+        if (storefrontRefs.rowCount) fail(409, "file_is_referenced");
+      }
       await c.query("DELETE FROM myfin.files WHERE id=$1", [fileId]);
       await audit(c, req.identity, r.rows[0].company_id, "Delete file", fileId);
     });

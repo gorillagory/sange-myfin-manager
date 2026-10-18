@@ -27,7 +27,9 @@ const paths = {
  menu:'M3 6h18M3 12h18M3 18h18', logout:'M9 3H3v18h6M9 12h12m-5-5 5 5-5 5',
  cloud:'M7 18a5 5 0 1 1 0-10 6 6 0 0 1 11-2 6 6 0 0 1 0 12H7Zm2-6 3 3 4-5',
  alert:'m12 3 10 18H2L12 3ZM12 9v5M12 17h.01', edit:'m16 3 5 5-12 12H4v-5L16 3ZM13 6l5 5',
- download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'
+ download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
+ copy:'M8 8h12v12H8zM4 16V4h12', link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',
+ info:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 10v7M12 7h.01'
 };
 </script>
 <template><svg class="ed-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths[name] || paths.grid" /></svg></template>

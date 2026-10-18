@@ -197,6 +197,7 @@ const campaignSelect = `SELECT campaign.id,campaign.version,campaign.lifecycle,c
             AND voucher_usage.promotion_id=voucher.promotion_id AND voucher_usage.voucher_id=voucher.id
            WHERE voucher.workspace_id=link.workspace_id AND voucher.company_id=link.company_id
              AND voucher.promotion_id=link.promotion_id AND voucher_version.enabled
+             AND (voucher_version.campaign_id IS NULL OR voucher_version.campaign_id=campaign.id)
              AND voucher_version.valid_from<=version.starts_at
              AND ((version.ends_at IS NULL AND voucher_version.valid_until IS NULL)
                OR (version.ends_at IS NOT NULL AND (voucher_version.valid_until IS NULL OR voucher_version.valid_until>=version.ends_at)))
@@ -706,6 +707,16 @@ export function marketingAnalyticsOutput(row, campaign, range) {
       consumed: Number(row.consumed_reservations || 0),
       released: Number(row.released_reservations || 0),
     },
+    codeAttribution: (row.code_breakdown || []).map(code => ({
+      voucherId: code.voucherId,
+      displayCode: code.displayCode || '',
+      codeHint: code.codeHint || '',
+      legacyMasked: !code.displayCode,
+      redemptions: Number(code.redemptions || 0),
+      posRedemptions: Number(code.posRedemptions || 0),
+      storefrontRedemptions: Number(code.storefrontRedemptions || 0),
+      discountCostSen: String(code.discountCostSen || '0'),
+    })),
   };
 }
 
@@ -735,16 +746,36 @@ async function campaignAnalytics(c, workspaceId, companyId, campaign, range) {
        SELECT redemption.*,
               CASE WHEN redemption.source_type='customer_order' THEN payment.sale_id ELSE redemption.source_id END AS sale_id
          FROM myfin.promotion_redemptions redemption
+         LEFT JOIN myfin.promotion_voucher_versions redemption_code
+           ON redemption_code.workspace_id=redemption.workspace_id
+          AND redemption_code.company_id=redemption.company_id
+          AND redemption_code.promotion_id=redemption.promotion_id
+          AND redemption_code.voucher_id=redemption.voucher_id
+          AND redemption_code.version=redemption.voucher_version
          LEFT JOIN myfin.customer_order_payments payment
            ON redemption.source_type='customer_order' AND payment.company_id=redemption.company_id
           AND payment.order_id=redemption.source_id
         WHERE redemption.workspace_id=$1 AND redemption.company_id=$2
           AND redemption.occurred_at >= $4::date AND redemption.occurred_at < $5::date
+          AND (redemption.voucher_id IS NULL OR redemption_code.campaign_id IS NULL
+            OR redemption_code.campaign_id=$3)
           AND EXISTS(SELECT 1 FROM campaign_links link
             WHERE link.promotion_id=redemption.promotion_id
               AND link.promotion_version=redemption.promotion_version
               AND redemption.occurred_at>=link.starts_at
               AND (link.ends_at IS NULL OR redemption.occurred_at<link.ends_at))
+     ), code_counts AS (
+       SELECT voucher.id AS voucher_id,voucher.display_code,voucher.code_hint,
+              count(*)::bigint AS redemptions,
+              count(*) FILTER(WHERE redemption.source_type='pos_sale')::bigint AS pos_redemptions,
+              count(*) FILTER(WHERE redemption.source_type='customer_order')::bigint AS storefront_redemptions,
+              coalesce(sum(redemption.discount_sen),0)::bigint AS discount_cost_sen
+         FROM matching_redemptions redemption
+         JOIN myfin.promotion_vouchers voucher
+           ON voucher.workspace_id=redemption.workspace_id AND voucher.company_id=redemption.company_id
+          AND voucher.promotion_id=redemption.promotion_id AND voucher.id=redemption.voucher_id
+        WHERE redemption.voucher_id IS NOT NULL
+        GROUP BY voucher.id,voucher.display_code,voucher.code_hint
      ), redemption_sales AS (
        SELECT redemption.sale_id,min(redemption.customer_id) AS customer_id,
               sum(redemption.discount_sen)::bigint AS discount_sen,
@@ -811,7 +842,14 @@ async function campaignAnalytics(c, workspaceId, companyId, campaign, range) {
             WHERE link.promotion_id=reservation.promotion_id AND link.promotion_version=reservation.promotion_version)
      )
      SELECT (SELECT count(*) FROM qualified)::bigint AS qualified_quotes,sales_totals.*,
-            order_counts.*,reservation_counts.*
+            order_counts.*,reservation_counts.*,
+            coalesce((SELECT jsonb_agg(jsonb_build_object(
+              'voucherId',code.voucher_id,'displayCode',code.display_code,'codeHint',code.code_hint,
+              'redemptions',code.redemptions,'posRedemptions',code.pos_redemptions,
+              'storefrontRedemptions',code.storefront_redemptions,
+              'discountCostSen',code.discount_cost_sen::text)
+              ORDER BY code.redemptions DESC,code.voucher_id) FROM code_counts code),'[]'::jsonb)
+              AS code_breakdown
        FROM sales_totals CROSS JOIN order_counts CROSS JOIN reservation_counts`,
     [workspaceId, companyId, campaign.id, range.from, range.toExclusive],
   );

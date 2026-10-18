@@ -51,6 +51,59 @@ export const MARKETING_CHANNELS = Object.freeze([
   { id:'email', label:'Email' },
 ]);
 
+export function promotionCode(row = {}) {
+  return text(row.displayCode ?? row.code ?? row.reusableCode ?? row.voucherCode).toLocaleUpperCase('en-US');
+}
+
+export function promotionShareTarget(row = {}) {
+  return text(row.shareUrl ?? row.storefrontUrl ?? row.deepLink ?? row.qrPayload) || promotionCode(row);
+}
+
+export function normalizePosPromotionCatalog(input = {}) {
+  const source = Array.isArray(input) ? input
+    : input.promotions || input.rows || input.offers || input.availablePromotions || [];
+  return source.flatMap(promotion => {
+    const codes = promotion.vouchers || promotion.codes || [];
+    const rows = codes.length ? codes.map(code => ({ ...promotion, ...code,
+      promotionId:code.promotionId || promotion.promotionId || promotion.id,
+      promotionVersion:code.promotionVersion || promotion.promotionVersion || promotion.version,
+      promotionName:code.promotionName || promotion.promotionName || promotion.name,
+      campaignId:code.campaignId || promotion.campaignId,
+      campaignName:code.campaignName || promotion.campaignName,
+      redemptionMode:'voucher',
+    })) : [promotion];
+    return rows.map((row, index) => {
+      const displayCode = promotionCode(row);
+      const redemptionMode = text(row.redemptionMode || (displayCode || row.codeHint ? 'voucher' : 'automatic')).toLowerCase();
+      return { ...row,
+        id:row.voucherId || row.id || `${row.promotionId || promotion.id || 'promotion'}:${row.promotionVersion || promotion.version || 0}:${index}`,
+        promotionId:row.promotionId || promotion.id || row.id,
+        promotionVersion:Number(row.promotionVersion || promotion.version || row.version || 0),
+        name:row.promotionName || row.name || promotion.name || 'Promotion',
+        campaignName:row.campaignName || promotion.campaignName || '',
+        redemptionMode, displayCode,
+        shareUrl:promotionShareTarget(row),
+        codeHint:text(row.codeHint || row.code_hint),
+        legacyMasked:redemptionMode === 'voucher' && !displayCode && Boolean(text(row.codeHint || row.code_hint)),
+        enabled:row.enabled !== false && promotion.enabled !== false,
+      };
+    });
+  });
+}
+
+export function suggestPromotionCode(label = 'PROMO', existing = [], now = new Date()) {
+  const stem = text(label).toLocaleUpperCase('en-US').replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '') || 'PROMO';
+  const year = String(now.getFullYear()).slice(-2);
+  const base = `${stem.slice(0, 24)}-${year}`;
+  const used = new Set(existing.map(value => text(value).toLocaleUpperCase('en-US')));
+  if (!used.has(base)) return base;
+  for (let suffix = 2; suffix < 1000; suffix++) {
+    const candidate = `${base.slice(0, 31 - String(suffix).length)}-${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${stem.slice(0, 19)}-${Date.now().toString(36).toLocaleUpperCase('en-US')}`.slice(0, 32);
+}
+
 export function marketingPaths(companyId) {
   const base = `/companies/${encodeURIComponent(companyId)}/marketing`;
   return Object.freeze({ base, campaigns:`${base}/campaigns`, audiences:`${base}/audiences`,
@@ -133,24 +186,35 @@ export async function loadMarketingWorkspace(request, companyId) {
         : request(`/companies/${encodeURIComponent(companyId)}/customer-profiles?limit=100`),
       primary.loyalty ? Promise.resolve(primary.loyalty) : request(paths.loyalty),
       request(`${paths.legacy}?limit=100`),
+      request(`${paths.base}/promotions`),
     ]);
     const legacy = supplements[2].status === 'fulfilled' ? supplements[2].value : {};
     const legacyPromotions = legacy.promotions || [];
+    const catalog = supplements[3].status === 'fulfilled' ? supplements[3].value : {};
+    const catalogPromotions = catalog.promotions || [];
     const primaryPromotions = primary.availablePromotions || [];
-    const availablePromotions = (primaryPromotions.length ? primaryPromotions : legacyPromotions).map(row => {
+    const detailPromotions = catalogPromotions.length ? catalogPromotions : legacyPromotions;
+    const availablePromotions = (primaryPromotions.length ? primaryPromotions : detailPromotions).map(row => {
       const id = row.promotionId || row.id;
       const version = Number(row.promotionVersion || row.version || 0);
-      const details = legacyPromotions.find(item => item.id === id && Number(item.version) === version) || {};
+      const details = detailPromotions.find(item => (item.id || item.promotionId) === id
+        && Number(item.version || item.promotionVersion) === version) || {};
       return { ...details, ...row, promotionId:id, promotionVersion:version };
     });
+    const legacyVouchers = detailPromotions.flatMap(promotion => (promotion.vouchers || promotion.codes || []).map(voucher => ({
+      ...voucher, promotionName:promotion.name, promotionId:promotion.id || promotion.promotionId,
+    })));
+    const primaryVouchers = primary.vouchers || primary.codes || [];
+    const vouchers = [...legacyVouchers, ...primaryVouchers].reduce((rows, voucher) => {
+      const key=voucher.id || `${voucher.promotionId || voucher.promotion_id}:${promotionCode(voucher) || voucher.codeHint || voucher.code_hint}`;
+      rows.set(key,{...(rows.get(key)||{}),...voucher});return rows;
+    },new Map());
     return normalizeMarketingWorkspace({ ...primary,
       availablePromotions,
       customerProfiles:supplements[0].status === 'fulfilled' ? supplements[0].value.rows || [] : [],
       loyalty:primary.loyalty || (supplements[1].status === 'fulfilled' ? supplements[1].value : null),
       eligibility:legacy.students || legacy.eligibilities || [],
-      vouchers:(legacy.promotions || []).flatMap(promotion => (promotion.vouchers || []).map(voucher => ({
-        ...voucher, campaignName:promotion.name, promotionId:promotion.id,
-      }))),
+      vouchers:[...vouchers.values()],
     });
   } catch (error) {
     if (error?.status !== 404) throw error;
@@ -175,7 +239,7 @@ export function emptyCampaign(now = new Date()) {
   return { expectedVersion:0, name:'', goal:'acquisition', audienceId:'',
     offerMode:'new', offerType:'percentage', offerValue:'10', rewardProductId:'', rewardVariantId:'',
     redemptionMode:'automatic', stackable:false, priority:'0', targetProductKeys:[], targetCategoryKeys:[],
-    channels:['storefront'], startsAt:localStart, endsAt:'',
+    channels:['storefront','pos'], startsAt:localStart, endsAt:'',
     minimumSpend:'0.00', maxDiscount:'', budget:'', maxRedemptions:'', perCustomerLimit:'1',
     description:'', status:'draft', source:'campaign', promotionLinks:[], existingPromotionKey:'' };
 }
@@ -391,8 +455,9 @@ export function legacyPromotionPayload(campaign, { publish = false } = {}) {
     rewardQuantityMilli:1000 };
 }
 
-function voucherCoversCampaign(voucher, startsAt, endsAt) {
+function voucherCoversCampaign(voucher, startsAt, endsAt, campaignId = '') {
   if (!voucher?.enabled) return false;
+  if (text(voucher.campaignId) && text(voucher.campaignId) !== text(campaignId)) return false;
   const voucherStart = new Date(voucher.validFrom).getTime();
   const campaignStart = new Date(startsAt).getTime();
   if (!Number.isFinite(voucherStart) || voucherStart > campaignStart) return false;
@@ -416,7 +481,7 @@ export function campaignPublishError(input = {}, offers = []) {
   if (!chosen) return 'Save this voucher campaign as a draft, then create and enable its code in Offers & vouchers before publishing.';
   const startsAt = iso(input.startsAt, 'Campaign start');
   const endsAt = iso(input.endsAt, 'Campaign end', { nullable:true });
-  if (!(chosen.vouchers || []).some(voucher => voucherCoversCampaign(voucher, startsAt, endsAt)))
+  if (!(chosen.vouchers || []).some(voucher => voucherCoversCampaign(voucher, startsAt, endsAt, input.id)))
     return 'Create and enable a voucher code that covers the full campaign schedule before publishing.';
   return '';
 }
@@ -444,7 +509,7 @@ export async function saveMarketingCampaign(request, companyId, form, { publish 
   } else campaignForm.promotionLinks = [];
   let body = campaignPayload(campaignForm, { publish });
   if (offerBody) {
-    const savedOffer = await request(`/companies/${encodeURIComponent(companyId)}/student-promotions`, { method:'POST', body:offerBody });
+      const savedOffer = await request(`${paths.base}/promotions`, { method:'POST', body:offerBody });
     campaignForm.promotionLinks = [{ promotionId:savedOffer.id, promotionVersion:Number(savedOffer.version) }];
     body = campaignPayload(campaignForm, { publish });
   }

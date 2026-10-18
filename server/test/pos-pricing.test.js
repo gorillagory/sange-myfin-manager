@@ -40,6 +40,9 @@ function fixture(role = 'manager', options = {}) {
     if (sql.includes('FROM myfin.customer_order_recipe_reservations')) return {
       rowCount:(options.recipeReservations || []).length, rows:options.recipeReservations || [],
     };
+    if (sql.includes('FROM myfin.promotions promotion')) return {
+      rowCount:(options.posPromotionRows || []).length, rows:options.posPromotionRows || [],
+    };
     if (sql.includes('FROM myfin.promotions p')) return {
       rowCount:(options.promotionRows || []).length, rows:options.promotionRows || [],
     };
@@ -51,13 +54,59 @@ function fixture(role = 'manager', options = {}) {
     if (sql.startsWith('INSERT INTO myfin.')) return { rowCount:1, rows:[] };
     throw Error(`unexpected query: ${sql}`);
   } };
-  const app = { post(path, handler) { routes.set(path, handler); } };
+  const app = {
+    get(path, handler) { routes.set(path, handler); },
+    post(path, handler) { routes.set(path, handler); },
+  };
   const scoped = (req, fn) => fn(c, 'company-a');
   registerPosPricing(app, { scoped, voucherPepper:'pos-pricing-test-pepper-at-least-32-bytes' });
   return { handler:routes.get('/api/companies/:company/pos/quote'),
+    promotionsHandler:routes.get('/api/companies/:company/pos/promotions'),
     releaseHandler:routes.get('/api/companies/:company/pos/quote/release'), calls,
     req:body=>({ body, identity:{ id:'cashier-a', username:'Cashier', role } }) };
 }
+
+test('checkout-safe promotion catalog exposes automatic offers and reusable codes with storefront links', async () => {
+  const state = fixture('operator', { posPromotionRows:[{
+    promotion_id:'promotion-a', promotion_version:'3', voucher_id:'voucher-a',
+    name:'Student 10%', campaign_id:'campaign-a', campaign_version:'2', campaign_name:'Student week',
+    campaign_channels:['pos','storefront'], redemption_mode:'voucher', display_code:'STUDENT',
+    code_hint:'***DENT', storefront_hostname:'order-example.test',
+    valid_from:'2026-10-01T00:00:00Z', valid_until:null,
+    code_valid_from:'2026-10-01T00:00:00Z', code_valid_until:'2026-11-01T00:00:00Z',
+    discount_type:'percentage', discount_basis_points:'1000', discount_sen:null,
+    reward_product_id:null, reward_product_name:null,
+  }, {
+    promotion_id:'promotion-b', promotion_version:'1', voucher_id:null,
+    name:'Happy hour', campaign_id:'campaign-b', campaign_version:'1', campaign_name:'Counter hour',
+    campaign_channels:['pos'], redemption_mode:'automatic', display_code:null, code_hint:null,
+    storefront_hostname:'order-example.test', valid_from:'2026-10-01T00:00:00Z', valid_until:null,
+    code_valid_from:null, code_valid_until:null, discount_type:'fixed', discount_basis_points:null,
+    discount_sen:'200', reward_product_id:null, reward_product_name:null,
+  }] });
+  const result = await state.promotionsHandler(state.req({}));
+  assert.equal(result.promotions.length, 2);
+  assert.deepEqual(result.promotions[0], {
+    promotionId:'promotion-a', promotionVersion:3, voucherId:'voucher-a', name:'Student 10%',
+    campaignId:'campaign-a', campaignName:'Student week', campaignVersion:2,
+    channels:['pos','storefront'], redemptionMode:'voucher', displayCode:'STUDENT', code:'STUDENT',
+    codeHint:'***DENT', legacyMasked:false,
+    shareUrl:'https://order-example.test/shop?promo=STUDENT&campaign=campaign-a', enabled:true,
+    validFrom:'2026-10-01T00:00:00Z', validUntil:'2026-11-01T00:00:00Z',
+    discountType:'percentage', discountBasisPoints:1000, discountSen:null,
+    rewardProductId:'', rewardProductName:'',
+  });
+  assert.equal(result.promotions[1].redemptionMode, 'automatic');
+  assert.equal(result.promotions[1].displayCode, '');
+  const catalog = state.calls.find(call => call.sql.includes('FROM myfin.promotions promotion'));
+  assert.deepEqual(catalog.params, ['company-a']);
+  assert.match(catalog.sql, /campaign_head\.lifecycle='published'/);
+  assert.match(catalog.sql, /'pos'=ANY\(campaign_version\.channels\)/);
+  assert.match(catalog.sql, /voucher_version\.campaign_id IS NULL OR campaign_head\.id=voucher_version\.campaign_id/);
+  assert.match(catalog.sql, /version\.discount_type<>'free_item'/);
+  assert.match(catalog.sql, /coalesce\(reward\.data->>'active','true'\)<>'false'/);
+  assert.match(catalog.sql, /FROM myfin\.product_variants reward_variant/);
+});
 
 test('authenticated POS quote previews without writes and locks exactly one cashier-bound snapshot on demand', async () => {
   const state = fixture();

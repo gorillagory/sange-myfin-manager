@@ -19,7 +19,7 @@ const form = reactive({
   recordingReason: '', inventoryPolicy: 'deduct_current_stock_and_recipe',
   items: [{ productId: '', variantId: '', quantity: 1, unitPrice: null }],
 });
-const products = computed(() => [...Store.state.products].map(normalizeProduct)
+const products = computed(() => [...Store.state.products].map(normalizeProduct).filter(product => product.active !== false)
   .sort((left, right) => left.name.localeCompare(right.name)));
 const customers = computed(() => Store.state.clients.filter(row => row.type !== 'Supplier')
   .sort((left, right) => left.name.localeCompare(right.name)));
@@ -61,6 +61,8 @@ function removeLine(index) { if (form.items.length > 1) form.items.splice(index,
 const messageFor = value => ({
   stock_unavailable: 'Current catalog stock is too low. Record a verified stock correction before entering this sale.',
   recipe_stock_unavailable: 'Current recipe stock is too low. Reconcile ingredient stock before entering this sale.',
+  product_inactive: 'This product is inactive and cannot be added to a sale. Choose an active product.',
+  catalog_item_unavailable: 'This product is no longer available. Refresh the catalog and choose an active product.',
   manual_sale_future_date: 'The occurrence time cannot be in the future.',
   manual_sale_backdate_limit: 'Recorded sales are limited to today and the previous seven Malaysia business dates.',
   manual_sale_pricing_reason_required: 'Explain why the historical price or tax differs from today’s catalog.',

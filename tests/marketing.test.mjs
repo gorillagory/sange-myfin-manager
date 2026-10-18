@@ -5,7 +5,8 @@ import { compileScript, compileStyle, compileTemplate, parse } from '@vue/compil
 import {
   ATTRIBUTION_NOTICE, CAMPAIGN_GOALS, MARKETING_CHANNELS, attributedMetricCards,
   audiencePayload, campaignPayload, campaignPublishError, campaignStepError, campaignToForm, emptyCampaign, loadMarketingWorkspace, normalizeMarketingWorkspace,
-  legacyPromotionPayload, saveMarketingCampaign,
+  legacyPromotionPayload, normalizePosPromotionCatalog, promotionCode, promotionShareTarget,
+  saveMarketingCampaign, suggestPromotionCode,
 } from '../src/domain/marketing.js';
 import { permissionsFor } from '../src/domain/permissions.js';
 import { canVisit, ROUTE_CAPABILITIES } from '../src/domain/viewAccess.js';
@@ -52,6 +53,7 @@ test('campaign vocabulary and payload use exact API identifiers and no fake all-
   assert.equal(payload.budgetSen,50000);
   assert.deepEqual(campaignPayload({...form,audienceId:'',audienceVersion:null}).audienceLinks,[]);
   assert.equal(emptyCampaign().audienceId,'');
+  assert.deepEqual(emptyCampaign().channels,['storefront','pos']);
 });
 
 test('workspace load enriches immutable campaign offers with editable legacy limits', async () => {
@@ -59,11 +61,15 @@ test('workspace load enriches immutable campaign offers with editable legacy lim
     if(path.endsWith('/marketing')) return {campaigns:[],audiences:[],availablePromotions:[{
       promotionId:'offer-1',promotionVersion:3,name:'Return visit',discountType:'percentage',discountBasisPoints:1200,enabled:false,
     }]};
+    if(path.endsWith('/marketing/promotions')) return {promotions:[{
+      id:'offer-1',version:3,name:'Return visit',minSubtotalSen:1500,maxDiscountSen:800,
+      maxTotalRedemptions:90,perCustomerLimit:2,vouchers:[{id:'voucher-1',displayCode:'STUDENT',shareUrl:'https://order.example/shop?promo=STUDENT'}],
+    }]};
     if(path.includes('/customer-profiles')) return {rows:[]};
     if(path.endsWith('/marketing/loyalty')) return {settings:{version:1}};
     if(path.includes('/student-programs')) return {students:[],promotions:[{
       id:'offer-1',version:3,name:'Return visit',minSubtotalSen:1500,maxDiscountSen:800,
-      maxTotalRedemptions:90,perCustomerLimit:2,
+      maxTotalRedemptions:90,perCustomerLimit:2,vouchers:[{id:'voucher-1',codeHint:'***DENT'}],
     }]};
     throw Object.assign(new Error('unexpected'),{status:500});
   };
@@ -71,6 +77,28 @@ test('workspace load enriches immutable campaign offers with editable legacy lim
   assert.equal(workspace.offers[0].minSubtotalSen,1500);
   assert.equal(workspace.offers[0].maxTotalRedemptions,90);
   assert.equal(workspace.offers[0].discountBasisPoints,1200);
+  assert.equal(workspace.vouchers[0].displayCode,'STUDENT','the generic marketing catalog preserves owner-visible code metadata');
+  assert.equal(workspace.vouchers[0].shareUrl,'https://order.example/shop?promo=STUDENT');
+});
+
+test('reusable promotion codes keep their campaign link and POS catalog affordances', () => {
+  const rows=normalizePosPromotionCatalog({promotions:[
+    {promotionId:'auto-1',promotionVersion:2,name:'Lunch saver',campaignName:'Lunch rush',redemptionMode:'automatic',enabled:true,discountType:'percentage',discountBasisPoints:1000},
+    {promotionId:'code-1',promotionVersion:4,name:'Campus saver',campaignName:'Campus welcome',enabled:true,discountType:'fixed',discountSen:500,vouchers:[
+      {id:'voucher-1',displayCode:'student',shareUrl:'https://order.example/shop?promo=STUDENT'},
+      {id:'voucher-old',codeHint:'***AFF',legacyMasked:true},
+    ]},
+  ]});
+  assert.equal(rows.length,3);
+  assert.equal(rows[0].redemptionMode,'automatic');
+  assert.equal(rows[1].displayCode,'STUDENT');
+  assert.equal(rows[1].campaignName,'Campus welcome');
+  assert.equal(rows[1].redemptionMode,'voucher');
+  assert.equal(rows[2].legacyMasked,true);
+  assert.equal(promotionCode(rows[1]),'STUDENT');
+  assert.equal(promotionShareTarget(rows[1]),'https://order.example/shop?promo=STUDENT');
+  assert.equal(suggestPromotionCode('Staff',[],new Date('2026-01-01T00:00:00Z')),'STAFF-26');
+  assert.equal(suggestPromotionCode('Staff',['STAFF-26'],new Date('2026-01-01T00:00:00Z')),'STAFF-26-2');
 });
 
 test('campaign edit form restores the exact linked offer and its schedule controls', () => {
@@ -137,6 +165,13 @@ test('voucher campaigns cannot publish until an enabled unexhausted code covers 
   }]};
   const existing={...base,offerMode:'existing',offerChanged:false,existingPromotionKey:'offer-v:2'};
   assert.equal(campaignPublishError(existing,[offer]),'');
+  const reused={...existing,id:'campaign-new'};
+  assert.match(campaignPublishError(reused,[{...offer,vouchers:[{
+    ...offer.vouchers[0],campaignId:'campaign-completed',
+  }]}]),/Create and enable a voucher code/);
+  assert.equal(campaignPublishError(reused,[{...offer,vouchers:[{
+    ...offer.vouchers[0],campaignId:'campaign-new',
+  }]}]),'');
   assert.match(campaignPublishError(existing,[{...offer,vouchers:[{...offer.vouchers[0],redeemedCount:100}]}]),
     /Create and enable a voucher code/);
 });
@@ -176,7 +211,7 @@ test('published campaign creates a disabled offer first then lets the campaign t
   const calls=[];
   const request=async(path,options={})=>{
     calls.push({path,options});
-    if(path.endsWith('/student-promotions'))return{id:'offer-1',version:1};
+    if(path.endsWith('/marketing/promotions'))return{id:'offer-1',version:1};
     if(path.endsWith('/marketing/campaigns'))return{id:'campaign-1',version:1};
     if(path.endsWith('/campaign-1/publish'))return{id:'campaign-1',version:2,lifecycle:'published'};
     throw Object.assign(new Error('unexpected'),{status:500});
@@ -187,7 +222,7 @@ test('published campaign creates a disabled offer first then lets the campaign t
   const result=await saveMarketingCampaign(request,'company-1',form,{publish:true});
   assert.equal(result.version,2);
   assert.deepEqual(calls.map(call=>call.path),[
-    '/companies/company-1/student-promotions',
+    '/companies/company-1/marketing/promotions',
     '/companies/company-1/marketing/campaigns',
     '/companies/company-1/marketing/campaigns/campaign-1/publish',
   ]);
@@ -198,14 +233,14 @@ test('published campaign creates a disabled offer first then lets the campaign t
 
 test('POS-only campaign is valid and persists its linked offer before publishing', async () => {
   const calls=[];
-  const request=async(path,options={})=>{calls.push({path,options});if(path.endsWith('/student-promotions'))return{id:'offer-pos',version:1};if(path.endsWith('/marketing/campaigns'))return{id:'campaign-pos',version:1};return{id:'campaign-pos',version:2,lifecycle:'published'};};
+  const request=async(path,options={})=>{calls.push({path,options});if(path.endsWith('/marketing/promotions'))return{id:'offer-pos',version:1};if(path.endsWith('/marketing/campaigns'))return{id:'campaign-pos',version:1};return{id:'campaign-pos',version:2,lifecycle:'published'};};
   const form={...emptyCampaign(new Date('2026-10-10T00:00:00Z')),name:'POS launch',
     offerType:'percentage',offerValue:'10',channels:['pos'],
     startsAt:'2026-10-11T10:00:00+08:00',endsAt:'',availableOffers:[],availableAudiences:[]};
   const saved=await saveMarketingCampaign(request,'company-1',form,{publish:true});
   assert.equal(saved.lifecycle,'published');
   assert.deepEqual(calls.map(call=>call.path),[
-    '/companies/company-1/student-promotions',
+    '/companies/company-1/marketing/promotions',
     '/companies/company-1/marketing/campaigns',
     '/companies/company-1/marketing/campaigns/campaign-pos/publish',
   ]);
@@ -265,6 +300,16 @@ test('marketing hub and all panels compile and expose the renamed navigation', a
   assert.match(wizard,/Higher priority offers are evaluated first/);
   assert.match(wizard,/Eligible POS baskets receive this reward automatically/);
   assert.match(wizard,/online storefront, the shopper must add the reward product/);
+  assert.match(wizard,/Save draft & create code/);
+  assert.match(wizard,/Apply automatically at POS and storefront/);
+  const offers=await readFile(new URL('../src/components/dashboard/marketing/MarketingOffers.vue',import.meta.url),'utf8');
+  assert.match(offers,/displayCode/);
+  assert.match(offers,/Share \/ QR/);
+  assert.match(offers,/Legacy masked codes must be replaced/);
+  assert.match(offers,/Replace legacy masked code/);
+  assert.match(offers,/rotate-voucher/);
+  assert.match(offers,/voucherWindow=.*campaign\?\.startsAt\|\|offer\?\.validFrom/);
+  assert.match(offers,/@change="voucherOfferChanged"/);
   assert.equal(wizard.match(/products:props\.products/g)?.length,2,
     'both step and submit validation must receive the product variants');
 });

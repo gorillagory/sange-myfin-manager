@@ -92,12 +92,13 @@ function key(value) {
 export function normalizeVoucherCode(value) {
   if (typeof value !== 'string' || value !== value.normalize('NFKC')) fail('invalid_voucher_code');
   const normalized = value.trim().toUpperCase();
-  if (!/^[A-Z0-9](?:[A-Z0-9-]{4,30}[A-Z0-9])$/.test(normalized)) fail('invalid_voucher_code');
+  if (!/^[A-Z0-9](?:[A-Z0-9-]{1,30}[A-Z0-9])$/.test(normalized)) fail('invalid_voucher_code');
   return normalized;
 }
 
-// Codes are bearer credentials. Store only an HMAC lookup digest and a short
-// display hint; a plain SHA-256 digest would permit cheap dictionary attacks.
+// Checkout uses an HMAC lookup digest because a plain SHA-256 digest would permit
+// cheap dictionary attacks. New reusable marketing codes are intentionally also
+// stored in display_code for authorized staff and public promotion links.
 export function voucherLookupDigest(pepper, code) {
   if (typeof pepper !== 'string' || pepper.length < 32) fail('voucher_pepper_required');
   return createHmac('sha256', pepper).update(normalizeVoucherCode(code)).digest('hex');

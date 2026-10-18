@@ -38,7 +38,7 @@ const cartSchema = z.strictObject({
   items: z.array(itemSchema).min(1).max(100),
 });
 const quoteSchema = cartSchema.extend({
-  voucherCode: z.string().trim().min(6).max(32).regex(/^[A-Za-z0-9-]+$/).optional(),
+  voucherCode: z.string().trim().min(3).max(32).regex(/^[A-Za-z0-9-]+$/).optional(),
 });
 const submitSchema = cartSchema.extend({
   guest: z.strictObject({
@@ -56,7 +56,10 @@ const parseCookies = header => Object.fromEntries(String(header || '').split(';'
   const at = part.indexOf('=');
   return at < 0 ? ['', ''] : [part.slice(0, at).trim(), part.slice(at + 1).trim()];
 }).filter(([key]) => key));
-const safeImage = value => typeof value === 'string' && value.length <= 2048 && /^https:\/\/\S+$/.test(value) ? value : '';
+const safeImage = value => typeof value === 'string' && value.length <= 2048 &&
+  (/^https:\/\/\S+$/i.test(value) ||
+    /^\/api\/public\/storefront-assets\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value))
+  ? value : '';
 const safeAction = value => typeof value === 'string' && value.length <= 2048 && (/^https:\/\/\S+$/i.test(value) ||
   (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(value) && !value.startsWith('//'))) ? value : '';
 const boundedText = (value, max) => String(value || '').trim().slice(0, max);
@@ -291,9 +294,10 @@ async function publishedCart(c, companyId, input, snapshot = null) {
   const ids = [...new Set(input.items.map(item => item.productId))].sort();
   const result = await c.query(
     `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sold_out
-       FROM myfin.products p JOIN myfin.storefront_products sp
+      FROM myfin.products p JOIN myfin.storefront_products sp
          ON sp.company_id=p.company_id AND sp.product_id=p.id
       WHERE p.company_id=$1 AND p.id=ANY($2::text[]) AND sp.published
+        AND coalesce(p.data->>'active','true')<>'false'
       ORDER BY p.id FOR SHARE OF p`, [companyId, ids],
   );
   if (result.rowCount !== ids.length) v.fail(409, 'menu_item_unavailable');
@@ -307,6 +311,7 @@ async function publishedCart(c, companyId, input, snapshot = null) {
     const row = result.rows.find(product => product.id === item.productId);
     if (!row || row.sold_out) v.fail(409, 'menu_item_unavailable');
     const product = row.data;
+    if (product.active === false) v.fail(409, 'menu_item_unavailable');
     const variant = item.variantId ? product.variants?.find(entry => entry.id === item.variantId) : null;
     if (item.variantId) {
       const publication = visibility.get(lineKey(item));
@@ -556,8 +561,10 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
                 sp.online_price_sen
            FROM myfin.products p JOIN myfin.storefront_products sp
              ON sp.company_id=p.company_id AND sp.product_id=p.id
-          WHERE p.company_id=$1 AND sp.published ORDER BY sp.sort_order,p.id FOR SHARE OF p`, [context.company_id],
-      )).rows;
+          WHERE p.company_id=$1 AND sp.published
+            AND coalesce(p.data->>'active','true')<>'false'
+          ORDER BY sp.sort_order,p.id FOR SHARE OF p`, [context.company_id],
+      )).rows.filter(row => row.data?.active !== false);
       const ids = products.map(row => row.id);
       const variantRows = ids.length ? (await c.query(
         `SELECT spv.product_id,spv.variant_id,spv.published,spv.sold_out,spv.sort_order,
@@ -594,7 +601,7 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         const onlinePriceSen = row.online_price_sen === null || row.online_price_sen === undefined
           ? storePriceSen : Number(row.online_price_sen);
         return {
-          id: row.id, name: boundedText(row.display_name || product.name, 120),
+          id: row.id, active: true, name: boundedText(row.display_name || product.name, 120),
           description: boundedText(row.description || product.description, 2000),
           category: boundedText(product.category || 'Menu', 120), subcategory: boundedText(product.subcategory, 120),
           imageUrl: safeImage(product.imageUrl), unit: boundedText(product.unit || 'pcs', 40),

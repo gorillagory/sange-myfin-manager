@@ -56,7 +56,8 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
     req.tenant=await requestContext(database,req,authOptions);
     if(authOptions.enforceTenantHosts&&!req.tenant)return reply.code(404).send({error:'not_found'});
     const publicApi=req.url.startsWith('/api/public/');
-    if((req.tenant?.surface==='storefront')!==publicApi && req.url!=='/api/tenant-context')
+    const portablePublicAsset=req.method==='GET'&&req.url.startsWith('/api/public/storefront-assets/');
+    if(!portablePublicAsset&&(req.tenant?.surface==='storefront')!==publicApi && req.url!=='/api/tenant-context')
       return reply.code(404).send({error:'not_found'});
     if(req.tenant?.redirect_to&&!['GET','HEAD','OPTIONS'].includes(req.method))return reply.code(409).send({error:'canonical_host_required',redirectTo:`${authOptions.protocol}//${req.tenant.redirect_to}`});
     const origin=authOptions.enforceTenantHosts?requestOrigin(req,authOptions):authOptions.origin;

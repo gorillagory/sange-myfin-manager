@@ -1,5 +1,5 @@
 // CSV is deliberately create-only: importing a file must never reset live stock.
-export const CSV_COLUMNS = ['sku','name','category','subcategory','unit','track_stock','price','cost','stock','variant_name','variant_sku','barcode','image_url','description'];
+export const CSV_COLUMNS = ['sku','name','active','category','subcategory','unit','track_stock','price','cost','stock','variant_name','variant_sku','barcode','image_url','description'];
 export const validEmail = value => !value || (value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
 export const validImageUrl = value => !value || (/^https:\/\/[^\s]+$/i.test(value) || /^\/api\/files\/[A-Za-z0-9_-]+$/.test(value));
 export function parseCsv(text) {
@@ -27,10 +27,12 @@ export function inventoryFacets(products = [], category = '') {
   const subcategories = [...new Set(products.filter(product => !category || categoryPath(product)[0] === category).map(product => categoryPath(product)[1]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   return {categories,subcategories};
 }
-export function filterInventoryProducts(products = [], {query='',category='',subcategory=''} = {}) {
+export function filterInventoryProducts(products = [], {query='',category='',subcategory='',status=''} = {}) {
   const needle=cleanText(query).toLocaleLowerCase();
   return products.filter(product => {
     const path=categoryPath(product);
+    if(status==='active'&&product.active===false)return false;
+    if(status==='inactive'&&product.active!==false)return false;
     if(category && path[0]!==category)return false;
     if(subcategory && path[1]!==subcategory)return false;
     if(!needle)return true;
@@ -74,10 +76,11 @@ export function importProductsCsv(text, existing = [], {includeCosts=true} = {})
     if (cells.length !== columns.length) throw new Error(`Row ${line}: column count does not match the header.`);
     const r = Object.fromEntries(columns.map((c,i) => [c,cells[i].trim()]));
     if (!r.sku || !r.name) throw new Error(`Row ${line}: name and SKU are required.`);
+    if (r.active && !['true','false'].includes(r.active.toLowerCase())) throw new Error(`Row ${line}: active must be true or false.`);
     if (r.track_stock && !['true','false'].includes(r.track_stock.toLowerCase())) throw new Error(`Row ${line}: track_stock must be true or false.`);
     for (const field of ['price','cost','stock']) if ((field === 'price' && !r[field]) || (r[field] && !/^\d+(\.\d+)?$/.test(r[field]))) throw new Error(`Row ${line}: ${field} must be a non-negative number without currency symbols.`);
     const category=cleanText(r.category)||'Other',subcategory=cleanText(r.subcategory)||legacyMenuSection(r.description);
-    const base = { sku:r.sku,name:r.name,category,subcategory,unit:r.unit||'pcs',trackStock:key(category) !== 'SERVICE' && r.track_stock?.toLowerCase() !== 'false',description:r.description||'',imageUrl:r.image_url||'' };
+    const base = { sku:r.sku,name:r.name,active:r.active?.toLowerCase()!=='false',category,subcategory,unit:r.unit||'pcs',trackStock:key(category) !== 'SERVICE' && r.track_stock?.toLowerCase() !== 'false',description:r.description||'',imageUrl:r.image_url||'' };
     const value = {price:Number(r.price),...(includeCosts?{cost:Number(r.cost||0)}:{}),stock:base.trackStock?Number(r.stock||0):0,barcode:r.barcode||''};
     let p = groups.get(key(r.sku));
     if (p && (!r.variant_name || !p.hasVariants)) throw new Error(`Row ${line}: duplicate SKU. Repeat a product SKU only for its variants.`);
@@ -94,12 +97,12 @@ export function importProductsCsv(text, existing = [], {includeCosts=true} = {})
 // Neutralize spreadsheet formula execution in text fields, including exported names.
 export const csvCell = value => '"' + String(value ?? '').replace(/^[\t\r\n ]*[=+@-]/, m => "'"+m).replaceAll('"','""') + '"';
 export function exportProductsCsv(products, {includeCosts=true} = {}) {
-  const rows = products.flatMap(p => (p.variants?.length ? p.variants : [p]).map(v => [p.sku,p.name,p.category,p.subcategory,p.unit,p.trackStock,v.price,v.cost,v.stock,p.variants?.length?v.name:'',p.variants?.length?v.sku:'',v.barcode,p.imageUrl,p.description]));
+  const rows = products.flatMap(p => (p.variants?.length ? p.variants : [p]).map(v => [p.sku,p.name,p.active!==false,p.category,p.subcategory,p.unit,p.trackStock,v.price,v.cost,v.stock,p.variants?.length?v.name:'',p.variants?.length?v.sku:'',v.barcode,p.imageUrl,p.description]));
   const costIndex=CSV_COLUMNS.indexOf('cost');
   const selected=[CSV_COLUMNS,...rows].map(row=>includeCosts?row:row.filter((_,i)=>i!==costIndex));
   return '\uFEFF'+selected.map(row => row.map(csvCell).join(',')).join('\r\n');
 }
 export const templateCsv = (options = {}) => exportProductsCsv([
-  {sku:'RET-EXAMPLE',name:'Example product',category:'Retail',subcategory:'Packaged goods',unit:'pcs',trackStock:true,price:10,cost:4,stock:20},
-  {sku:'BEV-EXAMPLE',name:'Example latte',category:'Menu',subcategory:'Beverages',unit:'cup',trackStock:true,variants:[{name:'Iced',sku:'BEV-EXAMPLE-ICED',price:9,cost:3,stock:50},{name:'Hot',sku:'BEV-EXAMPLE-HOT',price:8,cost:3,stock:50}]}
+  {sku:'RET-EXAMPLE',name:'Example product',active:true,category:'Retail',subcategory:'Packaged goods',unit:'pcs',trackStock:true,price:10,cost:4,stock:20},
+  {sku:'BEV-EXAMPLE',name:'Example latte',active:true,category:'Menu',subcategory:'Beverages',unit:'cup',trackStock:true,variants:[{name:'Iced',sku:'BEV-EXAMPLE-ICED',price:9,cost:3,stock:50},{name:'Hot',sku:'BEV-EXAMPLE-HOT',price:8,cost:3,stock:50}]}
 ], options);

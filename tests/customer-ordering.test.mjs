@@ -27,14 +27,15 @@ test('customer routes are isolated from staff routes', () => {
 });
 
 test('storefront normalization bounds branding, slides, and store versus online prices', () => {
-  const result=normalizeStorefront({storefront:{logoUrl:'https://example.test/logo.png',
+  const result=normalizeStorefront({storefront:{logoUrl:'/api/public/storefront-assets/550e8400-e29b-41d4-a716-446655440000',
     theme:{primaryColor:'#123456',accentColor:'red',backgroundColor:'#ffffff',textColor:'#111111',fontFamily:'serif'},
     hero:{eyebrow:'A'.repeat(90),title:'Order today',description:'Ready',imageUrl:'javascript:bad'},
     carouselIntervalSeconds:100},slides:[{id:'one',title:'Weekend offer',badge:'OFFER',description:'Save now',
       imageUrl:'https://example.test/offer.jpg',backgroundColor:'#234567',ctaLabel:'Shop',ctaUrl:'/shop'}],
     products:[{id:'latte',name:'Latte',storePrice:12,onlinePrice:9,available:true,
-      variants:[{id:'large',name:'Large',storePrice:14,onlinePrice:11,available:true}]}]});
-  assert.equal(result.storefront.logoUrl,'https://example.test/logo.png');
+      variants:[{id:'large',name:'Large',storePrice:14,onlinePrice:11,available:true}]},
+    {id:'retired',name:'Retired',price:5,active:false} ]});
+  assert.equal(result.storefront.logoUrl,'/api/public/storefront-assets/550e8400-e29b-41d4-a716-446655440000');
   assert.equal(result.storefront.theme.accentColor,'#d7a43b');
   assert.equal(result.storefront.hero.eyebrow.length,80);
   assert.equal(result.storefront.hero.imageUrl,'');
@@ -46,6 +47,7 @@ test('storefront normalization bounds branding, slides, and store versus online 
   assert.equal(result.products[0].hasOnlinePriceOverride,true);
   assert.equal(result.products[0].variants[0].storePrice,14);
   assert.equal(result.products[0].variants[0].price,11);
+  assert.equal(result.products.some(product=>product.id==='retired'),false);
 });
 
 test('storefront typography and contrast controls produce real customer-facing choices', () => {
@@ -82,8 +84,11 @@ test('storefront and display make guest, account, reusable QR, and channel prici
     readFile(new URL('../src/components/dashboard/StorefrontAdmin.vue',import.meta.url),'utf8'),
     readFile(new URL('../src/components/customer/CustomerOrderStatus.vue',import.meta.url),'utf8'),
   ]);
-  assert.match(storefront,/Guest checkout is available/);
+  assert.match(storefront,/No account needed/);
   assert.match(storefront,/Sign in for loyalty/);
+  assert.match(storefront,/route\.query\.promo/);
+  assert.ok(storefront.includes('/^[A-Z0-9](?:[A-Z0-9-]{1,30}[A-Z0-9])$/'));
+  assert.match(storefront,/voucherCode\.value=code/);
   assert.match(storefront,/--customer-page-ink/);
   assert.match(storefront,/--customer-accent-ink/);
   assert.match(storefront,/Online price/);

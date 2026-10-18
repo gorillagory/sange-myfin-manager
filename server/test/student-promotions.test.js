@@ -29,7 +29,7 @@ const voucher = (patch = {}) => promotion({
     maxRedemptions: 100, perCustomerLimit: 1, usage: { total: 9, customer: 0 } }, ...patch,
 });
 
-test('voucher codes are normalized deliberately and only a peppered lookup digest is produced', () => {
+test('short reusable marketing codes are normalized and retain a peppered checkout lookup', () => {
   const pepper = 'server-only-pepper-material-32-bytes-minimum';
   assert.equal(normalizeVoucherCode('  save-2026  '), 'SAVE-2026');
   const first = voucherLookupDigest(pepper, 'save-2026');
@@ -38,7 +38,9 @@ test('voucher codes are normalized deliberately and only a peppered lookup diges
   assert.notEqual(first, voucherLookupDigest(`${pepper}!`, 'SAVE-2026'));
   assert.throws(() => voucherLookupDigest('short', 'SAVE-2026'), /voucher_pepper_required/);
   assert.throws(() => normalizeVoucherCode('ＳＡＶＥ２０２６'), /invalid_voucher_code/);
-  assert.throws(() => normalizeVoucherCode('ABC'), /invalid_voucher_code/);
+  assert.equal(normalizeVoucherCode(' staff '), 'STAFF');
+  assert.equal(normalizeVoucherCode('ABC'), 'ABC');
+  assert.throws(() => normalizeVoucherCode('AB'), /invalid_voucher_code/);
 });
 
 test('student verification stores only constrained metadata and a digest, with explicit transitions', () => {
@@ -206,4 +208,16 @@ test('migration preserves versioned evidence, immutable snapshots and atomic usa
   assert.match(sql, /ALTER TABLE myfin\.customer_order_requests ADD COLUMN pricing_snapshot_id text/);
   assert.match(sql, /ALTER TABLE myfin\.transactions ADD COLUMN pricing_snapshot_id text/);
   assert.doesNotMatch(sql, /student_document|document_url|student_id_number|voucher_code text/i);
+});
+
+test('0047 keeps readable marketing codes additive, immutable and campaign-attributed', async () => {
+  const sql = await readFile(new URL('../../db/migrations/0047_marketing_promo_codes.sql', import.meta.url), 'utf8');
+  assert.match(sql, /ADD COLUMN display_code text/);
+  assert.match(sql, /promotion_vouchers_company_display_code_key/);
+  assert.match(sql, /WHERE display_code IS NOT NULL/);
+  assert.match(sql, /ADD COLUMN campaign_id text/);
+  assert.match(sql, /REFERENCES myfin\.marketing_campaigns\(workspace_id,company_id,id\) ON DELETE RESTRICT/);
+  assert.match(sql, /NEW\.display_code IS DISTINCT FROM OLD\.display_code/);
+  assert.match(sql, /NULL identifies a legacy hash-only code/);
+  assert.doesNotMatch(sql, /DROP TABLE|DELETE FROM|TRUNCATE TABLE/i);
 });

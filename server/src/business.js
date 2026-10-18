@@ -49,6 +49,7 @@ import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 import { registerPaymentGatewayStaff } from "./payment-gateways.js";
 import { registerReceiptEmails } from "./receipt-emails.js";
+import { preserveProductActive, unpublishInactiveProduct } from "./product-availability.js";
 
 const delayedReceiptReviewMs = 5 * 60 * 1000;
 const maximumHistoricalReceiptMs = 72 * 60 * 60 * 1000;
@@ -236,6 +237,7 @@ async function saveProduct(c, companyId, data, create = false) {
     if (!r.rowCount) v.fail(404, "not_found");
   }
   await reconcileProductVariants(c, companyId, p);
+  await unpublishInactiveProduct(c, companyId, p);
   const old = prior.rows.find((x) => x.id === p.id)?.data;
   const movements = [];
   for (const target of p.variants.length ? p.variants : [p]) {
@@ -467,6 +469,7 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     [companyId, ids],
   );
   if (rows.rowCount !== ids.length) v.fail(409, "receipt_review_required_product_changed");
+  if (rows.rows.some(row => row.data?.active === false)) v.fail(409, "product_inactive");
   const inventoryShortageApproved=approval?.inventoryShortageResolution==='record_shortage';
   if(!inventoryShortageApproved)
     await assertUnreservedSaleStock(c,companyId,rows.rows,sale.items,options.reservationOrderId||"");
@@ -839,6 +842,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
           requireCapability(req.identity,"inventoryWrite");
           await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,8))",[co]);
           const currentProduct=update?(await c.query("SELECT data FROM myfin.products WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,v.parse(v.id,req.params.id)])).rows[0]?.data:null;
+          input=preserveProductActive(input,currentProduct,update);
           if(!owner(req.identity)){
             if(containsConfidential(input))v.fail(403,"financial_fields_restricted");
             const prior=currentProduct;

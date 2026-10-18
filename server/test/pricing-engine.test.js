@@ -73,6 +73,20 @@ test('decimal conversion never passes authoritative catalog prices through binar
   assert.throws(() => decimalToScaledInteger('1e3', 2), /invalid_money_configuration/);
 });
 
+test('authoritative pricing rejects an inactive catalog item on every sales channel', async () => {
+  for (const channel of ['pos','storefront']) {
+    const fixture=pricingFixture({promotionRows:[],catalogRow:{
+      id:'latte',data:{name:'Latte',active:false,variants:[]},product_price:'9.00',
+      product_online_price_sen:null,variant_id:null,variant_price:null,variant_online_price_sen:null,
+    }});
+    await assert.rejects(createPricingSnapshot(fixture.c,{
+      workspaceId:'workspace-a',companyId:'company-a',lines:[{productId:'latte',variantId:'',quantityMilli:1000}],
+      channel,...(channel==='pos'?{issuedToStaffId:'cashier-a'}:{}),
+    },{now:AT,persist:false,cashRounding:channel==='pos'}),
+    error=>error.statusCode===409&&error.message==='catalog_item_unavailable');
+  }
+});
+
 test('authoritative quote loads catalog, current rules, student state and HMAC voucher then stores full immutable detail', async () => {
   const fixture = pricingFixture();
   const result = await createPricingSnapshot(fixture.c, {
@@ -98,6 +112,11 @@ test('authoritative quote loads catalog, current rules, student state and HMAC v
 
   const voucherLookup = fixture.calls.find(call => call.sql.includes('FROM myfin.promotion_vouchers v'));
   assert.equal(voucherLookup.params[2], voucherLookupDigest(PEPPER, 'STUDENT-2026'));
+  assert.equal(voucherLookup.params[6], 'storefront');
+  assert.match(voucherLookup.sql, /vv\.campaign_id IS NULL OR EXISTS/);
+  assert.match(voucherLookup.sql, /campaign\.id=vv\.campaign_id AND campaign\.lifecycle='published'/);
+  assert.match(voucherLookup.sql, /\$7=ANY\(campaign_version\.channels\)/);
+  assert.match(voucherLookup.sql, /campaign_offer\.promotion_version=p\.version/);
   assert.doesNotMatch(JSON.stringify(fixture.calls), /STUDENT-2026/);
   const rules = fixture.calls.find(call => call.sql.includes('FROM myfin.promotions p'));
   assert.match(rules.sql, /pv\.version=p\.version/);
@@ -208,6 +227,51 @@ test('POS automatically inserts an eligible free reward while storefront pricing
   assert.equal(storefront.lines.length,1);
   assert.equal(storefront.lines[0].automaticReward,false);
   assert.equal(storefront.discountSen,0);
+});
+
+test('an inactive free-item reward is skipped without blocking unrelated POS baskets', async () => {
+  const fixture = pricingFixture({ promotionRows:[{
+    id:'inactive-reward', version:'1', name:'Free archived cookie', enabled:true,
+    redemption_mode:'automatic', valid_from:'2026-01-01T00:00:00Z', valid_until:null,
+    discount_type:'free_item', discount_basis_points:null, discount_sen:null, max_discount_sen:null,
+    reward_product_id:'cookie', reward_variant_id:null, reward_quantity_milli:'1000',
+    min_subtotal_sen:'0', max_total_redemptions:null, per_customer_limit:null,
+    requires_customer:false, requires_student:false, priority:30, stackable:true,
+    total_usage:'0', customer_usage:'0', reward_available:false, campaign_links:[],
+  }], catalogRows:[
+    { id:'latte', data:{ name:'Latte', variants:[] }, product_price:'10.00',
+      product_online_price_sen:null, variant_id:null, variant_price:null, variant_online_price_sen:null },
+    { id:'cookie', data:{ name:'Cookie', active:false, variants:[] }, product_price:'5.00',
+      product_online_price_sen:null, variant_id:null, variant_price:null, variant_online_price_sen:null },
+  ] });
+  const quote = await createPricingSnapshot(fixture.c, {
+    companyId:'company-a', channel:'pos', issuedToStaffId:'cashier-a',
+    lines:[{ productId:'latte', variantId:'', quantityMilli:1000 }],
+  }, { now:AT, persist:false, cashRounding:true });
+  assert.deepEqual(quote.lines.map(row => row.productId), ['latte']);
+  assert.equal(quote.discountSen, 0);
+  assert.equal(fixture.calls.filter(call => call.sql.includes('FROM myfin.products p')).length, 1,
+    'pricing never attempts to load the unavailable reward SKU');
+  const rules = fixture.calls.find(call => call.sql.includes('FROM myfin.promotions p'));
+  assert.match(rules.sql, /AS reward_available/);
+  assert.match(rules.sql, /coalesce\(reward\.data->>'active','true'\)='false'/);
+});
+
+test('an explicitly entered voucher with an inactive free-item reward fails closed', async () => {
+  const fixture = pricingFixture({ promotionRows:[{
+    id:'voucher-promo', version:'5', name:'Free archived cookie', enabled:true,
+    redemption_mode:'voucher', valid_from:'2026-01-01T00:00:00Z', valid_until:null,
+    discount_type:'free_item', discount_basis_points:null, discount_sen:null, max_discount_sen:null,
+    reward_product_id:'cookie', reward_variant_id:null, reward_quantity_milli:'1000',
+    min_subtotal_sen:'0', max_total_redemptions:null, per_customer_limit:null,
+    requires_customer:false, requires_student:false, priority:30, stackable:true,
+    total_usage:'0', customer_usage:'0', reward_available:false, campaign_links:[],
+  }] });
+  await assert.rejects(createPricingSnapshot(fixture.c, {
+    companyId:'company-a', channel:'pos', issuedToStaffId:'cashier-a', voucherCode:'FREECOOKIE',
+    lines:[{ productId:'latte', variantId:'', quantityMilli:1000 }],
+  }, { voucherPepper:PEPPER, now:AT, persist:false, cashRounding:true }),
+  error => error.statusCode === 400 && error.message === 'voucher_invalid_or_unavailable');
 });
 
 test('POS recovery state separates the collection window from durable exact replay', () => {

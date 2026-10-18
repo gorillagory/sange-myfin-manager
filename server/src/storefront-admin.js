@@ -10,9 +10,11 @@ const privacyUrl = z.union([
   z.literal(''),
   z.url().max(2048).refine(value => value.startsWith('https://'), 'privacy_notice_url_https_required'),
 ]);
-const optionalHttpsUrl = z.union([
+const publicAssetPath = /^\/api\/public\/storefront-assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const optionalStorefrontImageUrl = z.union([
   z.literal(''),
-  z.url().max(2048).refine(value => value.startsWith('https://'), 'https_url_required'),
+  z.string().max(2048).refine(value => /^https:\/\/\S+$/.test(value) || publicAssetPath.test(value),
+    'storefront_image_url_required'),
 ]);
 const themeColor = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 function colorContrast(left, right) {
@@ -29,9 +31,9 @@ const carouselSlideSchema = z.strictObject({
   id: v.id.optional(), published: z.boolean().default(false),
   sortOrder: z.number().int().min(-1000000).max(1000000).default(0),
   badge: z.string().trim().max(80).default(''), title: z.string().trim().min(1).max(160),
-  description: z.string().trim().max(1000).default(''), imageUrl: optionalHttpsUrl.default(''),
+  description: z.string().trim().max(1000).default(''), imageUrl: optionalStorefrontImageUrl.default(''),
   backgroundColor: themeColor.default('#17624d'), ctaLabel: z.string().trim().max(60).default(''),
-  ctaUrl: z.string().trim().max(2048).default('').refine(value => !value || /^https:\/\/\S+$/i.test(value) ||
+  ctaUrl: z.string().trim().max(2048).default('').refine(value => !value || /^https:\/\/\S+$/.test(value) ||
     (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(value) && !value.startsWith('//')), 'invalid_carousel_cta_url'),
 }).refine(slide => Boolean(slide.ctaLabel) === Boolean(slide.ctaUrl), 'carousel_cta_incomplete');
 
@@ -52,7 +54,7 @@ const configSchema = z.strictObject({
   privacyNoticeUrl: privacyUrl.default(''),
   privacyNoticeEn: z.string().trim().max(2000).default(''),
   privacyNoticeMs: z.string().trim().max(2000).default(''),
-  logoUrl: optionalHttpsUrl.default(''),
+  logoUrl: optionalStorefrontImageUrl.default(''),
   themePrimaryColor: themeColor.default('#17624d'),
   themeAccentColor: themeColor.default('#d7a43b'),
   themeBackgroundColor: themeColor.default('#fbfcf8'),
@@ -61,7 +63,7 @@ const configSchema = z.strictObject({
   heroEyebrow: z.string().trim().max(80).default('ORDER ONLINE'),
   heroTitle: z.string().trim().max(160).default(''),
   heroDescription: z.string().trim().max(1000).default(''),
-  heroImageUrl: optionalHttpsUrl.default(''),
+  heroImageUrl: optionalStorefrontImageUrl.default(''),
   carouselIntervalSeconds: z.number().int().min(3).max(30).default(7),
   slides: z.array(carouselSlideSchema).max(12).optional(),
 }).superRefine((input, context) => {
@@ -109,6 +111,18 @@ function requireConfigure(who) { requireCapability(who, 'storefrontManage'); }
 const lockDeliveryConfiguration = (c, companyId) => c.query(
   'SELECT pg_advisory_xact_lock(hashtextextended($1,35))', [`${companyId}:storefront-delivery-configuration`],
 );
+
+async function validateStorefrontAssetOwnership(c, companyId, input) {
+  const urls = [input.logoUrl, input.heroImageUrl, ...(input.slides || []).map(slide => slide.imageUrl)];
+  const ids = [...new Set(urls.flatMap(value => publicAssetPath.exec(value || '')?.[1] || []))];
+  if (!ids.length) return;
+  const owned = await c.query(
+    `SELECT id FROM myfin.files
+      WHERE company_id=$1 AND kind='assets' AND id=ANY($2::text[]) FOR KEY SHARE`,
+    [companyId, ids],
+  );
+  if (owned.rowCount !== ids.length) v.fail(403, 'invalid_storefront_asset');
+}
 
 async function configOutput(c, companyId) {
   const settings = (await c.query('SELECT * FROM myfin.storefront_settings WHERE company_id=$1', [companyId])).rows[0];
@@ -174,6 +188,7 @@ async function configOutput(c, companyId) {
       serviceInstructions: row.service_instructions, enabled: row.enabled,
       createdAt: row.created_at, updatedAt: row.updated_at })),
     products: products.map(row => ({ productId: row.product_id, productName: row.data.name,
+      active: row.data?.active !== false,
       published: row.published, soldOut: row.sold_out, sortOrder: row.sort_order,
       displayName: row.display_name, description: row.description,
       storePriceSen: decimalToScaledInteger(row.store_price, 2, 'invalid_catalog_price'),
@@ -197,6 +212,7 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
   app.put('/api/companies/:company/storefront', req => scoped(req, async (c, companyId) => {
     requireConfigure(req.identity);
     const input = v.parse(configSchema, req.body);
+    await validateStorefrontAssetOwnership(c, companyId, input);
     await lockDeliveryConfiguration(c, companyId);
     const deliveryEnabled = input.deliveryEnabled === undefined
       ? Boolean((await c.query(
@@ -426,6 +442,7 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
     )).rows[0];
     const product = currentProduct?.data;
     if (!product) v.fail(404, 'product_not_found');
+    if (product.active === false && input.published) v.fail(409, 'product_inactive');
     const known = new Set((product.variants || []).map(variant => variant.id));
     const selected = input.variantIds === undefined ? [...known] : input.variantIds;
     if (selected.some(id => !known.has(id))) v.fail(400, 'invalid_product_variant');

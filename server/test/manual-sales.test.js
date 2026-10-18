@@ -41,6 +41,20 @@ test('only managers and owners can record a sale after the fact', async () => {
   error => error.statusCode === 403 && error.message === 'access_denied');
 });
 
+test('manual sale entry rejects an inactive product before pricing or stock mutation', async () => {
+  const client={query:async sql=>{
+    if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
+    if(sql.includes('FROM myfin.transactions'))return {rowCount:0,rows:[]};
+    if(sql.includes('FROM myfin.products'))return {rowCount:1,rows:[{
+      ...structuredClone(productRow),data:{...structuredClone(productRow.data),active:false},
+    }]};
+    throw new Error(`Unexpected query: ${sql}`);
+  }};
+  await assert.rejects(recordManualSale(client,manager,company.id,input,async()=>{},
+    {serverNow:'2026-10-13T04:00:00.000Z'}),
+  error=>error.statusCode===409&&error.message==='product_inactive');
+});
+
 test('late sale uses reviewed historical pricing while snapshotting catalog facts and preserving stock evidence', async () => {
   const calls = [], effects = [];
   const client = { query: async (sql, args = []) => {

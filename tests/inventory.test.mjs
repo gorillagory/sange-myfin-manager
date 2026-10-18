@@ -5,15 +5,16 @@ import {createSale,cartItem} from '../src/domain/pos.js';
 import {receiptMailto,receiptLines,receiptPrintJob} from '../src/domain/receipt.js';
 import {duplicateProductDraft,generateUniqueSKU} from '../src/composables/useProductLogic.js';
 test('template imports simple products and stable variant identities',()=>{
- const products=importProductsCsv(templateCsv());assert.equal(products.length,2);assert.equal(products[1].variants.length,2);assert.equal(products[1].variants[0].sku,'BEV-EXAMPLE-ICED');assert.equal(new Set(products[1].variants.map(v=>v.id)).size,2);
- assert.equal(importProductsCsv(exportProductsCsv(products))[1].variants[1].price,8);
+ const products=importProductsCsv(templateCsv());assert.equal(products.length,2);assert.equal(products[0].active,true);assert.equal(products[1].variants.length,2);assert.equal(products[1].variants[0].sku,'BEV-EXAMPLE-ICED');assert.equal(new Set(products[1].variants.map(v=>v.id)).size,2);
+ products[1].active=false;const roundTrip=importProductsCsv(exportProductsCsv(products));assert.equal(roundTrip[1].variants[1].price,8);assert.equal(roundTrip[1].active,false);
+ assert.equal(importProductsCsv('sku,name,price\nLEGACY,Legacy item,1')[0].active,true);
 });
 test('CSV handles BOM, CRLF, escaped quotes, commas and multiline text',()=>{
  assert.deepEqual(parseCsv('\uFEFFsku,name,price\r\nA,"Tea, ""Iced""\nLarge",9\r\n'),[['sku','name','price'],['A','Tea, "Iced"\nLarge','9']]);
  assert.equal(importProductsCsv('sku,name,price\nA,"Tea, iced",9')[0].name,'Tea, iced');
 });
 test('CSV rejects malformed files and conflicting SKUs before writing',()=>{
- for(const text of ['sku,name,price\nA,"Tea,9','sku,name,price\nA,Tea,-1','sku,name,price\nA,Tea,NaN','sku,name,price\nA,Tea,3,extra','sku,name,price\nA,Tea,3\nA,Tea,3','sku,name,price,track_stock\nA,Tea,3,yes','sku,name,price,unknown\nA,Tea,3,x'])assert.throws(()=>importProductsCsv(text));
+ for(const text of ['sku,name,price\nA,"Tea,9','sku,name,price\nA,Tea,-1','sku,name,price\nA,Tea,NaN','sku,name,price\nA,Tea,3,extra','sku,name,price\nA,Tea,3\nA,Tea,3','sku,name,price,active\nA,Tea,3,maybe','sku,name,price,track_stock\nA,Tea,3,yes','sku,name,price,unknown\nA,Tea,3,x'])assert.throws(()=>importProductsCsv(text));
  assert.throws(()=>importProductsCsv('sku,name,price\nabc,Tea,3',[{id:'x',name:'Existing',sku:'ABC'}]),/already belongs/);
  assert.throws(()=>importProductsCsv('sku,name,price,variant_name\nA,Tea,3,Hot\nA,Coffee,4,Iced'),/must match/);
  assert.throws(()=>importProductsCsv('sku,name,price,variant_name\nA,Tea,3,Hot\nA,Tea,4,Hot'),/unique name/);
@@ -34,10 +35,12 @@ test('category hierarchy survives exports and upgrades legacy menu-section descr
  assert.deepEqual(importProductsCsv(exported).map(categoryPath),[['Beverage','CLASSIC SERIES'],['Menu','Beverages']]);
 });
 test('inventory category and subcategory filters return sorted catalog groups',()=>{
- const rows=[{name:'Scone',sku:'P1',category:'Menu',subcategory:'Pastry'},{name:'Latte',sku:'B2',category:'Menu',subcategory:'Beverages'},{name:'Americano',sku:'B1',category:'Menu',subcategory:'Beverages'},{name:'Beans',sku:'R1',category:'Retail'}];
+ const rows=[{name:'Scone',sku:'P1',category:'Menu',subcategory:'Pastry',active:false},{name:'Latte',sku:'B2',category:'Menu',subcategory:'Beverages'},{name:'Americano',sku:'B1',category:'Menu',subcategory:'Beverages'},{name:'Beans',sku:'R1',category:'Retail'}];
  assert.deepEqual(inventoryFacets(rows,'Menu'),{categories:['Menu','Retail'],subcategories:['Beverages','Pastry']});
  assert.deepEqual(filterInventoryProducts(rows,{category:'Menu',subcategory:'Beverages'}).map(row=>row.name),['Americano','Latte']);
  assert.deepEqual(filterInventoryProducts(rows,{query:'pastry'}).map(row=>row.name),['Scone']);
+ assert.deepEqual(filterInventoryProducts(rows,{status:'active'}).map(row=>row.name),['Americano','Latte','Beans']);
+ assert.deepEqual(filterInventoryProducts(rows,{status:'inactive'}).map(row=>row.name),['Scone']);
 });
 test('generated and duplicated product codes avoid the current catalog and reset physical stock',()=>{
  const ids=['AAAAAAAA','BBBBBBBB'];

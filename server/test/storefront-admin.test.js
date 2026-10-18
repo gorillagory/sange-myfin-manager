@@ -218,6 +218,18 @@ test('storefront product writes preserve exact-sen product and variant online ov
   assert.equal(variantInsert.params[4],1025);
 });
 
+test('storefront admin cannot republish an inactive inventory product', async () => {
+  const fixture=writeFixture(sql=>{
+    if(sql.includes('SELECT p.data,sp.online_price_sen'))return {rows:[{data:{name:'Retired',active:false,variants:[]},online_price_sen:null}],rowCount:1};
+    throw new Error(`Unexpected query: ${sql}`);
+  });
+  const handler=fixture.routes.get('PUT /api/companies/:company/storefront/products/:product');
+  await assert.rejects(handler(fixture.request({published:true,soldOut:false,sortOrder:0,
+    displayName:'',description:'',variantIds:[],onlinePriceSen:null,variantOverrides:[]},{product:'retired'})),
+  error=>error.statusCode===409&&error.message==='product_inactive');
+  assert.equal(fixture.calls.some(call=>call.sql.includes('INSERT INTO myfin.storefront_products')),false);
+});
+
 test('storefront hostname claims fail before changing the current host when another company owns the name', async () => {
   const fixture = writeFixture((sql) => {
     if (sql.includes('pg_advisory_xact_lock')) return { rows:[], rowCount:1 };
@@ -247,6 +259,22 @@ test('storefront writes reject unreadable theme and promotional colors before da
     themeBackgroundColor:'#ffffff', slides:[{ title:'Unreadable', backgroundColor:'#f5f5f5' }],
   })), error => error.statusCode === 400 && error.message === 'invalid_input');
   assert.equal(fixture.calls.length,0);
+});
+
+test('storefront settings reject a reusable asset owned by another company before mutation', async () => {
+  const assetId='a21c72e5-6f42-43c7-a412-d6ed22679ad8';
+  const fixture=writeFixture((sql,params)=>{
+    if(sql.includes("kind='assets'")&&sql.includes('FOR KEY SHARE')) {
+      assert.deepEqual(params,['company-a',[assetId]]);
+      return {rows:[],rowCount:0};
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  });
+  const handler=fixture.routes.get('PUT /api/companies/:company/storefront');
+  await assert.rejects(handler(fixture.request({published:false,
+    logoUrl:`/api/public/storefront-assets/${assetId}`})),
+  error=>error.statusCode===403&&error.message==='invalid_storefront_asset');
+  assert.equal(fixture.calls.some(call=>call.sql.includes('INSERT INTO myfin.storefront_settings')),false);
 });
 
 test('storefront hostname upsert cannot take ownership after a conditional claim is lost', async () => {

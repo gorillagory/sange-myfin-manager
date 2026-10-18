@@ -193,7 +193,7 @@ test('migration, ACL and deployment keep queue history immutable and SMTP egress
   assert.match(migration,/receipt_email_delivery_immutable/);assert.match(migration,/receipt_email_event_immutable/);
   assert.match(migration,/delivery_unknown is intentionally not retried automatically/);
   assert.doesNotMatch(migration,/smtp_password|smtp_username/i);
-  assert.match(runtime,/0046_stock_baselines_and_build_versions\.sql/);
+  assert.match(runtime,/0048_storefront_asset_library\.sql/);
   for(const grant of [devGrant,prodGrant]){assert.match(grant,/SELECT,INSERT,UPDATE ON myfin\.receipt_email_deliveries/);assert.match(grant,/GRANT INSERT ON myfin\.receipt_email_events/);assert.doesNotMatch(grant,/DELETE[^;]*receipt_email/);}
   const api=compose.match(/^  api:[\s\S]*?(?=^  report-worker:)/m)?.[0]||'',worker=compose.match(/^  receipt-email-worker:[\s\S]*?(?=^networks:)/m)?.[0]||'';
   assert.doesNotMatch(api,/receipt_smtp_password|smtp-egress/);assert.match(worker,/profiles: \[receipt-email\]/);assert.match(worker,/secrets: \[db_password, receipt_smtp_password\]/);assert.match(worker,/networks: \[nexus-data, smtp-egress\]/);

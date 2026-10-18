@@ -122,6 +122,7 @@ export async function recordManualSale(c, who, companyId, rawInput, audit, optio
     [companyId, productIds]);
   if (productRows.rowCount !== productIds.length) v.fail(404, 'product_not_found');
   const products = productRows.rows.map(asProduct);
+  if (products.some(product => !product.active)) v.fail(409, 'product_inactive');
   const items = canonicalLines(input, products);
   await (options.assertUnreservedSaleStock || assertUnreservedSaleStock)(
     c, companyId, productRows.rows, items, '');

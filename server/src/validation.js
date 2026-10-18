@@ -93,6 +93,7 @@ const variant = z.strictObject({
 export const product = z.strictObject({
   ...base,
   version: opt(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)),
+  active: z.boolean().default(true),
   name: short.min(1),
   sku: z.string().min(1).max(64),
   code: opt(short),

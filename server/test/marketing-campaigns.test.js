@@ -71,11 +71,22 @@ test('analytics range and output use integer sen and explicitly reject causal in
     qualified_quotes: '8', conversions: '2', attributed_revenue_sen: '5000', discount_cost_sen: '500',
     unique_customers: '2', voucher_uses: '1', bonus_points_awarded: '25',
     reservations: '3', paid: '2', active_reservations: '1',
+    code_breakdown: [{ voucherId:'voucher-a', displayCode:'STUDENT', codeHint:'***DENT',
+      redemptions:'2', posRedemptions:'1', storefrontRedemptions:'1', discountCostSen:'500' },
+    { voucherId:'legacy-a', displayCode:null, codeHint:'***2024', redemptions:'1',
+      posRedemptions:'1', storefrontRedemptions:'0', discountCostSen:'100' }],
   }, campaignOutput(campaignRow()), range);
   assert.equal(output.metrics.conversionRateBasisPoints, 2500);
   assert.equal(output.metrics.averageOrderValueSen, '2500');
   assert.equal(output.metrics.attributedReturnOnSpendBasisPoints, '4500');
   assert.equal(output.metrics.bonusPointsAwarded, 25);
+  assert.deepEqual(output.codeAttribution, [{
+    voucherId:'voucher-a', displayCode:'STUDENT', codeHint:'***DENT', legacyMasked:false,
+    redemptions:2, posRedemptions:1, storefrontRedemptions:1, discountCostSen:'500',
+  }, {
+    voucherId:'legacy-a', displayCode:'', codeHint:'***2024', legacyMasked:true,
+    redemptions:1, posRedemptions:1, storefrontRedemptions:0, discountCostSen:'100',
+  }]);
   assert.deepEqual(output.customerCohort, { suppressed: true, cohortThreshold: 5 });
   assert.doesNotMatch(JSON.stringify(output), /"uniqueCustomers":2/);
   assert.equal(output.attribution.causal, false);
@@ -373,6 +384,9 @@ test('a voucher campaign cannot publish without an enabled unexhausted code cove
       fixture.request({ expectedVersion: 1 }, { campaignId: 'campaign-a' }),
     ), error => error.statusCode === 409 && error.message === 'campaign_enabled_voucher_required',
   );
+  const campaignRead=fixture.calls.find(call=>call.sql.includes('FROM myfin.marketing_campaigns campaign'));
+  assert.match(campaignRead.sql,
+    /voucher_version\.campaign_id IS NULL OR voucher_version\.campaign_id=campaign\.id/);
   assert.equal(fixture.calls.some(call => call.sql.includes('UPDATE myfin.marketing_campaigns')), false);
 });
 
@@ -398,6 +412,9 @@ test('campaign analytics SQL is exact-version, tenant, schedule and date bounded
   assert.match(analytics.sql, /link\.promotion_version=discount\.promotion_version/);
   assert.match(analytics.sql, /snapshot\.priced_at>=link\.starts_at/);
   assert.match(analytics.sql, /redemption\.workspace_id=\$1 AND redemption\.company_id=\$2/);
+  assert.match(analytics.sql, /redemption_code\.campaign_id=\$3/);
+  assert.match(analytics.sql, /voucher\.display_code/);
+  assert.match(analytics.sql, /AS code_breakdown/);
   assert.match(analytics.sql, /JOIN attributed_sale_ids attributed ON attributed\.sale_id=payment\.sale_id/);
   const reservationSchema = readFileSync(
     new URL('../../db/migrations/0027_order_promotion_reservations.sql', import.meta.url), 'utf8',

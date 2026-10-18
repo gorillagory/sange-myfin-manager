@@ -97,12 +97,17 @@ const voucherVersionFields = {
   validUntil: nullableInstant.default(null),
   maxRedemptions: nullablePositiveInteger.default(null),
   perCustomerLimit: nullablePerCustomerLimit.default(null),
+  campaignId: z.union([v.id, z.literal('')]).optional(),
 };
 const voucherCreateSchema = z.strictObject({
   ...voucherVersionFields,
   code: z.string().min(1).max(128),
 }).superRefine(validateVoucherLimits);
 const voucherUpdateSchema = z.strictObject(voucherVersionFields).superRefine(validateVoucherLimits);
+const voucherRotateSchema = z.strictObject({
+  expectedVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  code: z.string().min(1).max(128),
+});
 
 function validateVoucherLimits(input, ctx) {
   if (input.validUntil && input.validUntil <= input.validFrom)
@@ -119,13 +124,20 @@ const requestDigest = value => createHash('sha256').update(JSON.stringify(canoni
 const literalLike = value => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 const numberOrNull = value => value === null || value === undefined ? null : Number(value);
 
+export function promotionShareUrl(hostname, displayCode, campaignId = '') {
+  if (!hostname || !displayCode) return '';
+  const campaign = campaignId ? `&campaign=${encodeURIComponent(campaignId)}` : '';
+  return `https://${hostname}/shop?promo=${encodeURIComponent(displayCode)}${campaign}`;
+}
+
 export function studentProgramPolicy() {
   return Object.freeze({
     pricingApplied: true,
     checkoutIntegration: 'customer_ordering_live',
     rawDocumentUpload: false,
     rawStudentIdentifierStorage: false,
-    voucherCodesReturned: false,
+    voucherCodesReturned: true,
+    legacyVoucherCodesRecoverable: false,
     loyaltyScope: 'workspace',
   });
 }
@@ -149,10 +161,15 @@ export function studentOutput(row) {
 }
 
 export function voucherOutput(row) {
+  const displayCode = row.display_code || row.displayCode || '';
+  const campaignId = row.campaign_id || row.campaignId || '';
   return {
     id: row.id,
     promotionId: row.promotion_id,
+    displayCode,
+    code: displayCode,
     codeHint: row.code_hint,
+    legacyMasked: !displayCode,
     version: Number(row.version),
     enabled: !!row.enabled,
     validFrom: row.valid_from,
@@ -160,6 +177,11 @@ export function voucherOutput(row) {
     maxRedemptions: numberOrNull(row.max_redemptions),
     perCustomerLimit: numberOrNull(row.per_customer_limit),
     redeemedCount: Number(row.redeemed_count || 0),
+    campaignId,
+    campaignName: row.campaign_name || row.campaignName || '',
+    campaignVersion: numberOrNull(row.campaign_version ?? row.campaignVersion),
+    channels: row.campaign_channels || row.channels || ['pos', 'storefront'],
+    shareUrl: promotionShareUrl(row.storefront_hostname || row.storefrontHostname || '', displayCode, campaignId),
     updatedAt: row.updated_at || null,
   };
 }
@@ -289,6 +311,81 @@ async function validatePromotionTargets(c, workspaceId, companyId, input) {
   return { ...input, categoryTargets: categories };
 }
 
+async function listPromotionCatalog(c, workspaceId, companyId) {
+  const promotionRows = await c.query(
+    `SELECT p.id,p.version,p.updated_at,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
+            pv.currency_code,pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
+            pv.reward_product_id,pv.reward_variant_id,pv.reward_quantity_milli,
+            pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,pv.requires_customer,
+            pv.requires_student,pv.stackable,pv.priority,coalesce(usage.redemption_count,0) AS redeemed_count,
+            coalesce((SELECT jsonb_agg(jsonb_build_object('productId',t.product_id,'variantId',coalesce(t.variant_id,''))
+              ORDER BY t.product_id,t.variant_key) FROM myfin.promotion_version_products t
+              WHERE t.workspace_id=p.workspace_id AND t.company_id=p.company_id
+                AND t.promotion_id=p.id AND t.promotion_version=p.version),'[]'::jsonb) AS product_targets,
+            coalesce((SELECT jsonb_agg(jsonb_build_object('category',t.category_key,'subcategory',t.subcategory_key)
+              ORDER BY t.category_key,t.subcategory_key) FROM myfin.promotion_version_categories t
+              WHERE t.workspace_id=p.workspace_id AND t.company_id=p.company_id
+                AND t.promotion_id=p.id AND t.promotion_version=p.version),'[]'::jsonb) AS category_targets,
+            coalesce((SELECT jsonb_agg(t.customer_id ORDER BY t.customer_id)
+              FROM myfin.promotion_version_customers t WHERE t.workspace_id=p.workspace_id
+                AND t.company_id=p.company_id AND t.promotion_id=p.id
+                AND t.promotion_version=p.version),'[]'::jsonb) AS customer_targets
+       FROM myfin.promotions p JOIN myfin.promotion_versions pv
+         ON pv.workspace_id=p.workspace_id AND pv.company_id=p.company_id
+        AND pv.promotion_id=p.id AND pv.version=p.version
+       LEFT JOIN myfin.promotion_usage_counters usage
+         ON usage.workspace_id=p.workspace_id AND usage.company_id=p.company_id AND usage.promotion_id=p.id
+      WHERE p.workspace_id=$1 AND p.company_id=$2 ORDER BY pv.priority DESC,pv.name,p.id`,
+    [workspaceId, companyId],
+  );
+  const voucherRows = await c.query(
+    `SELECT voucher.id,voucher.promotion_id,voucher.display_code,voucher.code_hint,
+            voucher.version,voucher.updated_at,version.enabled,version.valid_from,version.valid_until,
+            version.max_redemptions,version.per_customer_limit,
+            attribution.campaign_id,attribution.campaign_version,attribution.campaign_name,
+            attribution.campaign_channels,host.hostname AS storefront_hostname,
+            coalesce(usage.redemption_count,0) AS redeemed_count
+       FROM myfin.promotion_vouchers voucher
+       JOIN myfin.promotion_voucher_versions version
+         ON version.workspace_id=voucher.workspace_id AND version.company_id=voucher.company_id
+        AND version.promotion_id=voucher.promotion_id AND version.voucher_id=voucher.id
+        AND version.version=voucher.version
+       JOIN myfin.promotions current_offer
+         ON current_offer.workspace_id=voucher.workspace_id AND current_offer.company_id=voucher.company_id
+        AND current_offer.id=voucher.promotion_id
+       LEFT JOIN LATERAL (
+         SELECT campaign.id AS campaign_id,campaign.version AS campaign_version,
+                campaign_version.name AS campaign_name,campaign_version.channels AS campaign_channels
+           FROM myfin.marketing_campaigns campaign
+           JOIN myfin.marketing_campaign_versions campaign_version
+             ON campaign_version.workspace_id=campaign.workspace_id
+            AND campaign_version.company_id=campaign.company_id
+            AND campaign_version.campaign_id=campaign.id AND campaign_version.version=campaign.version
+           JOIN myfin.marketing_campaign_version_promotions link
+             ON link.workspace_id=campaign.workspace_id AND link.company_id=campaign.company_id
+            AND link.campaign_id=campaign.id AND link.campaign_version=campaign.version
+            AND link.promotion_id=voucher.promotion_id
+            AND link.promotion_version=current_offer.version
+          WHERE campaign.workspace_id=voucher.workspace_id AND campaign.company_id=voucher.company_id
+            AND (campaign.id=version.campaign_id OR version.campaign_id IS NULL)
+          ORDER BY (campaign.id=version.campaign_id) DESC,campaign.updated_at DESC,campaign.id
+          LIMIT 1
+       ) attribution ON true
+       LEFT JOIN myfin.storefront_hosts host
+         ON host.company_id=voucher.company_id AND host.disabled_at IS NULL
+       LEFT JOIN myfin.promotion_voucher_usage_counters usage
+         ON usage.workspace_id=voucher.workspace_id AND usage.company_id=voucher.company_id
+        AND usage.promotion_id=voucher.promotion_id AND usage.voucher_id=voucher.id
+      WHERE voucher.workspace_id=$1 AND voucher.company_id=$2
+      ORDER BY voucher.promotion_id,voucher.display_code NULLS LAST,voucher.code_hint,voucher.id`,
+    [workspaceId, companyId],
+  );
+  const vouchers = voucherRows.rows.map(voucherOutput);
+  return promotionRows.rows.map(row => promotionOutput(
+    row, vouchers.filter(voucher => voucher.promotionId === row.id),
+  ));
+}
+
 async function listPrograms(c, companyId, query, who) {
   const workspaceId = await companyWorkspace(c, companyId);
   const workspaceWide = owner(who);
@@ -324,56 +421,13 @@ async function listPrograms(c, companyId, query, who) {
       ORDER BY wc.customer_id LIMIT $5`,
     [workspaceId, query.status, search, query.after, query.limit + 1, workspaceWide, companyId],
   );
-  const promotionRows = await c.query(
-    `SELECT p.id,p.version,p.updated_at,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
-            pv.currency_code,pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
-            pv.reward_product_id,pv.reward_variant_id,pv.reward_quantity_milli,
-            pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,pv.requires_customer,
-            pv.requires_student,pv.stackable,pv.priority,coalesce(usage.redemption_count,0) AS redeemed_count,
-            coalesce((SELECT jsonb_agg(jsonb_build_object('productId',t.product_id,'variantId',coalesce(t.variant_id,''))
-              ORDER BY t.product_id,t.variant_key) FROM myfin.promotion_version_products t
-              WHERE t.workspace_id=p.workspace_id AND t.company_id=p.company_id
-                AND t.promotion_id=p.id AND t.promotion_version=p.version),'[]'::jsonb) AS product_targets,
-            coalesce((SELECT jsonb_agg(jsonb_build_object('category',t.category_key,'subcategory',t.subcategory_key)
-              ORDER BY t.category_key,t.subcategory_key) FROM myfin.promotion_version_categories t
-              WHERE t.workspace_id=p.workspace_id AND t.company_id=p.company_id
-                AND t.promotion_id=p.id AND t.promotion_version=p.version),'[]'::jsonb) AS category_targets,
-            coalesce((SELECT jsonb_agg(t.customer_id ORDER BY t.customer_id)
-              FROM myfin.promotion_version_customers t WHERE t.workspace_id=p.workspace_id
-                AND t.company_id=p.company_id AND t.promotion_id=p.id
-                AND t.promotion_version=p.version),'[]'::jsonb) AS customer_targets
-       FROM myfin.promotions p JOIN myfin.promotion_versions pv
-         ON pv.workspace_id=p.workspace_id AND pv.company_id=p.company_id
-        AND pv.promotion_id=p.id AND pv.version=p.version
-       LEFT JOIN myfin.promotion_usage_counters usage
-         ON usage.workspace_id=p.workspace_id AND usage.company_id=p.company_id AND usage.promotion_id=p.id
-      WHERE p.workspace_id=$1 AND p.company_id=$2 ORDER BY pv.priority DESC,pv.name,p.id`,
-    [workspaceId, companyId],
-  );
-  const voucherRows = await c.query(
-    `SELECT voucher.id,voucher.promotion_id,voucher.code_hint,voucher.version,voucher.updated_at,
-            version.enabled,version.valid_from,version.valid_until,version.max_redemptions,
-            version.per_customer_limit,coalesce(usage.redemption_count,0) AS redeemed_count
-       FROM myfin.promotion_vouchers voucher JOIN myfin.promotion_voucher_versions version
-         ON version.workspace_id=voucher.workspace_id AND version.company_id=voucher.company_id
-        AND version.promotion_id=voucher.promotion_id AND version.voucher_id=voucher.id
-        AND version.version=voucher.version
-       LEFT JOIN myfin.promotion_voucher_usage_counters usage
-         ON usage.workspace_id=voucher.workspace_id AND usage.company_id=voucher.company_id
-        AND usage.promotion_id=voucher.promotion_id AND usage.voucher_id=voucher.id
-      WHERE voucher.workspace_id=$1 AND voucher.company_id=$2
-      ORDER BY voucher.promotion_id,voucher.code_hint,voucher.id`,
-    [workspaceId, companyId],
-  );
-  const vouchers = voucherRows.rows.map(voucherOutput);
+  const promotions = await listPromotionCatalog(c, workspaceId, companyId);
   const visible = students.rows.slice(0, query.limit);
   return {
     workspaceId,
     students: visible.map(studentOutput),
     next: students.rowCount > query.limit ? visible.at(-1)?.customer_id || null : null,
-    promotions: promotionRows.rows.map(row => promotionOutput(
-      row, vouchers.filter(voucher => voucher.promotionId === row.id),
-    )),
+    promotions,
     policy: studentProgramPolicy(),
   };
 }
@@ -546,6 +600,46 @@ async function promotionForVoucher(c, workspaceId, companyId, promotionId) {
   return result.rows[0];
 }
 
+async function voucherPresentationContext(c, workspaceId, companyId, promotionId, campaignId = '') {
+  const result = await c.query(
+    `SELECT host.hostname AS storefront_hostname,attribution.campaign_id,
+            attribution.campaign_version,attribution.campaign_name,attribution.campaign_channels
+       FROM myfin.companies company
+       JOIN myfin.promotions current_offer
+         ON current_offer.workspace_id=company.workspace_id AND current_offer.company_id=company.id
+        AND current_offer.id=$3
+       LEFT JOIN myfin.storefront_hosts host
+         ON host.company_id=company.id AND host.disabled_at IS NULL
+       LEFT JOIN LATERAL (
+         SELECT campaign.id AS campaign_id,campaign.version AS campaign_version,
+                campaign_version.name AS campaign_name,campaign_version.channels AS campaign_channels
+           FROM myfin.marketing_campaigns campaign
+           JOIN myfin.marketing_campaign_versions campaign_version
+             ON campaign_version.workspace_id=campaign.workspace_id
+            AND campaign_version.company_id=campaign.company_id
+            AND campaign_version.campaign_id=campaign.id AND campaign_version.version=campaign.version
+           JOIN myfin.marketing_campaign_version_promotions link
+             ON link.workspace_id=campaign.workspace_id AND link.company_id=campaign.company_id
+            AND link.campaign_id=campaign.id AND link.campaign_version=campaign.version
+            AND link.promotion_id=current_offer.id AND link.promotion_version=current_offer.version
+          WHERE campaign.workspace_id=$1 AND campaign.company_id=$2
+            AND ($4='' OR campaign.id=$4)
+          ORDER BY CASE campaign.lifecycle WHEN 'published' THEN 0 WHEN 'paused' THEN 1
+            WHEN 'draft' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END,
+            campaign.updated_at DESC,campaign.id
+          LIMIT 2
+       ) attribution ON true
+      WHERE company.workspace_id=$1 AND company.id=$2`,
+    [workspaceId, companyId, promotionId, campaignId],
+  );
+  if (!result.rowCount) v.fail(404, 'promotion_not_found');
+  if (!campaignId && result.rows.filter(row => row.campaign_id).length > 1)
+    v.fail(409, 'voucher_campaign_ambiguous');
+  const context = result.rows[0];
+  if (campaignId && context.campaign_id !== campaignId) v.fail(409, 'campaign_promotion_not_linked');
+  return context;
+}
+
 async function createVoucher(c, who, companyId, promotionId, rawInput, voucherPepper) {
   if (typeof voucherPepper !== 'string' || voucherPepper.length < 32)
     v.fail(503, 'voucher_secret_unavailable');
@@ -553,6 +647,11 @@ async function createVoucher(c, who, companyId, promotionId, rawInput, voucherPe
   const input = v.parse(voucherCreateSchema, rawInput);
   if (input.expectedVersion !== 0) v.fail(409, 'voucher_changed');
   await promotionForVoucher(c, workspaceId, companyId, promotionId);
+  const requestedCampaignId = input.campaignId || '';
+  const presentation = await voucherPresentationContext(
+    c, workspaceId, companyId, promotionId, requestedCampaignId,
+  );
+  const campaignId = requestedCampaignId || presentation.campaign_id || '';
   const normalizedCode = normalizeVoucherCode(input.code);
   const lookupDigest = voucherLookupDigest(voucherPepper, normalizedCode);
   const duplicate = await c.query(
@@ -565,25 +664,27 @@ async function createVoucher(c, who, companyId, promotionId, rawInput, voucherPe
   const version = 1;
   const saved = await c.query(
     `INSERT INTO myfin.promotion_vouchers(
-       workspace_id,company_id,id,promotion_id,code_lookup_digest,code_hint,version,updated_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING updated_at`,
-    [workspaceId, companyId, voucherId, promotionId, lookupDigest, codeHint, version, who.id],
+       workspace_id,company_id,id,promotion_id,code_lookup_digest,display_code,code_hint,version,updated_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING updated_at`,
+    [workspaceId, companyId, voucherId, promotionId, lookupDigest, normalizedCode,
+      codeHint, version, who.id],
   );
   await c.query(
     `INSERT INTO myfin.promotion_voucher_versions(
        workspace_id,company_id,promotion_id,voucher_id,version,enabled,valid_from,valid_until,
-       max_redemptions,per_customer_limit,request_digest,created_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+       max_redemptions,per_customer_limit,campaign_id,request_digest,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,nullif($11,''),$12,$13)`,
     [workspaceId, companyId, promotionId, voucherId, version, input.enabled, input.validFrom,
-      input.validUntil, input.maxRedemptions, input.perCustomerLimit,
+      input.validUntil, input.maxRedemptions, input.perCustomerLimit, campaignId,
       requestDigest({ voucherId, version, codeHint, enabled: input.enabled, validFrom: input.validFrom,
         validUntil: input.validUntil, maxRedemptions: input.maxRedemptions,
-        perCustomerLimit: input.perCustomerLimit }), who.id],
+        perCustomerLimit: input.perCustomerLimit, campaignId }), who.id],
   );
-  return voucherOutput({ id: voucherId, promotion_id: promotionId, code_hint: codeHint, version,
+  return voucherOutput({ id: voucherId, promotion_id: promotionId, display_code: normalizedCode,
+    code_hint: codeHint, version,
     enabled: input.enabled, valid_from: input.validFrom, valid_until: input.validUntil,
     max_redemptions: input.maxRedemptions, per_customer_limit: input.perCustomerLimit,
-    redeemed_count: 0, updated_at: saved.rows[0].updated_at });
+    redeemed_count: 0, updated_at: saved.rows[0].updated_at, ...presentation });
 }
 
 async function updateVoucher(c, who, companyId, promotionId, voucherId, rawInput) {
@@ -592,8 +693,14 @@ async function updateVoucher(c, who, companyId, promotionId, voucherId, rawInput
   if (input.expectedVersion === 0) v.fail(409, 'voucher_changed');
   await promotionForVoucher(c, workspaceId, companyId, promotionId);
   const current = await c.query(
-    `SELECT voucher.version,voucher.code_hint,coalesce(usage.redemption_count,0) AS redeemed_count
+    `SELECT voucher.version,voucher.display_code,voucher.code_hint,current_version.campaign_id,
+            coalesce(usage.redemption_count,0) AS redeemed_count
        FROM myfin.promotion_vouchers voucher
+       JOIN myfin.promotion_voucher_versions current_version
+         ON current_version.workspace_id=voucher.workspace_id
+        AND current_version.company_id=voucher.company_id
+        AND current_version.promotion_id=voucher.promotion_id
+        AND current_version.voucher_id=voucher.id AND current_version.version=voucher.version
        LEFT JOIN myfin.promotion_voucher_usage_counters usage
          ON usage.workspace_id=voucher.workspace_id AND usage.company_id=voucher.company_id
         AND usage.promotion_id=voucher.promotion_id AND usage.voucher_id=voucher.id
@@ -603,6 +710,12 @@ async function updateVoucher(c, who, companyId, promotionId, voucherId, rawInput
   );
   if (!current.rowCount) v.fail(404, 'voucher_not_found');
   if (Number(current.rows[0].version) !== input.expectedVersion) v.fail(409, 'voucher_changed');
+  const requestedCampaignId = input.campaignId === undefined
+    ? current.rows[0].campaign_id || '' : input.campaignId;
+  const presentation = await voucherPresentationContext(
+    c, workspaceId, companyId, promotionId, requestedCampaignId,
+  );
+  const campaignId = requestedCampaignId || presentation.campaign_id || '';
   const version = input.expectedVersion + 1;
   const saved = await c.query(
     `UPDATE myfin.promotion_vouchers SET version=$5,updated_by=$6,updated_at=now()
@@ -615,23 +728,70 @@ async function updateVoucher(c, who, companyId, promotionId, voucherId, rawInput
   await c.query(
     `INSERT INTO myfin.promotion_voucher_versions(
        workspace_id,company_id,promotion_id,voucher_id,version,enabled,valid_from,valid_until,
-       max_redemptions,per_customer_limit,request_digest,created_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+       max_redemptions,per_customer_limit,campaign_id,request_digest,created_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,nullif($11,''),$12,$13)`,
     [workspaceId, companyId, promotionId, voucherId, version, input.enabled, input.validFrom,
-      input.validUntil, input.maxRedemptions, input.perCustomerLimit,
+      input.validUntil, input.maxRedemptions, input.perCustomerLimit, campaignId,
       requestDigest({ voucherId, version, codeHint, enabled: input.enabled, validFrom: input.validFrom,
         validUntil: input.validUntil, maxRedemptions: input.maxRedemptions,
-        perCustomerLimit: input.perCustomerLimit }), who.id],
+        perCustomerLimit: input.perCustomerLimit, campaignId }), who.id],
   );
-  return voucherOutput({ id: voucherId, promotion_id: promotionId, code_hint: codeHint, version,
+  return voucherOutput({ id: voucherId, promotion_id: promotionId,
+    display_code: current.rows[0].display_code, code_hint: codeHint, version,
     enabled: input.enabled, valid_from: input.validFrom, valid_until: input.validUntil,
     max_redemptions: input.maxRedemptions, per_customer_limit: input.perCustomerLimit,
-    redeemed_count: current.rows[0].redeemed_count, updated_at: saved.rows[0].updated_at });
+    redeemed_count: current.rows[0].redeemed_count, updated_at: saved.rows[0].updated_at,
+    ...presentation });
+}
+
+async function rotateVoucher(c, who, companyId, promotionId, voucherId, rawInput, voucherPepper) {
+  const input = v.parse(voucherRotateSchema, rawInput);
+  const workspaceId = await companyWorkspace(c, companyId);
+  // Keep the same promotion-before-voucher lock order used by ordinary code
+  // updates so a concurrent rotate cannot deadlock with an editor save.
+  await promotionForVoucher(c, workspaceId, companyId, promotionId);
+  const current = await c.query(
+    `SELECT voucher.version,current_version.enabled,current_version.valid_from,
+            current_version.valid_until,current_version.max_redemptions,
+            current_version.per_customer_limit,current_version.campaign_id
+       FROM myfin.promotion_vouchers voucher
+       JOIN myfin.promotion_voucher_versions current_version
+         ON current_version.workspace_id=voucher.workspace_id
+        AND current_version.company_id=voucher.company_id
+        AND current_version.promotion_id=voucher.promotion_id
+        AND current_version.voucher_id=voucher.id AND current_version.version=voucher.version
+      WHERE voucher.workspace_id=$1 AND voucher.company_id=$2
+        AND voucher.promotion_id=$3 AND voucher.id=$4 FOR UPDATE OF voucher`,
+    [workspaceId, companyId, promotionId, voucherId],
+  );
+  if (!current.rowCount) v.fail(404, 'voucher_not_found');
+  const row = current.rows[0];
+  if (Number(row.version) !== input.expectedVersion) v.fail(409, 'voucher_changed');
+  const versionFields = {
+    validFrom: row.valid_from instanceof Date ? row.valid_from.toISOString() : row.valid_from,
+    validUntil: row.valid_until instanceof Date ? row.valid_until.toISOString() : row.valid_until,
+    maxRedemptions: numberOrNull(row.max_redemptions),
+    perCustomerLimit: numberOrNull(row.per_customer_limit),
+    campaignId: row.campaign_id || '',
+  };
+  const previous = await updateVoucher(c, who, companyId, promotionId, voucherId, {
+    expectedVersion: input.expectedVersion, enabled: false, ...versionFields,
+  });
+  const replacement = await createVoucher(c, who, companyId, promotionId, {
+    expectedVersion: 0, code: input.code, enabled: !!row.enabled, ...versionFields,
+  }, voucherPepper);
+  return { replacedVoucherId: voucherId, previous, voucher: replacement };
 }
 
 export function registerStudentPrograms(app, {
   scoped, audit, voucherPepper = process.env.MYFIN_VOUCHER_HMAC_SECRET,
 }) {
+  app.get('/api/companies/:company/marketing/promotions', req => scoped(req, async (c, companyId) => {
+    requireCapability(req.identity, 'marketingRead');
+    const workspaceId = await companyWorkspace(c, companyId);
+    return { workspaceId, promotions: await listPromotionCatalog(c, workspaceId, companyId) };
+  }));
+
   app.get('/api/companies/:company/student-programs', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'studentProgramsRead');
     return listPrograms(c, companyId, v.parse(listSchema, req.query || {}), req.identity);
@@ -656,7 +816,25 @@ export function registerStudentPrograms(app, {
     return result;
   }));
 
+  app.post('/api/companies/:company/marketing/promotions', req => scoped(req, async (c, companyId) => {
+    requireCapability(req.identity, 'promotionsManage');
+    const promotionId = randomUUID();
+    const result = await savePromotion(c, req.identity, companyId, promotionId, req.body, true);
+    await audit(c, req.identity, companyId, 'Promotion configured',
+      `${result.name} · version ${result.version} · ${result.enabled ? 'pricing active' : 'disabled'}`);
+    return result;
+  }));
+
   app.put('/api/companies/:company/student-promotions/:promotionId', req => scoped(req, async (c, companyId) => {
+    requireCapability(req.identity, 'promotionsManage');
+    const promotionId = v.parse(v.id, req.params.promotionId);
+    const result = await savePromotion(c, req.identity, companyId, promotionId, req.body, false);
+    await audit(c, req.identity, companyId, 'Promotion configured',
+      `${result.name} · version ${result.version} · ${result.enabled ? 'pricing active' : 'disabled'}`);
+    return result;
+  }));
+
+  app.put('/api/companies/:company/marketing/promotions/:promotionId', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'promotionsManage');
     const promotionId = v.parse(v.id, req.params.promotionId);
     const result = await savePromotion(c, req.identity, companyId, promotionId, req.body, false);
@@ -674,6 +852,18 @@ export function registerStudentPrograms(app, {
     return result;
   }));
 
+  for (const suffix of ['codes', 'vouchers']) app.post(
+    `/api/companies/:company/marketing/promotions/:promotionId/${suffix}`,
+    req => scoped(req, async (c, companyId) => {
+      requireCapability(req.identity, 'promotionsManage');
+      const promotionId = v.parse(v.id, req.params.promotionId);
+      const result = await createVoucher(c, req.identity, companyId, promotionId, req.body, voucherPepper);
+      await audit(c, req.identity, companyId, 'Reusable promotion code configured',
+        `${result.displayCode || result.codeHint} · version ${result.version}`);
+      return result;
+    }),
+  );
+
   app.put('/api/companies/:company/student-promotions/:promotionId/vouchers/:voucherId', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'promotionsManage');
     const promotionId = v.parse(v.id, req.params.promotionId);
@@ -683,4 +873,32 @@ export function registerStudentPrograms(app, {
       `${result.codeHint} · version ${result.version} · configured only`);
     return result;
   }));
+
+  for (const suffix of ['codes', 'vouchers']) app.put(
+    `/api/companies/:company/marketing/promotions/:promotionId/${suffix}/:voucherId`,
+    req => scoped(req, async (c, companyId) => {
+      requireCapability(req.identity, 'promotionsManage');
+      const promotionId = v.parse(v.id, req.params.promotionId);
+      const voucherId = v.parse(v.id, req.params.voucherId);
+      const result = await updateVoucher(c, req.identity, companyId, promotionId, voucherId, req.body);
+      await audit(c, req.identity, companyId, 'Reusable promotion code configured',
+        `${result.displayCode || result.codeHint} · version ${result.version}`);
+      return result;
+    }),
+  );
+
+  for (const suffix of ['codes', 'vouchers']) app.post(
+    `/api/companies/:company/marketing/promotions/:promotionId/${suffix}/:voucherId/rotate`,
+    req => scoped(req, async (c, companyId) => {
+      requireCapability(req.identity, 'promotionsManage');
+      const promotionId = v.parse(v.id, req.params.promotionId);
+      const voucherId = v.parse(v.id, req.params.voucherId);
+      const result = await rotateVoucher(
+        c, req.identity, companyId, promotionId, voucherId, req.body, voucherPepper,
+      );
+      await audit(c, req.identity, companyId, 'Reusable promotion code rotated',
+        `${result.previous.codeHint} → ${result.voucher.displayCode}`);
+      return result;
+    }),
+  );
 }

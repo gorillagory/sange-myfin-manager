@@ -3,7 +3,8 @@ const text = value => String(value ?? '').trim();
 export const CUSTOMER_SURFACE_PATHS = ['/shop', '/menu', '/display', '/order', '/privacy'];
 
 const safeColor = (value, fallback) => /^#[0-9a-f]{6}$/i.test(text(value)) ? text(value) : fallback;
-const safeHttps = value => text(value).length <= 2048 && /^https:\/\/\S+$/i.test(text(value)) ? text(value) : '';
+const safeHttps = value => text(value).length <= 2048 && (/^https:\/\/\S+$/i.test(text(value)) ||
+  /^\/api\/public\/storefront-assets\/[A-Za-z0-9_-]+$/.test(text(value))) ? text(value) : '';
 const safeAction = value => text(value).length <= 2048 && (/^https:\/\/\S+$/i.test(text(value)) ||
   (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(text(value)) && !text(value).startsWith('//'))) ? text(value) : '';
 const safeMoney = (value, fallback = 0) => value !== null && value !== undefined && value !== '' &&
@@ -96,7 +97,7 @@ export function normalizeStorefront(payload = {}) {
       imageUrl: safeHttps(product.imageUrl), unit: text(product.unit).slice(0, 40) || 'item',
       storePrice, onlinePrice, price: onlinePrice,
       hasOnlinePriceOverride: onlinePrice !== storePrice,
-      available: product.available !== false,
+      active: product.active !== false, available: product.active !== false && product.available !== false,
       maxQuantity: Math.max(0, Math.floor(Number(product.maxQuantity ?? 20) || 0)),
       variants: (product.variants || []).map(variant => {
         const variantStorePrice = safeMoney(variant.storePrice, safeMoney(variant.price, storePrice));
@@ -108,7 +109,7 @@ export function normalizeStorefront(payload = {}) {
           maxQuantity: Math.max(0, Math.floor(Number(variant.maxQuantity ?? product.maxQuantity ?? 20) || 0)) };
       }).filter(variant => variant.id && variant.name),
     };
-  }).filter(product => product.id && product.name && Number.isFinite(product.price) && product.price >= 0);
+  }).filter(product => product.active && product.id && product.name && Number.isFinite(product.price) && product.price >= 0);
   const theme = storefront.theme || {};
   const hero = storefront.hero || {};
   const slides = (payload.slides || []).slice(0, 12).map(slide => ({

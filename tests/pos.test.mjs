@@ -60,7 +60,7 @@ test('snapshot-backed fractional quantities use the server integer-sen rounding 
    method:'Cash',received:.15,lockedTotals,pricingSnapshotId:'snapshot-fractional'}),/accepted quote totals are invalid/);
 });
 test('invalid tender, quantity and external confirmation are rejected',()=>{for(const received of [0,-1,NaN])assert.throws(()=>createSale({id:'x',items:[cartItem(product)],company,user,method:'Cash',received}));assert.throws(()=>totalsFor([{price:1,qty:0}]));assert.throws(()=>createSale({id:'x',items:[cartItem(product)],company,user,method:'Card',received:1,confirmed:false}));});
-test('legacy SKU, tax, variants and service stock adapt without data migration',()=>{const p=normalizeProduct({id:'v',code:'OLD',category:'Retail',variants:[{name:'Blue',price:10,stock:2}]});assert.equal(p.sku,'OLD');assert.equal(p.variants[0].id,'legacy-0');assert.equal(cartItem(p,p.variants[0]).variantId,'legacy-0');assert.equal(normalizeProduct({name:'Service',category:'Service',stock:0}).trackStock,false);assert.equal(normalizeProduct({name:'Uncounted'}).trackStock,false);});
+test('legacy SKU, tax, variants, active state and service stock adapt without data migration',()=>{const p=normalizeProduct({id:'v',code:'OLD',category:'Retail',variants:[{name:'Blue',price:10,stock:2}]});assert.equal(p.sku,'OLD');assert.equal(p.active,true);assert.equal(normalizeProduct({name:'Retired',active:false}).active,false);assert.equal(p.variants[0].id,'legacy-0');assert.equal(cartItem(p,p.variants[0]).variantId,'legacy-0');assert.equal(normalizeProduct({name:'Service',category:'Service',stock:0}).trackStock,false);assert.equal(normalizeProduct({name:'Uncounted'}).trackStock,false);});
 test('recipe-tracked products use projected sellable quantities without changing legacy untracked products',()=>{
  const root=normalizeProduct({id:'latte',name:'Latte',trackStock:false,recipeTracked:true,availableQuantity:3});
  const variants=normalizeProduct({id:'tea',name:'Tea',trackStock:false,recipeTracked:true,availableQuantity:99,variants:[
@@ -104,15 +104,23 @@ test('staff POS compiles and applies the shared availability guard across cart c
  assert.match(posSource,/limitsSaleQuantity\(p,v\)&&item\.qty>available/);
  assert.match(posSource,/p\.variants\.every\(v=>limitsSaleQuantity\(p,v\)&&available/);
  assert.match(posSource,/limitsSaleQuantity\(variantProduct,v\)&&available/);
+ assert.match(posSource,/Store\.state\.products\.filter\(product=>product\.active!==false\)/);
 });
 test('staff POS previews automatic promotions without writes and locks the authoritative quote at payment',()=>{
  assert.match(posSource,/watch\(\[cart,customerId,discount,voucherCode,sourceRequest\],schedulePricing/);
  assert.match(posSource,/lock:required/);
  assert.match(posSource,/checkoutId:saleId\.value/);
  assert.match(posSource,/required&&!force&&lockedPricingReady\(\)/);
- assert.match(posSource,/pricingQuote\?\.discounts/);
+ assert.match(posSource,/const quoteDiscounts=computed\(\(\)=>sourceRequest\.value\?\.discounts\|\|pricingQuote\.value\?\.discounts/);
  assert.match(posSource,/Discretionary discount/);
- assert.match(posSource,/Voucher code/);
+ assert.match(posSource,/Scan or enter reusable code/);
+ assert.match(posSource,/\/pos\/promotions/);
+ assert.match(posSource,/Promotions for this checkout/);
+ assert.match(posSource,/Automatic offers are checked/);
+ assert.match(posSource,/Customer saves/);
+ assert.match(posSource,/offer\.voucherApplied\?'Code':'Automatic'/);
+ assert.match(posSource,/clearPromotionCode/);
+ assert.match(posSource,/voucher_invalid_or_unavailable/);
  assert.match(posSource,/<s v-if="pricingLine\(i\)\?\.savings">/);
  assert.match(posSource,/Automatic reward/);
  assert.match(posSource,/quotedSaleItems\(activeQuote\)/);

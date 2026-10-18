@@ -55,7 +55,7 @@ export function businessDate(value = new Date(), timeZone = 'Asia/Kuala_Lumpur')
 export function normalizeProduct(product) {
   const variants = (product.variants || []).map((v, i) => ({ ...v, id: v.id || `legacy-${i}`, price: Number(v.price || 0), cost: Number(v.cost || 0), stock: Number(v.stock || 0) }));
   const hasStock = product.stock != null || (product.variants || []).some(v => v.stock != null);
-  return { ...product, sku: product.sku || product.code || '', price: Number(product.price || 0), cost: Number(product.cost || 0), stock: Number(product.stock || 0), unit: product.unit || 'pcs', variants, trackStock: product.category !== 'Service' && (product.trackStock ?? hasStock) };
+  return { ...product, active:product.active !== false, sku: product.sku || product.code || '', price: Number(product.price || 0), cost: Number(product.cost || 0), stock: Number(product.stock || 0), unit: product.unit || 'pcs', variants, trackStock: product.category !== 'Service' && (product.trackStock ?? hasStock) };
 }
 export const limitsSaleQuantity = (product, variant = null) => Boolean(product?.trackStock) ||
   (variant ? variant.recipeTracked === true : product?.recipeTracked === true);

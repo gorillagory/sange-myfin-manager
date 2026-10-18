@@ -175,10 +175,12 @@ export function voucherPayload(input = {}, { creating = false } = {}) {
       && payload.perCustomerLimit > payload.maxRedemptions)
     throw new Error('Voucher per-customer limit cannot exceed maximum uses.');
   if (creating) {
-    const code = requiredText(input.code, 'Voucher code', 6, 32).toLocaleUpperCase('en-US');
-    if (!/^[A-Z0-9-]+$/.test(code)) throw new Error('Voucher codes may contain only letters, numbers and hyphens.');
+    const code = requiredText(input.code, 'Voucher code', 3, 32).toLocaleUpperCase('en-US');
+    if (!/^[A-Z0-9](?:[A-Z0-9-]{1,30}[A-Z0-9])$/.test(code))
+      throw new Error('Voucher codes must start and end with a letter or number and may contain hyphens.');
     payload.code = code;
   }
+  if (clean(input.campaignId)) payload.campaignId = clean(input.campaignId);
   return payload;
 }
 

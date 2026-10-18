@@ -30,7 +30,7 @@ function register({ role = 'workspace_owner', query, voucherPepper = SECRET } = 
   return { routes, calls, audits, request };
 }
 
-test('safe outputs omit verification digests, voucher digests, raw identifiers and code', () => {
+test('safe outputs omit private digests while returning the reusable marketing display code', () => {
   const student = studentOutput({
     customer_id: 'customer-a', account_name: 'Amina', primary_email: 'a@example.test',
     status: 'verified', institution_name: 'Example College', reference_hint: '***1234',
@@ -38,14 +38,20 @@ test('safe outputs omit verification digests, voucher digests, raw identifiers a
   });
   const voucher = voucherOutput({
     id: 'voucher-a', promotion_id: 'promotion-a', code_hint: '***SAVE', version: '1', enabled: true,
-    valid_from: '2026-01-01T00:00:00Z', code_lookup_digest: 'secret-digest', code: 'SAVE-SECRET',
+    valid_from: '2026-01-01T00:00:00Z', code_lookup_digest: 'secret-digest',
+    display_code: 'STAFF', code: 'SAVE-SECRET', storefront_hostname: 'order-example.test',
   });
   assert.equal(student.referenceHint, '***1234');
   assert.equal(voucher.codeHint, '***SAVE');
+  assert.equal(voucher.displayCode, 'STAFF');
+  assert.equal(voucher.code, 'STAFF');
+  assert.equal(voucher.legacyMasked, false);
+  assert.equal(voucher.shareUrl, 'https://order-example.test/shop?promo=STAFF');
   assert.doesNotMatch(JSON.stringify({ student, voucher }), /secret-digest|SAVE-SECRET/);
   assert.deepEqual(studentProgramPolicy(), {
     pricingApplied: true, checkoutIntegration: 'customer_ordering_live', rawDocumentUpload: false,
-    rawStudentIdentifierStorage: false, voucherCodesReturned: false, loyaltyScope: 'workspace',
+    rawStudentIdentifierStorage: false, voucherCodesReturned: true,
+    legacyVoucherCodesRecoverable: false, loyaltyScope: 'workspace',
   });
 });
 
@@ -260,11 +266,15 @@ test('free-item offers require the exact existing variant when the reward produc
   assert.equal(saved.rewardVariantId, 'large');
 });
 
-test('voucher creation stores HMAC lookup only and returns just a masked hint', async () => {
+test('voucher creation stores a reusable display code plus HMAC lookup and returns its campaign share link', async () => {
   const fixture = register({ query(sql) {
     if (sql.startsWith('SELECT workspace_id')) return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
     if (sql.includes('FROM myfin.promotions p') && sql.includes('FOR UPDATE OF p')) return { rows: [{
       version: '1', redemption_mode: 'voucher', valid_from: '2026-01-01T00:00:00Z', valid_until: null,
+    }], rowCount: 1 };
+    if (sql.includes('SELECT host.hostname AS storefront_hostname')) return { rows: [{
+      storefront_hostname: 'order-example.test', campaign_id: 'campaign-a', campaign_version: '1',
+      campaign_name: 'Student week', campaign_channels: ['pos', 'storefront'],
     }], rowCount: 1 };
     if (sql.startsWith('SELECT 1 FROM myfin.promotion_vouchers')) return { rows: [], rowCount: 0 };
     if (sql.includes('INSERT INTO myfin.promotion_vouchers(')) return { rows: [{
@@ -280,13 +290,115 @@ test('voucher creation stores HMAC lookup only and returns just a masked hint', 
     maxRedemptions: 100, perCustomerLimit: 1,
   }, { promotionId: 'promotion-a' }));
   assert.equal(result.codeHint, '***2026');
+  assert.equal(result.displayCode, 'STUDENT-2026');
+  assert.equal(result.code, 'STUDENT-2026');
+  assert.equal(result.campaignId, 'campaign-a');
+  assert.equal(result.shareUrl,
+    'https://order-example.test/shop?promo=STUDENT-2026&campaign=campaign-a');
   assert.equal(result.applicationState, undefined);
-  assert.doesNotMatch(JSON.stringify({ result, audit: fixture.audits }), /STUDENT-2026|[a-f0-9]{64}/);
+  assert.doesNotMatch(JSON.stringify({ result, audit: fixture.audits }), /[a-f0-9]{64}/);
   const duplicateLookup = fixture.calls.find(call => call.sql.startsWith('SELECT 1 FROM myfin.promotion_vouchers'));
   assert.equal(duplicateLookup.params[1], voucherLookupDigest(SECRET, 'STUDENT-2026'));
   const stored = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.promotion_vouchers('));
   assert.equal(stored.params[4], duplicateLookup.params[1]);
-  assert.equal(stored.params.includes('STUDENT-2026'), false);
+  assert.equal(stored.params[5], 'STUDENT-2026');
+  assert.match(stored.sql, /display_code/);
+  const version = fixture.calls.find(call => call.sql.includes('INSERT INTO myfin.promotion_voucher_versions'));
+  assert.equal(version.params[10], 'campaign-a');
+  assert.match(version.sql, /campaign_id/);
+});
+
+test('code creation rejects ambiguous campaign inference and honors an explicit campaign selection', async () => {
+  const body = {
+    expectedVersion: 0, code: 'STAFF', enabled: true,
+    validFrom: '2026-10-09T00:00:00.000Z', validUntil: null,
+    maxRedemptions: null, perCustomerLimit: null,
+  };
+  const query = ({ explicit = false } = {}) => (sql, params) => {
+    if (sql.startsWith('SELECT workspace_id'))
+      return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+    if (sql.includes('FROM myfin.promotions p') && sql.includes('FOR UPDATE OF p')) return { rows: [{
+      version: '1', redemption_mode: 'voucher', valid_from: '2026-01-01T00:00:00Z', valid_until: null,
+    }], rowCount: 1 };
+    if (sql.includes('SELECT host.hostname AS storefront_hostname')) {
+      if (!explicit) return { rows: [
+        { campaign_id:'campaign-a', campaign_version:'1', campaign_name:'A', campaign_channels:['pos'] },
+        { campaign_id:'campaign-b', campaign_version:'1', campaign_name:'B', campaign_channels:['storefront'] },
+      ], rowCount: 2 };
+      assert.equal(params[3], 'campaign-b');
+      return { rows: [{ storefront_hostname:'order-example.test', campaign_id:'campaign-b',
+        campaign_version:'1', campaign_name:'B', campaign_channels:['storefront'] }], rowCount: 1 };
+    }
+    if (sql.startsWith('SELECT 1 FROM myfin.promotion_vouchers')) return { rows: [], rowCount: 0 };
+    if (sql.includes('INSERT INTO myfin.promotion_vouchers('))
+      return { rows: [{ updated_at:'2026-10-09T00:00:00Z' }], rowCount: 1 };
+    if (sql.includes('INSERT INTO myfin.promotion_voucher_versions')) return { rows: [], rowCount: 1 };
+    throw Error(`unexpected query: ${sql}`);
+  };
+
+  const ambiguous = register({ query:query() });
+  const path = 'POST /api/companies/:company/marketing/promotions/:promotionId/codes';
+  await assert.rejects(ambiguous.routes.get(path)(ambiguous.request(body, { promotionId:'promotion-a' })),
+    error => error.statusCode === 409 && error.message === 'voucher_campaign_ambiguous');
+  assert.equal(ambiguous.calls.some(call => call.sql.includes('INSERT INTO myfin.promotion_vouchers(')), false);
+
+  const selected = register({ query:query({ explicit:true }) });
+  const result = await selected.routes.get(path)(selected.request(
+    { ...body, campaignId:'campaign-b' }, { promotionId:'promotion-a' },
+  ));
+  assert.equal(result.campaignId, 'campaign-b');
+  assert.equal(result.shareUrl, 'https://order-example.test/shop?promo=STAFF&campaign=campaign-b');
+  const savedVersion = selected.calls.find(call => call.sql.includes('INSERT INTO myfin.promotion_voucher_versions'));
+  assert.equal(savedVersion.params[10], 'campaign-b');
+});
+
+test('legacy masked codes rotate atomically into a reusable campaign code', async () => {
+  const fixture = register({ query(sql) {
+    if (sql.startsWith('SELECT workspace_id'))
+      return { rows: [{ workspace_id: 'workspace-a' }], rowCount: 1 };
+    if (sql.includes('FROM myfin.promotions p') && sql.includes('FOR UPDATE OF p')) return { rows: [{
+      version: '2', redemption_mode: 'voucher', valid_from: '2026-01-01T00:00:00Z', valid_until: null,
+    }], rowCount: 1 };
+    if (sql.startsWith('SELECT voucher.version,current_version.enabled')) return { rows: [{
+      version:'1', enabled:true, valid_from:'2026-01-01T00:00:00.000Z', valid_until:null,
+      max_redemptions:'100', per_customer_limit:'1', campaign_id:'campaign-a',
+    }], rowCount: 1 };
+    if (sql.startsWith('SELECT voucher.version,voucher.display_code')) return { rows: [{
+      version:'1', display_code:null, code_hint:'***2024', campaign_id:'campaign-a', redeemed_count:'2',
+    }], rowCount: 1 };
+    if (sql.includes('SELECT host.hostname AS storefront_hostname')) return { rows: [{
+      storefront_hostname:'order-example.test', campaign_id:'campaign-a', campaign_version:'3',
+      campaign_name:'Student return', campaign_channels:['pos','storefront'],
+    }], rowCount: 1 };
+    if (sql.startsWith('UPDATE myfin.promotion_vouchers SET version='))
+      return { rows:[{ updated_at:'2026-10-19T00:00:00Z' }], rowCount:1 };
+    if (sql.startsWith('SELECT 1 FROM myfin.promotion_vouchers')) return { rows:[], rowCount:0 };
+    if (sql.includes('INSERT INTO myfin.promotion_vouchers('))
+      return { rows:[{ updated_at:'2026-10-19T00:00:00Z' }], rowCount:1 };
+    if (sql.includes('INSERT INTO myfin.promotion_voucher_versions')) return { rows:[], rowCount:1 };
+    throw Error(`unexpected query: ${sql}`);
+  } });
+  const result = await fixture.routes.get(
+    'POST /api/companies/:company/marketing/promotions/:promotionId/codes/:voucherId/rotate',
+  )(fixture.request({ expectedVersion:1, code:'STUDENT' }, {
+    promotionId:'promotion-a', voucherId:'legacy-voucher',
+  }));
+  assert.equal(result.replacedVoucherId, 'legacy-voucher');
+  assert.equal(result.previous.enabled, false);
+  assert.equal(result.previous.legacyMasked, true);
+  assert.equal(result.voucher.displayCode, 'STUDENT');
+  assert.equal(result.voucher.campaignId, 'campaign-a');
+  assert.equal(result.voucher.shareUrl,
+    'https://order-example.test/shop?promo=STUDENT&campaign=campaign-a');
+  const writes = fixture.calls.filter(call => call.sql.includes('INSERT INTO myfin.promotion_voucher_versions'));
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].params[5], false);
+  assert.equal(writes[1].params[10], 'campaign-a');
+  const promotionLock = fixture.calls.findIndex(call =>
+    call.sql.includes('FROM myfin.promotions p') && call.sql.includes('FOR UPDATE OF p'));
+  const voucherLock = fixture.calls.findIndex(call =>
+    call.sql.startsWith('SELECT voucher.version,current_version.enabled'));
+  assert.ok(promotionLock > -1 && promotionLock < voucherLock);
 });
 
 test('voucher routes fail closed without a protected HMAC secret and reject code replacement', async () => {

@@ -160,6 +160,7 @@ async function catalogLines(c, companyId, requested, channel) {
   if (byProduct.size !== ids.length) fail(409, 'catalog_item_unavailable');
   return requested.map(line => {
     const product = byProduct.get(line.productId);
+    if (product.data.active === false) fail(409, 'catalog_item_unavailable');
     const configuredVariants = Array.isArray(product.data.variants) ? product.data.variants : [];
     const hasVariants = product.variants.size > 0 || configuredVariants.length > 0;
     if (configuredVariants.length && !product.variants.size) fail(409, 'invalid_catalog_product');
@@ -211,13 +212,16 @@ function promotionFromRow(row) {
     usage: { total: Number(row.total_usage || 0), customer: Number(row.customer_usage || 0) },
     voucher: null,
     campaignLinks: row.campaign_links || [],
+    rewardAvailable: row.reward_available !== false,
   };
 }
 
-async function loadVoucher(c, { workspaceId, companyId, currencyCode, customerId, lookupDigest, at }) {
+async function loadVoucher(c, {
+  workspaceId, companyId, currencyCode, customerId, lookupDigest, at, channel,
+}) {
   if (!lookupDigest) return null;
   const result = await c.query(
-    `SELECT v.promotion_id,v.id,v.version,vv.enabled,vv.valid_from,vv.valid_until,
+    `SELECT v.promotion_id,v.id,v.version,vv.enabled,vv.valid_from,vv.valid_until,vv.campaign_id,
             vv.max_redemptions,vv.per_customer_limit,
             coalesce(vu.redemption_count,0)+(SELECT count(*) FROM myfin.promotion_reservations vr
               WHERE vr.workspace_id=v.workspace_id AND vr.company_id=v.company_id
@@ -242,11 +246,28 @@ async function loadVoucher(c, { workspaceId, companyId, currencyCode, customerId
        LEFT JOIN myfin.promotion_voucher_customer_usage_counters vcu
          ON vcu.workspace_id=v.workspace_id AND vcu.company_id=v.company_id
         AND vcu.promotion_id=v.promotion_id AND vcu.voucher_id=v.id AND vcu.customer_id=$5
-      WHERE v.workspace_id=$1 AND v.company_id=$2 AND v.code_lookup_digest=$3
-        AND pv.currency_code=$4 AND pv.redemption_mode='voucher'
-        AND pv.enabled AND pv.valid_from<=$6 AND (pv.valid_until IS NULL OR pv.valid_until>$6)
-        AND vv.enabled AND vv.valid_from<=$6 AND (vv.valid_until IS NULL OR vv.valid_until>$6)`,
-    [workspaceId, companyId, lookupDigest, currencyCode, customerId || null, at],
+       WHERE v.workspace_id=$1 AND v.company_id=$2 AND v.code_lookup_digest=$3
+         AND pv.currency_code=$4 AND pv.redemption_mode='voucher'
+         AND pv.enabled AND pv.valid_from<=$6 AND (pv.valid_until IS NULL OR pv.valid_until>$6)
+         AND vv.enabled AND vv.valid_from<=$6 AND (vv.valid_until IS NULL OR vv.valid_until>$6)
+         AND (vv.campaign_id IS NULL OR EXISTS(
+           SELECT 1 FROM myfin.marketing_campaigns campaign
+           JOIN myfin.marketing_campaign_versions campaign_version
+             ON campaign_version.workspace_id=campaign.workspace_id
+            AND campaign_version.company_id=campaign.company_id
+            AND campaign_version.campaign_id=campaign.id AND campaign_version.version=campaign.version
+           JOIN myfin.marketing_campaign_version_promotions campaign_offer
+             ON campaign_offer.workspace_id=campaign.workspace_id
+            AND campaign_offer.company_id=campaign.company_id
+            AND campaign_offer.campaign_id=campaign.id
+            AND campaign_offer.campaign_version=campaign.version
+            AND campaign_offer.promotion_id=p.id AND campaign_offer.promotion_version=p.version
+          WHERE campaign.workspace_id=v.workspace_id AND campaign.company_id=v.company_id
+            AND campaign.id=vv.campaign_id AND campaign.lifecycle='published'
+            AND $7=ANY(campaign_version.channels) AND campaign_version.starts_at<=$6
+            AND (campaign_version.ends_at IS NULL OR campaign_version.ends_at>$6)
+         ))`,
+    [workspaceId, companyId, lookupDigest, currencyCode, customerId || null, at, channel],
   );
   if (result.rowCount !== 1) fail(400, 'voucher_invalid_or_unavailable');
   const row = result.rows[0];
@@ -260,6 +281,7 @@ async function loadVoucher(c, { workspaceId, companyId, currencyCode, customerId
     maxRedemptions: row.max_redemptions === null ? null : Number(row.max_redemptions),
     perCustomerLimit: row.per_customer_limit === null ? null : Number(row.per_customer_limit),
     usage: { total: Number(row.total_usage || 0), customer: Number(row.customer_usage || 0) },
+    campaignId: row.campaign_id || '',
   };
 }
 
@@ -268,6 +290,10 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
     `SELECT p.id,p.version,pv.name,pv.enabled,pv.redemption_mode,pv.valid_from,pv.valid_until,
             pv.discount_type,pv.discount_basis_points,pv.discount_sen,pv.max_discount_sen,
             pv.reward_product_id,pv.reward_variant_id,pv.reward_quantity_milli,
+            CASE WHEN pv.discount_type<>'free_item' THEN true
+                 WHEN reward.id IS NULL OR coalesce(reward.data->>'active','true')='false' THEN false
+                 WHEN pv.reward_variant_id IS NOT NULL AND reward_variant.id IS NULL THEN false
+                 ELSE true END AS reward_available,
             pv.min_subtotal_sen,pv.max_total_redemptions,pv.per_customer_limit,
             pv.requires_customer,pv.requires_student,pv.priority,pv.stackable,
             coalesce((SELECT jsonb_agg(jsonb_build_object(
@@ -314,6 +340,11 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
        JOIN myfin.promotion_versions pv
          ON pv.workspace_id=p.workspace_id AND pv.company_id=p.company_id
         AND pv.promotion_id=p.id AND pv.version=p.version
+       LEFT JOIN myfin.products reward
+         ON reward.company_id=p.company_id AND reward.id=pv.reward_product_id
+       LEFT JOIN myfin.product_variants reward_variant
+         ON reward_variant.company_id=p.company_id AND reward_variant.product_id=pv.reward_product_id
+        AND reward_variant.id=pv.reward_variant_id
        LEFT JOIN myfin.promotion_usage_counters pu
          ON pu.workspace_id=p.workspace_id AND pu.company_id=p.company_id AND pu.promotion_id=p.id
        LEFT JOIN myfin.promotion_customer_usage_counters pcu
@@ -331,6 +362,10 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
   promotions = await filterCampaignEligiblePromotions(c, promotions, {
     workspaceId, companyId, customerId, at, channel,
   });
+  if (voucher && promotions.some(item => item.id === voucher.promotionId && !item.rewardAvailable)) {
+    fail(400, 'voucher_invalid_or_unavailable');
+  }
+  promotions = promotions.filter(item => item.rewardAvailable);
   if (voucher && !promotions.some(item => item.id === voucher.promotionId)) fail(400, 'voucher_invalid_or_unavailable');
   if (!promotions.length) return [];
   const ids = promotions.map(item => item.id);
@@ -368,7 +403,7 @@ async function loadPromotions(c, { workspaceId, companyId, currencyCode, custome
       usage: voucher.usage,
     };
   }
-  return promotions.map(({ campaignLinks: _campaignLinks, ...promotion }) => promotion);
+  return promotions.map(({ campaignLinks: _campaignLinks, rewardAvailable: _rewardAvailable, ...promotion }) => promotion);
 }
 
 async function persistSnapshot(c, {
@@ -541,7 +576,7 @@ export async function createPricingSnapshot(c, input, options = {}) {
     fail(503, 'voucher_secret_unavailable');
   const lookupDigest = input.voucherCode ? voucherLookupDigest(options.voucherPepper, input.voucherCode) : null;
   const voucher = await loadVoucher(c, {
-    workspaceId, companyId, currencyCode, customerId, lookupDigest, at: pricedAt,
+    workspaceId, companyId, currencyCode, customerId, lookupDigest, at: pricedAt, channel,
   });
   const [lines, eligibility, promotions] = await Promise.all([
     catalogLines(c, companyId, requested, channel),
