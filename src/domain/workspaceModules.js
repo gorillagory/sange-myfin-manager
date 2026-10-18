@@ -34,7 +34,7 @@ const modules = [
     id: 'analytics',
     label: 'Analytics',
     pages: [
-      { path: '/analytics', title: 'Financial Analysis', description: 'Sales and cash, clearly.', icon: 'chart' },
+      { path: '/analytics', title: 'Financial Analysis', description: 'Performance, cash, products, stock, customers and reporting.', icon: 'chart' },
       { path: '/consolidation', title: 'Consolidation', description: 'Your companies, together.', icon: 'grid' },
       { path: '/marketing', title: 'Marketing', description: 'Turn offers into learning.', icon: 'spark' },
     ],

@@ -193,7 +193,7 @@ onBeforeUnmount(() => {
           <h1 id="workspace-page-title">{{ pageMeta.title }}</h1>
           <p>{{ pageMeta.description }}</p>
         </header>
-        <div class="ed-route-view"><router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="`${company.id}:${user.role}:${(user.module_grants||[]).join(',')}`" :class="{'ed-legacy':!['/overview','/pos','/orders','/storefront','/kitchen','/finance-sales','/payment-operations','/consolidation','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view></div>
+        <div class="ed-route-view"><router-view v-slot="{ Component }"><component v-if="canVisit(user,route.path)" :is="Component" :key="`${company.id}:${user.role}:${(user.module_grants||[]).join(',')}`" :class="{'ed-legacy':!['/overview','/pos','/orders','/storefront','/kitchen','/finance-sales','/payment-operations','/consolidation','/analytics','/settings','/integrations','/activity','/marketing','/expenses','/products','/stock','/procurement','/contacts','/users','/companies'].includes(route.path)}" /></router-view></div>
         <footer class="ed-footer"><span>MYFIN / EDITION<span v-if="Store.state.offlineStatus"> · {{ Store.state.offlineStatus }}</span></span><span>{{ company.name }} · {{ !Store.state.online||Store.state.fromCache?'Working from this device':'Connected to your workspace' }}</span></footer>
       </main>
     </div>

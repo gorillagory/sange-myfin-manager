@@ -63,7 +63,7 @@ watch(() => [company.value.id,Store.state.currentUser?.role,Store.state.online],
 
 <template>
   <section v-if="Store.can('financialReports')" class="report-automation">
-    <header class="ed-section-head"><div><div class="ed-eyebrow">AUTOMATED REPORTING</div><h2>Reports waiting when you need them.</h2><p class="ed-muted">Daily, weekly or monthly snapshots stay inside MyFin. Forecasts are advisory and never place stock orders.</p></div><button class="ed-btn" :disabled="loading||!Store.state.online" @click="load">{{ loading?'Loading…':'Refresh' }}</button></header>
+    <header class="ed-section-head"><div><div class="ed-eyebrow">AUTOMATED REPORTING</div><h2>Scheduled reports</h2><p class="ed-muted">Daily, weekly or monthly snapshots stay inside MyFin. Forecasts are advisory and never place stock orders.</p></div><button class="ed-btn" :disabled="loading||!Store.state.online" @click="load">{{ loading?'Loading…':'Refresh' }}</button></header>
     <p v-if="error" class="ed-notice error" role="alert">{{ error }}</p>
     <div class="report-automation-grid">
       <section>
