@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import { accessibleStorefrontText, normalizeStorefront, storefrontFontStack } from '../../domain/customerOrdering';
 import { loadStorefront } from '../../services/customerOrdering';
 
-const menu=ref(null),loading=ref(true),error=ref(''),actionError=ref(''),active=ref(0),qrImage=ref('');
+const menu=ref(null),loading=ref(true),error=ref(''),actionError=ref(''),active=ref(0),qrImage=ref(''),failedImages=ref(new Set());
 const carouselPaused=ref(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches??false);
 const shopUrl=computed(()=>`${location.origin}/shop`);
 const storefront=computed(()=>menu.value?.storefront||{});
@@ -20,10 +20,15 @@ const fulfillmentLabel=computed(()=>{
   const delivery=(menu.value?.deliveryZones||[]).length>0;
   return pickup&&delivery?'Pickup or delivery':delivery?'Delivery':'Pickup';
 });
-const displayInk=computed(()=>slide.value?.imageUrl?'#ffffff':accessibleStorefrontText(
+const imageKey=(scope,url)=>`${scope}:${String(url||'')}`;
+const imageAvailable=(scope,url)=>Boolean(url)&&!failedImages.value.has(imageKey(scope,url));
+function imageFailed(scope,url){const next=new Set(failedImages.value);next.add(imageKey(scope,url));failedImages.value=next;}
+const slideImageAvailable=computed(()=>imageAvailable(`slide:${slide.value?.id||''}`,slide.value?.imageUrl));
+const logoImageAvailable=computed(()=>imageAvailable('logo',storefront.value.logoUrl));
+const displayInk=computed(()=>slideImageAvailable.value?'#ffffff':accessibleStorefrontText(
   slide.value?.backgroundColor||'#17624d',storefront.value.theme?.textColor||'#ffffff'));
 const displayAccent=computed(()=>accessibleStorefrontText(
-  slide.value?.imageUrl?'#0d201d':slide.value?.backgroundColor||'#17624d',
+  slideImageAvailable.value?'#0d201d':slide.value?.backgroundColor||'#17624d',
   storefront.value.theme?.accentColor||'#d7a43b'));
 const displayStyle=computed(()=>({ '--display-accent':storefront.value.theme?.accentColor||'#d7a43b',
   '--display-accent-readable':displayAccent.value,
@@ -80,10 +85,8 @@ async function downloadBanner(){
   const [backdrop,logo,qrCode]=await Promise.all([
     loadCanvasImage(slide.value?.imageUrl),loadCanvasImage(storefront.value.logoUrl),loadCanvasImage(qrImage.value),
   ]);
-  if((slide.value?.imageUrl&&!backdrop)||(storefront.value.logoUrl&&!logo)||!qrCode){
-    actionError.value='The downloadable banner cannot include one of the configured images because its host blocks reuse. Print this banner instead, or use an image host that allows CORS.';
-    return;
-  }
+  const omittedConfiguredImage=(slide.value?.imageUrl&&!backdrop)||(storefront.value.logoUrl&&!logo);
+  if(!qrCode){actionError.value='The QR image could not be prepared. Refresh this display and try again.';return;}
   if(backdrop){drawCover(context,backdrop,0,0,1600,900);context.fillStyle='#0d201dbd';context.fillRect(0,0,1600,900);}
   const ink=backdrop?'#ffffff':accessibleStorefrontText(slide.value?.backgroundColor||'#17624d',storefront.value.theme?.textColor||'#ffffff');
   const font=storefrontFontStack(storefront.value.theme?.fontFamily);
@@ -96,7 +99,7 @@ async function downloadBanner(){
   context.fillStyle='#fff';context.beginPath();context.roundRect(1190,170,320,430,24);context.fill();if(qrCode)context.drawImage(qrCode,1220,200,260,260);
   context.fillStyle='#17251f';context.textAlign='center';context.font='700 24px system-ui';context.fillText('SCAN TO ORDER',1350,510);context.font='400 18px system-ui';context.fillText(shopUrl.value,1350,550);context.textAlign='left';
   context.font=`700 28px ${font}`;context.fillStyle=ink;context.fillText(`ORDER ONLINE · ${fulfillmentLabel.value.toUpperCase()}`,90,830);
-  try{const link=document.createElement('a');link.href=canvas.toDataURL('image/png');link.download=`${(storefront.value.name||'shop').replace(/[^a-z0-9]+/gi,'-').toLowerCase()}-order-banner.png`;link.click();}
+  try{const link=document.createElement('a');link.href=canvas.toDataURL('image/png');link.download=`${(storefront.value.name||'shop').replace(/[^a-z0-9]+/gi,'-').toLowerCase()}-order-banner.png`;link.click();if(omittedConfiguredImage)actionError.value='Banner downloaded with the unavailable configured image omitted. Upload it to the storefront asset library to include it next time.';}
   catch{actionError.value='The banner image could not be downloaded. Check that the configured image host allows reuse, or print the banner instead.';}
 }
 onMounted(async()=>{await load();refreshTimer=setInterval(()=>load(true),120000);document.addEventListener('visibilitychange',refreshVisible);});
@@ -108,9 +111,9 @@ onBeforeUnmount(()=>{if(timer)clearInterval(timer);if(refreshTimer)clearInterval
     <div v-if="loading" class="display-state">Opening storefront display…</div>
     <div v-else-if="error" class="display-state"><strong>Display unavailable</strong><span>{{ error }}</span><button @click="load">Try again</button></div>
     <section v-else-if="slide" class="display-slide" :style="{backgroundColor:slide.backgroundColor}">
-      <img v-if="slide.imageUrl" class="display-backdrop" :src="slide.imageUrl" alt="" referrerpolicy="no-referrer">
-      <div v-if="slide.imageUrl" class="display-shade"></div>
-      <header><img v-if="storefront.logoUrl" :src="storefront.logoUrl" alt="" referrerpolicy="no-referrer"><strong>{{ storefront.name }}</strong><span>Order online · {{ fulfillmentLabel }}</span></header>
+      <img v-if="slideImageAvailable" class="display-backdrop" :src="slide.imageUrl" alt="" referrerpolicy="no-referrer" @error="imageFailed(`slide:${slide.id}`,slide.imageUrl)">
+      <div v-if="slideImageAvailable" class="display-shade"></div>
+      <header><img v-if="logoImageAvailable" :src="storefront.logoUrl" alt="" referrerpolicy="no-referrer" @error="imageFailed('logo',storefront.logoUrl)"><strong>{{ storefront.name }}</strong><span>Order online · {{ fulfillmentLabel }}</span></header>
       <article><span>{{ slide.badge }}</span><h1>{{ slide.title }}</h1><p>{{ slide.description }}</p></article>
       <aside class="display-qr"><img :src="qrImage" alt="QR code for the online shop"><strong>Scan to order</strong><small>{{ shopUrl }}</small><a :href="shopUrl">Open menu</a></aside>
       <nav v-if="slides.length>1" aria-label="Promotions"><button class="display-carousel-toggle" :aria-label="carouselPaused ? 'Resume promotion carousel' : 'Pause promotion carousel'" @click="toggleCarousel">{{ carouselPaused ? 'Play' : 'Pause' }}</button><button v-for="(item,index) in slides" :key="item.id" :class="{active:index===active}" :aria-label="`Show ${item.title}`" @click="select(index)"></button></nav>
