@@ -102,6 +102,9 @@ test('voucher create sends plaintext once while edits cannot rotate a code', () 
   assert.equal('code' in edited, false);
   assert.equal(edited.expectedVersion, 4);
   assert.equal(voucherPayload({ code:'staff', enabled:true, validFrom:'2026-10-09T00:00:00Z' }, { creating:true }).code,'STAFF');
+  assert.equal(voucherPayload({ code:'STAFF', expectedVersion:Number.NaN, validFrom:'2026-10-09' }, { creating:true }).expectedVersion, 0);
+  assert.equal(voucherPayload({ code:'STAFF', expectedVersion:42, validFrom:'2026-10-09' }, { creating:true }).expectedVersion, 0);
+  assert.throws(() => voucherPayload({ expectedVersion:Number.NaN, validFrom:'2026-10-09' }), /Voucher version/);
   for (const code of ['bad code','-STAFF','STAFF-'])
     assert.throws(() => voucherPayload({ code, validFrom:'2026-10-09' }, { creating:true }), /start and end/);
 });
@@ -127,5 +130,9 @@ test('student programs UI explains live storefront pricing and never captures id
   assert.match(component, /type="text" minlength="3"/);
   assert.match(component, /Copy code/);
   assert.match(component, /Download QR/);
+  assert.match(offers, /const existing=row\?\.id&&row\?\.promotionId\?row:null/);
+  assert.match(offers, /localError\.value=!existing&&!voucherOffers\.value\.some/);
+  assert.match(offers, /creating&&!offer\)throw new Error\('Choose a campaign offer\.'\)/);
+  assert.equal(offers.match(/Choose a campaign offer\./g)?.length, 2);
   assert.doesNotMatch(component, /type="file"|accept="image|FormData/);
 });

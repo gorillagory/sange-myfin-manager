@@ -29,9 +29,9 @@ const shareTarget=row=>promotionShareTarget(row);
 const shareIsLink=computed(()=>/^https?:\/\//i.test(shareTarget(share.value||{})));
 
 function openVoucher(row=null,promotionId=''){
-  const selected=promotionId||row?.promotionId||voucherOffers.value[0]?.id||'';
-  voucher.value=row?{id:row.id,promotionId:selected,campaignId:row.campaignId||'',codeHint:row.codeHint||row.code_hint,displayCode:codeFor(row),expectedVersion:Number(row.version),enabled:!!row.enabled,validFrom:localTime(row.validFrom),validUntil:row.validUntil?localTime(row.validUntil):'',maxRedemptions:row.maxRedemptions??'',perCustomerLimit:row.perCustomerLimit??''}:{promotionId:selected,...voucherWindow(selected),code:'',expectedVersion:0,enabled:true,maxRedemptions:'',perCustomerLimit:'1'};
-  localError.value='';notice.value='';
+  const existing=row?.id&&row?.promotionId?row:null,selected=promotionId||existing?.promotionId||voucherOffers.value[0]?.id||'';
+  voucher.value=existing?{id:existing.id,promotionId:selected,campaignId:existing.campaignId||'',codeHint:existing.codeHint||existing.code_hint,displayCode:codeFor(existing),expectedVersion:Number(existing.version),enabled:!!existing.enabled,validFrom:localTime(existing.validFrom),validUntil:existing.validUntil?localTime(existing.validUntil):'',maxRedemptions:existing.maxRedemptions??'',perCustomerLimit:existing.perCustomerLimit??''}:{promotionId:selected,...voucherWindow(selected),code:'',expectedVersion:0,enabled:true,maxRedemptions:'',perCustomerLimit:'1'};
+  localError.value=!existing&&!voucherOffers.value.some(offer=>offer.id===selected)?'Choose a campaign offer.':'';notice.value='';
 }
 function voucherOfferChanged(){if(voucher.value&&!voucher.value.id)Object.assign(voucher.value,voucherWindow(voucher.value.promotionId));}
 function generateCode(){
@@ -40,7 +40,9 @@ function generateCode(){
 }
 function saveVoucher(){
   try{
-    const creating=!voucher.value.id,promotionId=voucher.value.promotionId,offer=voucherOffers.value.find(row=>row.id===promotionId),campaignId=voucher.value.campaignId||campaignsForOffer(offer||{})[0]?.id||'',payload=voucherPayload({...voucher.value,campaignId},{creating});
+    const creating=!voucher.value.id,promotionId=voucher.value.promotionId,offer=voucherOffers.value.find(row=>row.id===promotionId);
+    if(creating&&!offer)throw new Error('Choose a campaign offer.');
+    const campaignId=voucher.value.campaignId||campaignsForOffer(offer||{})[0]?.id||'',payload=voucherPayload({...voucher.value,campaignId},{creating});
     emit('save-voucher',{promotionId,voucherId:voucher.value.id||'',payload,done:saved=>{
       const result={...(saved||{}),promotionId,displayCode:promotionCode(saved||{})||payload.code};
       voucher.value=null;

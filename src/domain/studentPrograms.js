@@ -164,7 +164,7 @@ export function voucherPayload(input = {}, { creating = false } = {}) {
   const validUntil = isoTime(input.validUntil, 'Voucher expiry', { nullable:true });
   if (validUntil && new Date(validUntil) <= new Date(validFrom)) throw new Error('Voucher expiry must be after its start.');
   const payload = {
-    expectedVersion: integer(input.expectedVersion ?? 0, 'Voucher version', { min: 0 }),
+    expectedVersion: creating ? 0 : integer(input.expectedVersion ?? 0, 'Voucher version', { min: 0 }),
     enabled: boolean(input.enabled),
     validFrom,
     validUntil,

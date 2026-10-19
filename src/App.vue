@@ -14,6 +14,7 @@ const toast = computed(() => Store.state.notification);
 const route = useRoute();
 const customerSurface = computed(() => route.meta.surface === 'customer');
 watch(customerSurface, customer => { if (!customer) Store.init(); }, { immediate: true });
+const applyAppUpdate = () => window.dispatchEvent(new Event('myfin:apply-app-update'));
 
 // --- VIEW LOGIC (Returning strings to match your original structure) ---
 const currentView = computed(() => {
@@ -37,6 +38,16 @@ const currentView = computed(() => {
   <div class="edition-app min-h-screen">
     <RouterView v-if="customerSurface" />
     <template v-else>
+
+    <aside v-if="Store.state.appUpdateAvailable" class="app-update-prompt" aria-label="App update" aria-live="polite">
+      <div>
+        <strong>A MyFin update is ready.</strong>
+        <span>{{ Store.state.appUpdateMessage || 'Finish your current task, then update when it is convenient.' }}</span>
+      </div>
+      <button class="ed-btn primary" type="button" :disabled="Store.state.appUpdateApplying" @click="applyAppUpdate">
+        {{ Store.state.appUpdateApplying ? 'Updating…' : 'Update MyFin' }}
+      </button>
+    </aside>
     
     <Transition name="fade">
         <div v-if="Store.state.isLoading" class="spinner-overlay">
@@ -124,4 +135,29 @@ const currentView = computed(() => {
     animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.app-update-prompt {
+    position: fixed;
+    left: 24px;
+    bottom: 24px;
+    z-index: 99998;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    max-width: min(560px, calc(100vw - 48px));
+    padding: 16px 18px;
+    border: 1px solid var(--ed-line, #d8ded7);
+    border-radius: 6px;
+    background: var(--ed-paper, #fff);
+    color: var(--ed-ink, #172c26);
+    box-shadow: 0 10px 35px #172c2630;
+}
+.app-update-prompt div { min-width: 0; }
+.app-update-prompt strong,
+.app-update-prompt span { display: block; }
+.app-update-prompt span { margin-top: 3px; color: var(--ed-muted, #66736f); font-size: 12px; line-height: 1.45; }
+.app-update-prompt .ed-btn { flex: 0 0 auto; }
+@media (max-width: 600px) {
+    .app-update-prompt { left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); max-width: none; align-items: stretch; flex-direction: column; gap: 12px; }
+}
 </style>

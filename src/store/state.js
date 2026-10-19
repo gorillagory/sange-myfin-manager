@@ -25,6 +25,9 @@ export const state = reactive({
     dataLoading: false,
     dataError: '',
     offlineStatus: '',
+    appUpdateAvailable: false,
+    appUpdateApplying: false,
+    appUpdateMessage: '',
     pendingSales: [],
     receiptReviews: [],
     syncing: false
