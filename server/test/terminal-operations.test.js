@@ -75,6 +75,50 @@ test('terminal and shift capabilities preserve role delegation boundaries',()=>{
   assert.equal(operator.shiftManage,false);
 });
 
+test('terminal capability arrays are serialized as JSON for PostgreSQL jsonb writes',async()=>{
+  const routes=new Map(),queries=[];
+  const app={};
+  for(const method of ['get','post','put','patch','delete'])
+    app[method]=(path,handler)=>routes.set(`${method.toUpperCase()} ${path}`,handler);
+  const terminal={
+    id:'terminal-a',company_id:'company-a',store_id:'store-a',store_location_id:'location-a',
+    code:'TILL-1',name:'Till 1',type:'pos',status:'pending',capabilities:['pos'],
+    device_profile:{},credential_version:0,version:1,
+  };
+  const c={query:async(sql,params=[])=>{
+    queries.push({sql,params});
+    if(sql.includes('SELECT l.id FROM myfin.store_locations'))return {rows:[{id:'location-a'}],rowCount:1};
+    if(sql.includes('INSERT INTO myfin.terminals'))return {rows:[{...terminal,capabilities:JSON.parse(params[7])}],rowCount:1};
+    if(sql.includes('SELECT terminal_enforcement_enabled'))return {rows:[{terminal_enforcement_enabled:false}],rowCount:1};
+    if(sql.includes('SELECT * FROM myfin.terminals'))return {rows:[terminal],rowCount:1};
+    if(sql.includes('UPDATE myfin.terminals SET store_id='))return {rows:[{
+      ...terminal,capabilities:JSON.parse(params[8]),version:2,
+    }],rowCount:1};
+    return {rows:[],rowCount:0};
+  }};
+  const scoped=(_req,work)=>work(c,'company-a');
+  registerTerminalOperations(app,{db:{},scoped,audit:async()=>{},authOptions:{pos:{sessionSecret:'secret'}}});
+  const identity={id:'owner-a',role:'workspace_owner'};
+  const created=await routes.get('POST /api/companies/:company/store-network/terminals')({
+    authLevel:'password',identity,body:{storeId:'store-a',locationId:'location-a',code:'TILL-1',
+      name:'Till 1',type:'multi_use',capabilities:['pos','stock','pos']},
+  });
+  assert.deepEqual(created.terminal.capabilities,['pos','stock']);
+  const insert=queries.find(({sql})=>sql.includes('INSERT INTO myfin.terminals'));
+  assert.match(insert.sql,/\$8::jsonb/);
+  assert.equal(insert.params[7],'["pos","stock"]');
+  assert.equal(Array.isArray(insert.params[7]),false);
+
+  const updated=await routes.get('PATCH /api/companies/:company/store-network/terminals/:id')({
+    authLevel:'password',identity,params:{id:'terminal-a'},body:{version:1,capabilities:['admin','stock']},
+  });
+  assert.deepEqual(updated.terminal.capabilities,['admin','stock']);
+  const update=queries.find(({sql})=>sql.includes('UPDATE myfin.terminals SET store_id='));
+  assert.match(update.sql,/capabilities=\$9::jsonb/);
+  assert.equal(update.params[8],'["admin","stock"]');
+  assert.equal(Array.isArray(update.params[8]),false);
+});
+
 test('migrations enforce complete store, terminal, staff and register contexts',async()=>{
   const [stores,terminals,shifts]=await Promise.all([
     source('db/migrations/0049_store_network.sql'),source('db/migrations/0050_terminal_enrollment.sql'),

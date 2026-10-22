@@ -641,7 +641,8 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       WHERE l.company_id=$1 AND l.store_id=$2 AND l.id=$3 AND l.status='active'`,[co,body.storeId,body.locationId])).rows[0];
     if(!parent)v.fail(409,'active_store_location_required');
     const row=(await c.query(`INSERT INTO myfin.terminals(company_id,id,store_id,store_location_id,code,name,type,capabilities,created_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[co,id,body.storeId,body.locationId,body.code,body.name,body.type,capabilities,req.identity.id])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) RETURNING *`,[co,id,body.storeId,body.locationId,body.code,body.name,body.type,
+      JSON.stringify(capabilities),req.identity.id])).rows[0];
     await c.query(`INSERT INTO myfin.terminal_events(company_id,id,terminal_id,action,actor_id,details)
       VALUES($1,$2,$3,'created',$4,$5)`,[co,randomUUID(),id,req.identity.id,{storeId:body.storeId,locationId:body.locationId}]);
     await audit(c,req.identity,co,'Create terminal',row.name,row.id);return {terminal:terminalOutput(row)};
@@ -672,9 +673,9 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
         WHERE company_id=$1 AND terminal_id=$2 AND claimed_at IS NULL`,[co,id]);
     }
     const row=(await c.query(`UPDATE myfin.terminals SET store_id=$3,store_location_id=$4,code=$5,name=$6,type=$7,
-      status=$8,capabilities=$9,version=version+1,updated_at=now() WHERE company_id=$1 AND id=$2 RETURNING *`,
+      status=$8,capabilities=$9::jsonb,version=version+1,updated_at=now() WHERE company_id=$1 AND id=$2 RETURNING *`,
     [co,id,body.storeId??prior.store_id,body.locationId??prior.store_location_id,body.code??prior.code,body.name??prior.name,
-      body.type??prior.type,body.status??prior.status,nextCapabilities])).rows[0];
+      body.type??prior.type,body.status??prior.status,JSON.stringify(nextCapabilities)])).rows[0];
     await c.query(`INSERT INTO myfin.terminal_events(company_id,id,terminal_id,action,actor_id,details)
       VALUES($1,$2,$3,'updated',$4,$5)`,[co,randomUUID(),id,req.identity.id,{status:row.status,version:Number(row.version)}]);
     await audit(c,req.identity,co,'Update terminal',row.name,row.id);return {terminal:terminalOutput(row)};
