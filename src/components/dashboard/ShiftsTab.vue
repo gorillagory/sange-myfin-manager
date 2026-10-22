@@ -1,0 +1,66 @@
+<script setup>
+import { computed, onMounted, ref, watch } from 'vue';
+import { Store } from '../../store';
+import { cashSen, formatCashSen } from '../../domain/storeNetwork';
+import Icon from '../ui/EditionIcon.vue';
+import Modal from '../ui/EditionModal.vue';
+
+const loading=ref(false),busy=ref(false),error=ref(''),dialog=ref(''),amount=ref(''),kind=ref('paid_in'),reason=ref(''),businessDate=ref('');
+const cashRequestId=ref(''),closeRequestId=ref('');
+const companyId=computed(()=>Store.state.selectedCompany?.id);
+const context=computed(()=>Store.state.terminalContext || {});
+const shifts=computed(()=>Store.state.registerShifts || []);
+const currentTerminal=computed(()=>context.value.terminal || null);
+const registerShift=computed(()=>Store.state.shiftContext.registerShift || shifts.value.find(shift=>shift.status==='open' && (shift.terminalId||shift.terminal_id)===currentTerminal.value?.id) || null);
+const workShift=computed(()=>Store.state.shiftContext.workShift);
+const canOperate=computed(()=>Boolean(context.value.enrolled && Store.can('shiftOperate')));
+const currency=computed(()=>Store.state.selectedCompany?.preferences?.currency || 'MYR');
+const terminalPlace=computed(()=>[context.value.store?.name,context.value.location?.name].filter(Boolean).join(' · '));
+const pendingReceipts=computed(()=>Store.state.pendingSales.length);
+const expectedCash=computed(()=>registerShift.value?.currentExpectedCashSen ?? registerShift.value?.current_expected_cash_sen ?? registerShift.value?.expectedCashSen ?? registerShift.value?.expected_cash_sen ?? 0);
+
+function dateTime(value){if(!value)return '—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':date.toLocaleString();}
+function shiftId(shift=registerShift.value){return shift?.id || shift?.registerShiftId;}
+function openDialog(name){dialog.value=name;amount.value='';reason.value='';kind.value='paid_in';error.value='';if(name==='cash')cashRequestId.value=crypto.randomUUID();if(name==='close')closeRequestId.value=crypto.randomUUID();}
+function closeDialog(){if(!busy.value){dialog.value='';error.value='';}}
+async function load(){if(!companyId.value)return;loading.value=true;error.value='';try{await Store.refreshRegisterShifts();}catch(failure){error.value=failure.message;}finally{loading.value=false;}}
+async function act(action,body={}){busy.value=true;error.value='';try{await Store.shiftAction(action,body);Store.notify({open:'Register opened.',join:'Register handed over.',cash:'Cash entry recorded.',close:'Register closed.',clockIn:'Work shift started.',break:'Break started.',resume:'Work shift resumed.',clockOut:'Work shift completed.'}[action] || 'Shift updated.');dialog.value='';}catch(failure){error.value={terminal_required:'Pair this browser before starting a shift.',terminal_enrollment_required:'Pair this browser before starting a shift.',terminal_staff_session_required:'Refresh this terminal session and try again.',terminal_location_not_assigned:'Your account is not assigned to this terminal’s work area.',staff_shift_required:'Clock in before opening the register.',staff_shift_open_elsewhere:'You already have a work shift open at another store area.',staff_shift_not_open:'This work shift is no longer open. Refresh and try again.',staff_shift_not_on_break:'This work shift is no longer on break. Refresh and try again.',register_shift_required:'Open or join a register first.',register_shift_not_open:'This register is no longer open. Refresh and try again.',register_shift_must_close_first:'Close the register before clocking out.',cash_entry_request_changed:'This retry no longer matches the original cash entry. Close the dialog and start a new entry.',pending_receipts_must_resolve_first:'Resolve every pending payment review for this register before closing it.',register_variance_reason_required:'Explain the difference between expected and counted cash.',register_variance_manager_required:'A manager or owner must approve a cash variance.',unsynced_receipts:'Sync every paid receipt before closing this register.'}[failure.message] || failure.message;}finally{busy.value=false;}}
+function submitOpen(){const value=cashSen(amount.value);if(value===null){error.value='Enter a valid opening cash amount.';return;}act('open',{openingCashSen:value,...(businessDate.value?{businessDate:businessDate.value}:{})});}
+function submitCash(){const value=cashSen(amount.value);if(value===null||value===0){error.value='Enter an amount greater than zero.';return;}if(!reason.value.trim()){error.value='Add a reason for this cash entry.';return;}act('cash',{requestId:cashRequestId.value,registerShiftId:shiftId(),kind:kind.value,amountSen:value,reason:reason.value.trim()});}
+function submitClose(){const value=cashSen(amount.value);if(value===null){error.value='Enter the counted cash amount.';return;}if(value!==Number(expectedCash.value)&&reason.value.trim().length<3){error.value='Explain the cash variance in at least three characters.';return;}act('close',{requestId:closeRequestId.value,registerShiftId:shiftId(),countedCashSen:value,...(reason.value.trim()?{varianceReason:reason.value.trim()}:{})});}
+
+watch(companyId,load);onMounted(load);
+</script>
+
+<template>
+  <section class="ed-page mf-shifts-page">
+    <header class="ed-page-head"><div><div class="ed-eyebrow">PEOPLE &amp; CASH</div><h1>One terminal. A clear handover.</h1><p>Work attendance, terminal control, and register cash each keep their own history.</p></div><button class="ed-btn" :disabled="loading" @click="load"><Icon name="cloud"/>Refresh</button></header>
+    <p v-if="error && !dialog" class="ed-notice error" role="alert"><Icon name="alert"/><span>{{ error }}</span></p>
+    <div v-if="loading" class="ed-empty" role="status">Loading terminal shifts…</div>
+    <template v-else>
+      <div v-if="!context.enrolled" class="ed-notice warning"><Icon name="alert"/><div><strong>This browser is not an enrolled terminal.</strong>Shift attribution needs a reviewed store and area. <router-link class="ed-link" to="/terminal-setup">Pair this browser</router-link></div></div>
+      <div v-else class="mf-terminal-banner"><span class="ed-terminal-glyph"><Icon name="settings"/></span><div><div class="ed-eyebrow">CURRENT TERMINAL</div><h2>{{ currentTerminal.name }}</h2><p>{{ terminalPlace }} · {{ currentTerminal.code }}</p></div><span class="ed-pill">{{ currentTerminal.status }}</span><router-link class="ed-btn small" to="/terminal-setup">Terminal details</router-link></div>
+
+      <div class="mf-shift-grid">
+        <article class="ed-card mf-shift-card">
+          <header><div><div class="ed-eyebrow">STAFF WORK SHIFT</div><h2>{{ workShift ? (workShift.status==='on_break'?'On break':'Clocked in') : 'Not clocked in' }}</h2></div><span class="ed-pill" :class="{warning:workShift?.status==='on_break'}">{{ workShift?.status?.replaceAll('_',' ') || 'closed' }}</span></header>
+          <dl><div><dt>Staff</dt><dd>{{ workShift?.staffName || Store.state.currentUser?.username || Store.state.currentUser?.email }}</dd></div><div><dt>Clocked in</dt><dd>{{ dateTime(workShift?.openedAt || workShift?.clockedInAt) }}</dd></div><div><dt>Store</dt><dd>{{ context.store?.name || '—' }}</dd></div></dl>
+          <div class="ed-actions"><button v-if="!workShift || workShift.status==='closed'" class="ed-btn primary" :disabled="busy||!canOperate" @click="act('clockIn')">Clock in</button><button v-else-if="workShift.status==='on_break'" class="ed-btn primary" :disabled="busy||!canOperate" @click="act('resume')">Resume shift</button><button v-else class="ed-btn" :disabled="busy||!canOperate" @click="act('break')">Start break</button><button v-if="workShift&&workShift.status!=='closed'" class="ed-btn" :disabled="busy||!canOperate" @click="act('clockOut')">Clock out</button></div>
+        </article>
+
+        <article class="ed-card mf-shift-card">
+          <header><div><div class="ed-eyebrow">REGISTER SHIFT</div><h2>{{ registerShift ? 'Register open' : 'Register closed' }}</h2></div><span class="ed-pill" :class="{warning:!registerShift}">{{ registerShift?.status || 'closed' }}</span></header>
+          <dl><div><dt>Opened by</dt><dd>{{ registerShift?.openedByName || registerShift?.operatorName || '—' }}</dd></div><div><dt>Opening float</dt><dd>{{ formatCashSen(registerShift?.openingCashSen ?? registerShift?.opening_cash_sen,currency) }}</dd></div><div><dt>Expected cash</dt><dd>{{ formatCashSen(expectedCash,currency) }}</dd></div></dl>
+          <div class="ed-actions"><button v-if="!registerShift" class="ed-btn primary" :disabled="busy||!canOperate" @click="openDialog('open')">Open register</button><template v-else><button class="ed-btn" :disabled="busy||!canOperate" @click="act('join',{registerShiftId:shiftId()})">Take over register</button><button class="ed-btn" :disabled="busy||!canOperate" @click="openDialog('cash')">Cash paid in / out</button><button class="ed-btn primary" :disabled="busy||!canOperate||pendingReceipts>0" @click="openDialog('close')">Close &amp; count</button></template></div>
+          <p v-if="pendingReceipts" class="ed-notice warning"><Icon name="cloud"/><span>{{ pendingReceipts }} paid receipt{{ pendingReceipts===1?' is':'s are' }} waiting to sync. Resolve them before closing this register.</span></p>
+        </article>
+      </div>
+
+      <section class="ed-section"><div class="ed-section-head"><div><h2>Register history</h2><small>Cash corrections and handovers are kept as events instead of rewriting prior facts.</small></div></div><div v-if="shifts.length" class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Business date</th><th>Terminal</th><th>Opened</th><th>Closed</th><th>Counted</th><th>Variance</th><th>Status</th><th></th></tr></thead><tbody><tr v-for="shift in shifts" :key="shift.id"><td>{{ shift.businessDate || shift.business_date || '—' }}</td><td><strong>{{ shift.terminalName || `Terminal ${String(shift.terminalId||shift.terminal_id||'').slice(0,8)}` }}</strong><small>{{ shift.locationName || 'Recorded location' }}</small></td><td>{{ dateTime(shift.openedAt || shift.opened_at) }}<small>{{ shift.openedByName }}</small></td><td>{{ dateTime(shift.closedAt || shift.closed_at) }}</td><td>{{ shift.status==='open'?'—':formatCashSen(shift.countedCashSen??shift.counted_cash_sen,currency) }}</td><td>{{ shift.status==='open'?'—':formatCashSen(shift.varianceSen??shift.variance_sen,currency) }}</td><td><span class="ed-pill" :class="{warning:shift.status==='open'}">{{ shift.status }}</span></td><td><button v-if="shift.status==='open' && shiftId(shift)!==shiftId() && (shift.terminalId||shift.terminal_id)===currentTerminal?.id" class="ed-btn small" :disabled="!canOperate" @click="act('join',{registerShiftId:shiftId(shift)})">Join</button></td></tr></tbody></table></div><div v-else class="ed-empty"><Icon name="clock"/><h3>No register history yet.</h3><p>Open this terminal's first register shift when the till is ready.</p></div></section>
+    </template>
+
+    <Modal v-if="dialog==='open'" title="Open register" :busy="busy" @close="closeDialog"><div class="ed-form-grid"><label class="ed-field"><span>Opening cash</span><input v-model="amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></label><label class="ed-field"><span>Business date · optional</span><input v-model="businessDate" type="date"></label></div><p v-if="error" class="ed-notice error">{{ error }}</p><template #actions><button class="ed-btn" @click="closeDialog">Cancel</button><button class="ed-btn primary" :disabled="busy" @click="submitOpen">{{ busy?'Opening…':'Open register' }}</button></template></Modal>
+    <Modal v-if="dialog==='cash'" title="Record register cash" :busy="busy" @close="closeDialog"><div class="ed-form-grid"><label class="ed-field"><span>Entry type</span><select v-model="kind"><option value="paid_in">Cash paid in</option><option value="paid_out">Cash paid out</option><option value="adjustment">Count adjustment</option></select></label><label class="ed-field"><span>Amount</span><input v-model="amount" type="number" min="0.01" step="0.01" inputmode="decimal"></label><label class="ed-field wide"><span>Reason</span><textarea v-model="reason" placeholder="Why was cash moved?"></textarea></label></div><p v-if="error" class="ed-notice error">{{ error }}</p><template #actions><button class="ed-btn" @click="closeDialog">Cancel</button><button class="ed-btn primary" :disabled="busy" @click="submitCash">{{ busy?'Recording…':'Record cash entry' }}</button></template></Modal>
+    <Modal v-if="dialog==='close'" title="Close and count register" :busy="busy" @close="closeDialog"><p>Expected cash: <strong>{{ formatCashSen(expectedCash,currency) }}</strong></p><label class="ed-field"><span>Counted cash</span><input v-model="amount" type="number" min="0" step="0.01" inputmode="decimal"></label><label class="ed-field" style="margin-top:16px"><span>Variance reason · required when the count differs</span><textarea v-model="reason"></textarea></label><p v-if="error" class="ed-notice error">{{ error }}</p><template #actions><button class="ed-btn" @click="closeDialog">Cancel</button><button class="ed-btn primary" :disabled="busy||pendingReceipts>0" @click="submitClose">{{ busy?'Closing…':'Close register' }}</button></template></Modal>
+  </section>
+</template>

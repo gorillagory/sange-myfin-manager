@@ -96,20 +96,35 @@ async function locationFor(c, companyId, input) {
   let row;
   if (input.locationToken) {
     row = (await c.query(
-      `SELECT * FROM myfin.shop_locations
-        WHERE company_id=$1 AND token_digest=$2 AND active FOR SHARE`,
+      `SELECT l.* FROM myfin.shop_locations l
+        WHERE l.company_id=$1 AND l.token_digest=$2 AND l.active
+          AND (l.store_id IS NULL OR EXISTS(SELECT 1 FROM myfin.stores s
+            JOIN myfin.store_locations sl ON sl.company_id=s.company_id AND sl.store_id=s.id
+              AND sl.id=l.store_location_id AND sl.status='active'
+            WHERE s.company_id=l.company_id AND s.id=l.store_id AND s.status='active'))
+        FOR SHARE OF l`,
       [companyId, digest(input.locationToken)],
     )).rows[0];
   } else if (input.locationId) {
     row = (await c.query(
-      `SELECT * FROM myfin.shop_locations WHERE company_id=$1 AND id=$2 AND active FOR SHARE`,
+      `SELECT l.* FROM myfin.shop_locations l WHERE l.company_id=$1 AND l.id=$2 AND l.active
+        AND (l.store_id IS NULL OR EXISTS(SELECT 1 FROM myfin.stores s
+          JOIN myfin.store_locations sl ON sl.company_id=s.company_id AND sl.store_id=s.id
+            AND sl.id=l.store_location_id AND sl.status='active'
+          WHERE s.company_id=l.company_id AND s.id=l.store_id AND s.status='active'))
+        FOR SHARE OF l`,
       [companyId, input.locationId],
     )).rows[0];
     if (row?.fulfillment_mode === 'table' || input.serviceMode === 'table') row = null;
   } else {
     const result = await c.query(
-      `SELECT * FROM myfin.shop_locations
-        WHERE company_id=$1 AND active AND fulfillment_mode IN ('pickup','both') ORDER BY created_at,id LIMIT 2`,
+      `SELECT l.* FROM myfin.shop_locations l
+        WHERE l.company_id=$1 AND l.active AND l.fulfillment_mode IN ('pickup','both')
+          AND (l.store_id IS NULL OR EXISTS(SELECT 1 FROM myfin.stores s
+            JOIN myfin.store_locations sl ON sl.company_id=s.company_id AND sl.store_id=s.id
+              AND sl.id=l.store_location_id AND sl.status='active'
+            WHERE s.company_id=l.company_id AND s.id=l.store_id AND s.status='active'))
+        ORDER BY l.created_at,l.id LIMIT 2`,
       [companyId],
     );
     if (result.rowCount === 1) row = result.rows[0];
@@ -538,13 +553,22 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
       const config = await settings(c, context.company_id);
       let selectedLocation = null;
       if (query.locationToken) selectedLocation = (await c.query(
-        `SELECT * FROM myfin.shop_locations WHERE company_id=$1 AND token_digest=$2 AND active`,
+        `SELECT l.* FROM myfin.shop_locations l WHERE l.company_id=$1 AND l.token_digest=$2 AND l.active
+          AND (l.store_id IS NULL OR EXISTS(SELECT 1 FROM myfin.stores s
+            JOIN myfin.store_locations sl ON sl.company_id=s.company_id AND sl.store_id=s.id
+              AND sl.id=l.store_location_id AND sl.status='active'
+            WHERE s.company_id=l.company_id AND s.id=l.store_id AND s.status='active'))`,
         [context.company_id, digest(query.locationToken)],
       )).rows[0] || null;
       if (query.locationToken && !selectedLocation) v.fail(400, 'invalid_shop_location');
       const locations = (await c.query(
-        `SELECT id,name,fulfillment_mode,table_label,pickup_instructions FROM myfin.shop_locations
-          WHERE company_id=$1 AND active AND fulfillment_mode IN ('pickup','both') ORDER BY created_at,id`, [context.company_id],
+        `SELECT l.id,l.name,l.fulfillment_mode,l.table_label,l.pickup_instructions FROM myfin.shop_locations l
+          WHERE l.company_id=$1 AND l.active AND l.fulfillment_mode IN ('pickup','both')
+            AND (l.store_id IS NULL OR EXISTS(SELECT 1 FROM myfin.stores s
+              JOIN myfin.store_locations sl ON sl.company_id=s.company_id AND sl.store_id=s.id
+                AND sl.id=l.store_location_id AND sl.status='active'
+              WHERE s.company_id=l.company_id AND s.id=l.store_id AND s.status='active'))
+          ORDER BY l.created_at,l.id`, [context.company_id],
       )).rows;
       const deliveryZones = config.delivery_enabled ? (await c.query(
         `SELECT id,name,fee_sen,minimum_order_sen,lead_time_minutes,service_instructions

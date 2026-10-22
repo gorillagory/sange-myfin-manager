@@ -262,9 +262,9 @@ async function savedPaidOrder(c, companyId, orderId, saleId, who) {
 }
 
 async function completePaidOrder(c, { order, lines, saleInput, who, requestId, requestDigest,
-  note, occurredAt, checkout, audit, auditAction }) {
+  note, occurredAt, checkout, audit, auditAction, checkoutOptions={} }) {
   const sale = await checkout(c, who, order.company_id, saleInput, null,
-    { reservationOrderId: order.id, acceptedOrderQuote: true, serverNow: occurredAt });
+    { reservationOrderId: order.id, acceptedOrderQuote: true, serverNow: occurredAt, ...checkoutOptions });
   await c.query(
     `INSERT INTO myfin.customer_order_payments(company_id,order_id,sale_id,actor_id,request_id,request_digest)
      VALUES($1,$2,$3,$4,$5,$6)`,
@@ -309,7 +309,7 @@ async function completePaidOrder(c, { order, lines, saleInput, who, requestId, r
     fulfillment_status: carryStatus }, lines), sale, saleId: saleInput.id };
 }
 
-export function registerCustomerOrders(app, { scoped, audit, checkout }) {
+export function registerCustomerOrders(app, { scoped, audit, checkout, ensureTerminalActor=async()=>{} }) {
   app.get('/api/companies/:company/customer-orders/summary', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'checkout');
     await expireCompany(c, companyId);
@@ -419,6 +419,7 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
 
   app.post('/api/companies/:company/customer-orders/:id/tender', req => scoped(req, async (c, companyId) => {
     requireCapability(req.identity, 'checkout');
+    await ensureTerminalActor(c,req);
     const id = v.parse(v.id, req.params.id), input = v.parse(tenderSchema, req.body);
     const requestDigest = hash(JSON.stringify(canonical({ orderId: id, actorId: req.identity.id,
       expectedVersion: input.expectedVersion, sale: input.sale })));
@@ -489,7 +490,8 @@ export function registerCustomerOrders(app, { scoped, audit, checkout }) {
       const result = await completePaidOrder(c, { order, lines, saleInput: prepared.sale,
         who: req.identity, requestId: input.requestId, requestDigest,
         note: 'Paid online · verified HitPay webhook', occurredAt: prepared.occurredAt,
-        checkout, audit, auditAction: 'Customer order online payment finalized' });
+        checkout, audit, auditAction: 'Customer order online payment finalized',
+        checkoutOptions:{terminalExemptReason:'verified_online_payment'} });
       await c.query(
         `INSERT INTO myfin.online_payment_finalizations(
            company_id,id,intent_id,order_id,sale_id,actor_id,request_id,request_digest)

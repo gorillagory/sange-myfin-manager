@@ -5,6 +5,7 @@ export const ROUTE_CAPABILITIES = {
   '/analytics':'analyticsRead', '/consolidation':'analyticsRead', '/finance-sales':'financialReports', '/payment-operations':'paymentOperationsRead', '/cashbook':'financialReports', '/expenses':'expensesRead',
   '/companies':'companyWrite', '/users':'usersManage', '/activity':'activityRead', '/marketing':'marketingRead', '/student-programs':'studentProgramsRead',
   '/templates':'templatesWrite', '/settings':'deviceSettingsWrite', '/integrations':'integrationsRead',
+  '/store-network':'storeNetworkRead', '/shifts':'shiftRead', '/terminal-setup':'active',
 };
 export const ROUTE_MODULES = Object.freeze({
   '/pos':'workspace','/orders':'workspace','/storefront':'workspace','/kitchen':'workspace',
@@ -12,10 +13,17 @@ export const ROUTE_MODULES = Object.freeze({
   '/finance-sales':'finance','/payment-operations':'finance','/cashbook':'finance','/documents':'finance','/sales':'finance','/expenses':'finance','/receipt-reviews':'finance',
   '/analytics':'analytics','/consolidation':'analytics','/marketing':'analytics','/student-programs':'analytics',
   '/contacts':'administration','/companies':'administration','/activity':'administration',
+  '/store-network':'administration',
   '/settings':'settings','/templates':'settings','/integrations':'settings','/users':'access',
+  '/shifts':'workspace',
 });
+export const POS_CODE_OPERATIONAL_PATHS = Object.freeze(new Set([
+  '/overview','/pos','/orders','/kitchen','/receipt-reviews','/products','/stock','/procurement',
+  '/finance-sales','/payment-operations','/cashbook','/documents','/sales','/expenses','/contacts',
+  '/settings','/profile','/shifts','/terminal-setup',
+]));
 export function canVisit(user,path) {
-  if (path === '/consolidation' && user?.authLevel === 'pos_code') return false;
+  if (user?.authLevel === 'pos_code' && !POS_CODE_OPERATIONAL_PATHS.has(path)) return false;
   const module=ROUTE_MODULES[path];
   if(module&&!hasModuleAccess(user,module))return false;
   return permissionsFor(user)[ROUTE_CAPABILITIES[path] || 'active'] === true;

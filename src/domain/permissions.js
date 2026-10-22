@@ -71,7 +71,10 @@ export function permissionsFor(user) {
     receiptReviewsRead:(active&&workspace)||((owner||manager)&&finance),receiptReviewsResolve:(owner||manager)&&finance,receiptEmailsRetry:(owner||manager)&&finance,studentProgramsRead:(owner||manager)&&analytics,
     studentEligibilityReview:owner&&analytics,promotionsManage:(owner||manager)&&analytics,
     marketingRead:(owner||manager)&&analytics,marketingManage:(owner||manager)&&analytics,marketingWorkspaceManage:owner&&analytics,
-    loyaltyWorkspaceManage:owner};
+    loyaltyWorkspaceManage:owner,
+    storeNetworkRead:(owner||manager)&&administration,storeNetworkManage:(owner||manager)&&administration,
+    networkPolicyManage:owner&&administration,shiftRead:active&&workspace,shiftOperate:active&&workspace,
+    shiftManage:(owner||manager)&&workspace};
 }
 export const capabilities = permissionsFor;
 export const can = (user,action) => permissionsFor(user)[action] === true;

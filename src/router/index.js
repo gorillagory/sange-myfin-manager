@@ -13,12 +13,14 @@ const routes = [
     { path: '/order', component: () => import('../components/customer/CustomerStorefront.vue'), meta: { surface: 'customer' } },
     { path: '/', redirect: () => isStorefrontHostname(location.hostname) ? '/shop' : '/overview' },
     { path: '/poslog', component: () => import('../components/dashboard/OverviewTab.vue') },
+    { path: '/terminal-setup', component: () => import('../components/TerminalSetup.vue') },
     { path: '/session-handoff', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/overview', component: () => import('../components/dashboard/OverviewTab.vue') },
     { path: '/pos', component: () => import('../components/dashboard/PosTab.vue') },
     { path: '/orders', component: () => import('../components/dashboard/OrdersTab.vue') },
     { path: '/storefront', component: () => import('../components/dashboard/StorefrontTab.vue'), meta: { requiresAdmin: true } },
     { path: '/kitchen', component: () => import('../components/dashboard/KitchenDisplay.vue') },
+    { path: '/shifts', component: () => import('../components/dashboard/ShiftsTab.vue') },
     { path: '/finance-sales', component: () => import('../components/dashboard/finance/FinanceSales.vue') },
     { path: '/payment-operations', component: () => import('../components/dashboard/PaymentOperationsTab.vue') },
     { path: '/cashbook', component: () => import('../components/dashboard/finance/Cashbook.vue') },
@@ -38,6 +40,7 @@ const routes = [
     { path: '/companies', component: () => import('../components/dashboard/CompanyManager.vue'), meta: { requiresAdmin: true } },
     { path: '/users', component: () => import('../components/dashboard/UserManager.vue'), meta: { requiresAdmin: true } },
     { path: '/activity', component: () => import('../components/dashboard/ActivityTab.vue'), meta: { requiresAdmin: true } },
+    { path: '/store-network', component: () => import('../components/dashboard/StoreNetworkTab.vue'), meta: { requiresAdmin: true } },
     { path: '/marketing', component: () => import('../components/dashboard/MarketingHub.vue'), meta: { requiresAdmin: true } },
     { path: '/student-programs', redirect: to => ({ path:'/marketing', query:{ ...to.query, tab:'eligibility' }, hash:to.hash }) },
     { path: '/templates', component: () => import('../components/dashboard/TemplateStudio.vue'), meta: { requiresAdmin: true } },
@@ -61,7 +64,7 @@ router.beforeEach(async to => {
     });
     if (Store.state.currentUser && !canVisit(Store.state.currentUser,to.path)) return '/overview';
 });
-watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id,
+watch(() => [Store.state.currentUser?.role,Store.state.currentUser?.company_id,Store.state.currentUser?.authLevel,
     effectiveModulesFor(Store.state.currentUser).slice().sort().join(',')], () => {
     if (router.currentRoute.value.meta.surface !== 'customer' && Store.state.currentUser && !canVisit(Store.state.currentUser,router.currentRoute.value.path))
         router.replace('/overview');

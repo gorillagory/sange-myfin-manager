@@ -50,6 +50,7 @@ import { assertProductReservationFloor, assertUnreservedSaleStock } from "./cust
 import { registerPaymentGatewayStaff } from "./payment-gateways.js";
 import { registerReceiptEmails } from "./receipt-emails.js";
 import { preserveProductActive, unpublishInactiveProduct } from "./product-availability.js";
+import { ensureRequestTerminalStaff, registerTerminalOperations, resolveTerminalContext, terminalDeviceContext } from "./terminal-operations.js";
 
 const delayedReceiptReviewMs = 5 * 60 * 1000;
 const maximumHistoricalReceiptMs = 72 * 60 * 60 * 1000;
@@ -376,6 +377,12 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   const submittedSale = v.parse(v.sale, input), sale={...submittedSale};
   if (sale.company_id !== companyId || sale.cashierId !== who.id)
     v.fail(403, "invalid_sale_actor");
+  let lockedRegister=null;
+  if(who.terminalId&&who.registerShiftId){
+    lockedRegister=(await c.query(`SELECT * FROM myfin.register_shifts WHERE company_id=$1 AND id=$2
+      AND terminal_id=$3 AND store_id=$4 AND store_location_id=$5 FOR UPDATE`,
+    [companyId,who.registerShiftId,who.terminalId,who.storeId,who.storeLocationId])).rows[0]||null;
+  }
   if (sale.pricingSnapshotId && options.acceptedOrderQuote && !options.reservationOrderId)
     v.fail(409, "customer_order_checkout_changed");
   let totals,lockedPricing=null;
@@ -479,7 +486,60 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     if(!boundary.changed&&approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
   }
   else if(approval?.inventoryRecipeResolution)v.fail(400,'inventory_recipe_resolution_not_applicable');
-  const companyRow=(await c.query("SELECT name,data FROM myfin.companies WHERE id=$1",[companyId])).rows[0];
+  const companyRow=(await c.query(`SELECT name,data,terminal_enforcement_enabled,terminal_enforcement_from,
+    require_open_register_for_pos,require_open_register_from FROM myfin.companies WHERE id=$1 FOR SHARE`,[companyId])).rows[0];
+  const enforcementFrom=companyRow.terminal_enforcement_from?new Date(companyRow.terminal_enforcement_from):null,
+    reviewCreatedAt=options.receiptReviewCreatedAt?new Date(options.receiptReviewCreatedAt):null,
+    originSessionAt=options.originPosSessionCreatedAt?new Date(options.originPosSessionCreatedAt):null,
+    trustedLegacy=options.legacyTerminalOrigin===true&&enforcementFrom&&(
+      (reviewCreatedAt&&reviewCreatedAt<enforcementFrom)||(originSessionAt&&originSessionAt<enforcementFrom));
+  const terminalExempt=options.terminalExemptReason==='verified_online_payment';
+  if(companyRow.terminal_enforcement_enabled&&!who.terminalId&&!trustedLegacy&&!terminalExempt)
+    v.fail(409,'receipt_review_required_terminal_attribution');
+  if(who.terminalId&&!who.staffSessionId&&!terminalExempt)
+    v.fail(409,'receipt_review_required_terminal_session');
+  let terminalAttribution=null;
+  let operationalContext=null;
+  if(who.terminalId&&who.staffSessionId){
+    const context=(await c.query(`SELECT ss.status AS staff_status,ws.status AS work_status,
+        rs.status AS register_status,rs.business_date,t.status AS terminal_status,tc.revoked_at AS credential_revoked_at,
+        t.code AS terminal_code,t.name AS terminal_name,t.type AS terminal_type,
+        st.code AS store_code,st.name AS store_name,sl.code AS location_code,sl.name AS location_name
+      FROM myfin.terminal_staff_sessions ss
+      JOIN myfin.terminals t ON t.company_id=ss.company_id AND t.id=ss.terminal_id
+      JOIN myfin.terminal_credentials tc ON tc.company_id=t.company_id AND tc.terminal_id=t.id AND tc.version=$9
+      JOIN myfin.stores st ON st.company_id=ss.company_id AND st.id=ss.store_id
+      JOIN myfin.store_locations sl ON sl.company_id=ss.company_id AND sl.id=ss.store_location_id
+      LEFT JOIN myfin.staff_work_shifts ws ON ws.company_id=ss.company_id AND ws.id=$6
+      LEFT JOIN myfin.register_shifts rs ON rs.company_id=ss.company_id AND rs.id=$7
+      WHERE ss.company_id=$1 AND ss.id=$2 AND ss.terminal_id=$3 AND ss.store_id=$4
+        AND ss.store_location_id=$5 AND ss.identity_id=$8 FOR SHARE OF ss,t`,
+    [companyId,who.staffSessionId,who.terminalId,who.storeId,who.storeLocationId,who.workShiftId||null,
+      who.registerShiftId||null,who.id,who.terminalCredentialVersion])).rows[0];
+    if(!context||(!options.originReplay&&context.staff_status!=='active'))v.fail(409,'receipt_review_required_terminal_session');
+    if(!options.originReplay&&(context.terminal_status!=='active'||context.credential_revoked_at))
+      v.fail(409,'receipt_review_required_terminal_session');
+    const registerRequired=options.originReplay
+      ? options.originRegisterPolicyRequired===true
+      : companyRow.require_open_register_for_pos;
+    if(registerRequired&&!options.originReplay&&context.work_status!=='open')
+      v.fail(409,'receipt_review_required_staff_shift');
+    if(registerRequired&&context.register_status!=='open')
+      v.fail(409,'receipt_review_required_register_shift');
+    if(who.registerShiftId){
+      if(!lockedRegister||lockedRegister.status!=='open')v.fail(409,'receipt_review_required_register_shift');
+    }
+    terminalAttribution={storeId:who.storeId,storeLocationId:who.storeLocationId,terminalId:who.terminalId,
+      terminalCredentialVersion:who.terminalCredentialVersion,staffSessionId:who.staffSessionId,
+      workShiftId:who.workShiftId||'',registerShiftId:who.registerShiftId||''};
+    operationalContext=options.terminalOriginSnapshot||{
+      store:{id:who.storeId,code:context.store_code,name:context.store_name},
+      location:{id:who.storeLocationId,code:context.location_code,name:context.location_name},
+      terminal:{id:who.terminalId,code:context.terminal_code,name:context.terminal_name,type:context.terminal_type},
+      staffSessionId:who.staffSessionId,workShiftId:who.workShiftId||'',
+      register:who.registerShiftId?{id:who.registerShiftId,businessDate:String(context.business_date).slice(0,10)}:null,
+    };
+  }
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
   if((!approval||approval.revalidatePolicy)&&JSON.stringify(canonical(sale.storeSnapshot))!==JSON.stringify(canonical(expectedStore)))v.fail(409,"receipt_review_required_merchant_changed");
@@ -544,11 +604,25 @@ export async function checkout(c, who, companyId, input, approval=null, options=
     ...(shortage&&inventoryShortageApproved?{inventoryShortageResolution:'record_shortage'}:{}),
     storeSnapshot:expectedStore,companySnapshot,templateSnapshot:template.settings,
     ...(lockedPricing ? { promotionDiscounts: lockedPricing.discounts } : {}),
+    ...(terminalAttribution?{...terminalAttribution,operationalContext}:
+      {terminalAttribution:terminalExempt?'online_payment':'legacy'}),
   };
   await c.query(
-    "INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data,pricing_snapshot_id) VALUES($1,$2,$3,'pos',$4,$5,$6,$7)",
-    [companyId, sale.id, who.id, sale.total, fingerprint, saved, sale.pricingSnapshotId || null],
+    `INSERT INTO myfin.transactions(company_id,id,actor_id,source,total,fingerprint,data,pricing_snapshot_id,
+      store_id,store_location_id,terminal_id,terminal_credential_version,staff_session_id,work_shift_id,register_shift_id)
+      VALUES($1,$2,$3,'pos',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [companyId,sale.id,who.id,sale.total,fingerprint,saved,sale.pricingSnapshotId||null,
+      terminalAttribution?.storeId||null,terminalAttribution?.storeLocationId||null,terminalAttribution?.terminalId||null,
+      terminalAttribution?.terminalCredentialVersion||null,terminalAttribution?.staffSessionId||null,
+      terminalAttribution?.workShiftId||null,terminalAttribution?.registerShiftId||null],
   );
+  if(sale.paymentMethod==='Cash'&&lockedRegister){
+    await c.query(`INSERT INTO myfin.register_cash_entries(company_id,id,register_shift_id,terminal_id,store_id,
+      store_location_id,staff_session_id,kind,amount_sen,source_type,source_id,request_id,request_digest,reason,actor_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'cash_sale',$8,'pos_sale',$9,$10,$11,'POS cash sale',$12)`,
+    [companyId,randomUUID(),lockedRegister.id,who.terminalId,who.storeId,who.storeLocationId,who.staffSessionId,
+      cents(sale.total),sale.id,`sale:${sale.id}`,fingerprint,who.id]);
+  }
   if (sale.pricingSnapshotId && !options.acceptedOrderQuote) await commitPricingRedemptions(c, {
     workspaceId: lockedPricing.workspaceId,
     companyId,
@@ -641,8 +715,9 @@ export async function checkout(c, who, companyId, input, approval=null, options=
 export function registerBusiness(app, { database: db, auth, authOptions, paymentGateway, receiptEmailEnabled = false }) {
   app.decorateRequest("identity", null);
   app.decorateRequest("authSessionId", null);
+  app.decorateRequest("enrolledTerminal", null);
   app.addHook("preHandler", async (req) => {
-    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/public/") || req.url.startsWith("/api/auth/") || req.url.startsWith("/api/pos-auth/") || req.url==="/api/tenant-context" || req.url==="/api/session-handoffs/consume" || req.url==="/api/session-handoffs/sign-out")
+    if (req.url.startsWith("/api/health/") || req.url.startsWith("/api/public/") || req.url.startsWith("/api/auth/") || req.url.startsWith("/api/pos-auth/") || req.url.startsWith("/api/terminal-enrollment/") || req.url==="/api/terminal-context" || req.url.startsWith("/api/terminal-context?") || req.url.startsWith("/api/terminal-context/heartbeat") || req.url==="/api/tenant-context" || req.url==="/api/session-handoffs/consume" || req.url==="/api/session-handoffs/sign-out")
       return;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
@@ -651,10 +726,14 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
       req.identity = await identity(db, session.user.id,req.tenant);
       req.authSessionId = session.session.id;
       req.authLevel="password";
+      const terminal=await resolveTerminalContext(db,req,authOptions);
+      if(terminal){req.enrolledTerminal=terminal;Object.assign(req.identity,terminalDeviceContext(terminal));}
       return;
     }
     const handoff=await handoffSubject(db,req,authOptions);
-    if(handoff){req.identity=await identity(db,handoff.subject,req.tenant);req.identity.authLevel="handoff_password";req.identity.handoffSessionDigest=handoff.digest;req.authLevel="handoff_password";return;}
+    if(handoff){req.identity=await identity(db,handoff.subject,req.tenant);req.identity.authLevel="handoff_password";req.identity.handoffSessionDigest=handoff.digest;req.authLevel="handoff_password";
+      const terminal=await resolveTerminalContext(db,req,authOptions);
+      if(terminal){req.enrolledTerminal=terminal;Object.assign(req.identity,terminalDeviceContext(terminal));}return;}
     req.identity=await posIdentity(db,req,authOptions);
     if(!req.identity)v.fail(401,"session_required");
     req.authLevel="pos_code";
@@ -699,7 +778,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   registerManagement(app, { db, authOptions, authorize, requireSuper, validateFileRefs, audit });
   registerWorkspaces(app,{db,authOptions,authorize,audit,validateFileRefs});
   registerDocuments(app,{db,authorize,audit});
-  registerReceiptReviews(app,{db,authorize,checkout,audit});
+  registerReceiptReviews(app,{db,authorize,checkout,audit,ensureTerminalActor:ensureRequestTerminalStaff});
   const scoped = (req, fn, admin = false) => {
     const company = v.parse(v.id, req.params.company);
     return db.transaction(async (c) => {
@@ -708,6 +787,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
       return fn(c, company);
     });
   };
+  registerTerminalOperations(app,{db,scoped,audit,authOptions});
   registerExpenseImport(app,{scoped,audit});
   registerPettyCash(app,{scoped,audit});
   registerStock(app,{scoped,audit});
@@ -717,7 +797,8 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   registerOrders(app,{scoped,audit});
   registerManualSales(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
-  registerCustomerOrders(app,{scoped,audit,checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
+  registerCustomerOrders(app,{scoped,audit,ensureTerminalActor:ensureRequestTerminalStaff,
+    checkout:(c,who,companyId,sale,approval,options)=>checkout(c,who,companyId,sale,approval,{...options,acceptedOrderQuote:true,requireNewSale:true})});
   registerCustomerProfiles(app,{scoped});
   registerStudentPrograms(app,{scoped,audit,voucherPepper:authOptions.voucherHmacSecret});
   registerMarketingCampaigns(app,{scoped,audit});
@@ -1115,7 +1196,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
     );
   }
   app.post("/api/companies/:company/checkout", (req) =>
-    scoped(req, (c, co) => checkout(c, req.identity, co, req.body)),
+    scoped(req, async(c,co)=>{await ensureRequestTerminalStaff(c,req);return checkout(c,req.identity,co,req.body);}),
   );
   app.post("/api/companies/:company/import-products", (req) =>
     scoped(req, async (c, co) => {

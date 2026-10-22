@@ -21,6 +21,7 @@ const initialPreferences = {
 initialPreferences.primaryColor = normalizeThemeColor(initialPreferences.primaryColor);
 const prefs = ref(initialPreferences);
 const themePreview = computed(() => themeVariables(prefs.value.primaryColor));
+const terminalContext = computed(() => Store.state.terminalContext || {});
 
 async function save() {
   busy.value = true;
@@ -57,7 +58,7 @@ async function save() {
     </header>
     <div class="ed-settings">
       <nav class="ed-settings-nav" aria-label="Preference sections">
-        <button v-for="section in ['Appearance','Receipts','Checkout']" :key="section" :class="{active:tab===section}" @click="tab=section">{{ section }}</button>
+        <button v-for="section in ['Appearance','Terminal','Receipts','Checkout']" :key="section" :class="{active:tab===section}" @click="tab=section">{{ section }}</button>
         <router-link v-if="Store.can('companyWrite')" to="/companies" class="ed-link" style="padding:12px">Company profile<Icon name="arrow" /></router-link>
         <router-link v-if="Store.can('templatesWrite')" to="/templates" class="ed-link" style="padding:12px">Document templates<Icon name="arrow" /></router-link>
       </nav>
@@ -88,6 +89,13 @@ async function save() {
             <div class="ed-actions" style="margin-top:20px"><label><input v-model="prefs.density" type="radio" value="comfortable"> Comfortable</label><label><input v-model="prefs.density" type="radio" value="compact"> Compact</label></div>
             <label class="ed-switch"><span><strong>Reduce motion</strong><small>Keep transitions quiet and immediate.</small></span><input v-model="prefs.reduceMotion" type="checkbox"></label>
           </div>
+        </template>
+        <template v-else-if="tab==='Terminal'">
+          <h2>This terminal</h2>
+          <div v-if="terminalContext.enrolled" class="mf-terminal-banner"><span class="ed-terminal-glyph"><Icon name="settings"/></span><div><div class="ed-eyebrow">ENROLLED</div><h2>{{ terminalContext.terminal?.name }}</h2><p>{{ terminalContext.store?.name }} · {{ terminalContext.location?.name }} · {{ terminalContext.terminal?.code }}</p></div><span class="ed-pill">{{ terminalContext.terminal?.status }}</span><router-link class="ed-btn small" to="/shifts">Shifts &amp; cash</router-link></div>
+          <div v-else class="ed-notice warning"><Icon name="alert"/><div><strong>This browser is not paired.</strong>Enroll it explicitly before terminal enforcement is enabled. <router-link class="ed-link" to="/terminal-setup">Set up terminal</router-link></div></div>
+          <p class="ed-muted">MyFin identifies this screen through reviewed enrollment. Printer USB, Bluetooth, Wi-Fi, IP addresses, and browser fingerprints never decide its store.</p>
+          <div class="ed-actions" style="margin-top:20px"><router-link v-if="Store.can('storeNetworkRead')" class="ed-btn" to="/store-network"><Icon name="building"/>Store Network</router-link><router-link class="ed-btn" to="/terminal-setup"><Icon name="link"/>Terminal details</router-link></div>
         </template>
         <template v-else-if="tab==='Receipts'">
           <h2>Printing on this device</h2>

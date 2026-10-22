@@ -18,12 +18,76 @@ function bulkReplayReason(error){
  return automaticReviewReason(error)||
   (error?.message==="original_cashier_unavailable"?error.message:"");
 }
-export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
+export function registerReceiptReviews(app,{db,authorize,checkout,audit,ensureTerminalActor=async()=>{}}){
  const scope=(req,fn)=>db.transaction(async c=>{await managementLock(c);await managementSession(c,req);const co=v.parse(v.id,req.params.company);await authorize(c,req.identity,co);return fn(c,co,req.identity);});
  const lockSale=(c,co,id)=>c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7))",[co+":sale:"+id]);
+ const lockOriginRegister=async(c,co,who)=>{
+  if(!who.registerShiftId)return null;
+  const row=(await c.query(`SELECT id,status FROM myfin.register_shifts WHERE company_id=$1 AND id=$2
+    AND terminal_id=$3 AND store_id=$4 AND store_location_id=$5 FOR UPDATE`,
+  [co,who.registerShiftId,who.terminalId,who.storeId,who.storeLocationId])).rows[0];
+  if(!row||row.status!=='open')v.fail(409,'receipt_review_required_register_shift');
+  return row;
+ };
  const output=(row,who)=>({id:row.id,status:row.status,reasonCode:row.reason_code,
   inventoryRecipeResolution:row.inventory_recipe_resolution||null,sale:publicTransaction(row.payload,who),
+  origin:row.origin_terminal_id?{storeId:row.origin_store_id,locationId:row.origin_store_location_id,
+    terminalId:row.origin_terminal_id,staffSessionId:row.origin_staff_session_id,
+    workShiftId:row.origin_work_shift_id||'',registerShiftId:row.origin_register_shift_id||''}:{legacy:true},
   createdAt:row.created_at,approvedAt:row.approved_at,dismissedAt:row.dismissed_at,dismissalReason:row.dismissal_reason});
+ const originFor=async(c,co,who,sale)=>{
+  const policy=(await c.query(`SELECT require_open_register_for_pos,require_open_register_from
+    FROM myfin.companies WHERE id=$1 FOR SHARE`,[co])).rows[0]||{};
+  const policyFrom=policy.require_open_register_from?new Date(policy.require_open_register_from):null,
+   capturedAt=sale?.date?new Date(sale.date):null,
+   sessionAt=who.posSessionCreatedAt?new Date(who.posSessionCreatedAt):null,
+   beforeCutover=policyFrom&&capturedAt&&!Number.isNaN(capturedAt.getTime())&&capturedAt<policyFrom&&
+    (!sessionAt||(!Number.isNaN(sessionAt.getTime())&&sessionAt<policyFrom));
+  return {storeId:who.storeId||null,locationId:who.storeLocationId||null,
+   terminalId:who.terminalId||null,credentialVersion:who.terminalCredentialVersion||null,
+   staffSessionId:who.staffSessionId||null,workShiftId:who.workShiftId||null,
+   registerShiftId:who.registerShiftId||null,posSessionCreatedAt:who.posSessionCreatedAt||null,
+   registerPolicyRequired:policy.require_open_register_for_pos===true&&!beforeCutover,
+   registerPolicyFrom:policy.require_open_register_from||null,legacy:!who.terminalId};
+ };
+ const insertReview=async(c,co,who,sale,digest,reason)=>{
+  const origin=await originFor(c,co,who,sale);
+  let snapshot=null;
+  if(origin.terminalId){
+   if(origin.registerShiftId){
+    const register=(await c.query(`SELECT id,status FROM myfin.register_shifts WHERE company_id=$1 AND id=$2
+      AND terminal_id=$3 AND store_id=$4 AND store_location_id=$5 FOR UPDATE`,
+    [co,origin.registerShiftId,origin.terminalId,origin.storeId,origin.locationId])).rows[0];
+    if(!register||register.status!=='open')v.fail(409,'receipt_review_required_register_shift');
+   }
+   const row=(await c.query(`SELECT t.code AS terminal_code,t.name AS terminal_name,t.type AS terminal_type,
+      s.code AS store_code,s.name AS store_name,l.code AS location_code,l.name AS location_name,
+      r.business_date FROM myfin.terminals t JOIN myfin.stores s ON s.company_id=t.company_id AND s.id=t.store_id
+      JOIN myfin.store_locations l ON l.company_id=t.company_id AND l.id=t.store_location_id
+      LEFT JOIN myfin.register_shifts r ON r.company_id=t.company_id AND r.id=$3
+      WHERE t.company_id=$1 AND t.id=$2`,[co,origin.terminalId,origin.registerShiftId])).rows[0];
+   if(!row)v.fail(409,'terminal_context_changed');
+   snapshot={store:{id:origin.storeId,code:row.store_code,name:row.store_name},
+    location:{id:origin.locationId,code:row.location_code,name:row.location_name},
+    terminal:{id:origin.terminalId,code:row.terminal_code,name:row.terminal_name,type:row.terminal_type},
+    staffSessionId:origin.staffSessionId,workShiftId:origin.workShiftId||'',
+    register:origin.registerShiftId?{id:origin.registerShiftId,businessDate:String(row.business_date).slice(0,10)}:null};
+  }
+  await c.query(`INSERT INTO myfin.receipt_reviews(company_id,id,actor_id,payload,request_digest,reason_code,
+    origin_store_id,origin_store_location_id,origin_terminal_id,origin_terminal_credential_version,
+    origin_staff_session_id,origin_work_shift_id,origin_register_shift_id,origin_snapshot,
+    origin_pos_session_created_at,origin_register_policy_required,origin_register_policy_from,origin_legacy)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+  [co,sale.id,who.id,sale,digest,reason,origin.storeId,origin.locationId,origin.terminalId,origin.credentialVersion,
+    origin.staffSessionId,origin.workShiftId,origin.registerShiftId,snapshot,origin.posSessionCreatedAt,
+    origin.registerPolicyRequired,origin.registerPolicyFrom,origin.legacy]);
+ };
+ const lockReviewOriginRegister=async(c,co,row)=>{
+  if(!row?.origin_register_shift_id)return null;
+  return (await c.query(`SELECT id,status FROM myfin.register_shifts WHERE company_id=$1 AND id=$2
+    AND terminal_id=$3 AND store_id=$4 AND store_location_id=$5 FOR UPDATE`,
+  [co,row.origin_register_shift_id,row.origin_terminal_id,row.origin_store_id,row.origin_store_location_id])).rows[0]||null;
+ };
  const approvalInput=z.strictObject({
   reason:z.string().trim().min(3).max(1000),inventoryRecipeResolution:z.enum(["current_recipe","captured_recipe"]).optional(),
  });
@@ -45,7 +109,16 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
     ...(row.payload?.pricingSnapshotId?{pricingExpiryResolution:'honor_paid_tender'}:{}),
     ...(allowInventoryShortage?{inventoryShortageResolution:'record_shortage'}:{}),
     ...(revalidatePolicy?{revalidatePolicy:true}:{})};
-  const receipt=await checkout(c,{...actor,role:"operator",company_id:co},co,row.payload,approval);
+  const originActor=row.origin_terminal_id?{...actor,role:"operator",company_id:co,
+    terminalId:row.origin_terminal_id,storeId:row.origin_store_id,storeLocationId:row.origin_store_location_id,
+    terminalCredentialVersion:row.origin_terminal_credential_version,staffSessionId:row.origin_staff_session_id,
+    workShiftId:row.origin_work_shift_id||'',registerShiftId:row.origin_register_shift_id||''}:
+    {...actor,role:"operator",company_id:co};
+  const receipt=await checkout(c,originActor,co,row.payload,approval,{legacyTerminalOrigin:row.origin_legacy,
+    receiptReviewCreatedAt:row.created_at,originPosSessionCreatedAt:row.origin_pos_session_created_at,
+    terminalOriginSnapshot:row.origin_snapshot,originReplay:true,
+    originRegisterPolicyRequired:row.origin_register_policy_required,
+    originRegisterPolicyFrom:row.origin_register_policy_from});
   if(row.status!=="approved")await c.query("UPDATE myfin.receipt_reviews SET status='approved',approved_by=$3,approval_reason=$4,inventory_recipe_resolution=$5,approved_at=now() WHERE company_id=$1 AND id=$2",[co,row.id,who.id,reason,resolution]);
   return {id:row.id,status:"approved",inventoryRecipeResolution:resolution,receipt:publicTransaction(receipt,who)};
  };
@@ -57,7 +130,8 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   return {sale,digest:createHash("sha256").update(JSON.stringify(canonical(sale))).digest("hex")};
  };
  app.post("/api/companies/:company/receipt-reviews",req=>scope(req,async(c,co,who)=>{
-  requireCapability(who,"checkout");const body=v.parse(z.strictObject({sale:v.sale}),req.body),{sale,digest}=paidIntent(body.sale,co,who);
+  requireCapability(who,"checkout");await ensureTerminalActor(c,req);const body=v.parse(z.strictObject({sale:v.sale}),req.body),{sale,digest}=paidIntent(body.sale,co,who);
+  await lockOriginRegister(c,co,who);
   await lockSale(c,co,sale.id);
   const existing=(await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,sale.id])).rows[0];
   if(existing){if(existing.actor_id!==who.id||existing.request_digest!==digest)v.fail(409,"receipt_payload_changed");return {...output(existing,who),status:existing.status==="approved"?"posted":existing.status};}
@@ -67,18 +141,19 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
    await c.query("ROLLBACK TO SAVEPOINT paid_review_probe");await c.query("RELEASE SAVEPOINT paid_review_probe");
    reason=automaticReviewReason(error);if(!reason)throw error;
   }
-  await c.query("INSERT INTO myfin.receipt_reviews(company_id,id,actor_id,payload,request_digest,reason_code) VALUES($1,$2,$3,$4,$5,$6)",[co,sale.id,who.id,sale,digest,reason]);
+  await insertReview(c,co,who,sale,digest,reason);
   await audit(c,who,co,"Request paid receipt review",sale.id);return {id:sale.id,status:"pending",reasonCode:reason};
  }));
  app.post("/api/companies/:company/receipt-dismissal-requests",req=>scope(req,async(c,co,who)=>{
-  requireCapability(who,"checkout");const body=v.parse(z.strictObject({sale:v.sale}),req.body),{sale,digest}=paidIntent(body.sale,co,who);
+  requireCapability(who,"checkout");await ensureTerminalActor(c,req);const body=v.parse(z.strictObject({sale:v.sale}),req.body),{sale,digest}=paidIntent(body.sale,co,who);
+  await lockOriginRegister(c,co,who);
   await lockSale(c,co,sale.id);
   const existing=(await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,sale.id])).rows[0];
   if(existing&& (existing.actor_id!==who.id||existing.request_digest!==digest))v.fail(409,"receipt_payload_changed");
   const posted=(await c.query("SELECT id FROM myfin.transactions WHERE company_id=$1 AND id=$2 FOR SHARE",[co,sale.id])).rows[0];
   if(posted){const receipt=await checkout(c,who,co,sale);return {id:sale.id,status:"posted",receipt};}
   if(existing)return output(existing,who);
-  await c.query("INSERT INTO myfin.receipt_reviews(company_id,id,actor_id,payload,request_digest,reason_code) VALUES($1,$2,$3,$4,$5,'cashier_requested_dismissal')",[co,sale.id,who.id,sale,digest]);
+  await insertReview(c,co,who,sale,digest,'cashier_requested_dismissal');
   await audit(c,who,co,"Request paid receipt dismissal",sale.id);return {id:sale.id,status:"pending",reasonCode:"cashier_requested_dismissal"};
  }));
  app.get("/api/companies/:company/receipt-reviews",req=>scope(req,async(c,co,who)=>{
@@ -94,6 +169,9 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
   // Every batch takes overlapping receipt locks in the same order so two
   // managers cannot deadlock by submitting the same snapshot in reverse order.
   for(const id of [...reviewIds].sort()){
+   const preview=(await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2",[co,id])).rows[0];
+   if(!preview){skipped.push({id,reasonCode:"not_found"});continue;}
+   await lockReviewOriginRegister(c,co,preview);
    await lockSale(c,co,id);
    const row=(await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,id])).rows[0];
    if(!row){skipped.push({id,reasonCode:"not_found"});continue;}
@@ -118,6 +196,9 @@ export function registerReceiptReviews(app,{db,authorize,checkout,audit}){
  }));
  app.post("/api/companies/:company/receipt-reviews/:id/approve",req=>scope(req,async(c,co,who)=>{
   requireCapability(who,"receiptReviewsResolve");const input=v.parse(approvalInput,req.body),id=v.parse(v.id,req.params.id);
+  const preview=(await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2",[co,id])).rows[0];
+  if(!preview)v.fail(404,"not_found");
+  await lockReviewOriginRegister(c,co,preview);
   await lockSale(c,co,id);
   const r=await c.query("SELECT * FROM myfin.receipt_reviews WHERE company_id=$1 AND id=$2 FOR UPDATE",[co,id]);if(!r.rowCount)v.fail(404,"not_found");const row=r.rows[0];
   return approveLocked(c,co,who,row,input,{allowInventoryShortage:true});

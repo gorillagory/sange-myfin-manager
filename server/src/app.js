@@ -5,6 +5,7 @@ import { registerBusiness } from './business.js';
 import { registerFiles } from './files.js';
 import { publicTenant, requestContext, requestOrigin } from './tenancy.js';
 import { registerPosAuth } from './pos-auth.js';
+import { registerTerminalPublic } from './terminal-operations.js';
 import { registerHandoffPublic } from './session-handoff.js';
 import { registerStorefrontPublic } from './storefront-public.js';
 import { registerCustomerAccounts } from './customer-auth.js';
@@ -75,6 +76,7 @@ export function buildApp({ database = null, logger = false, auth = null, authOpt
     registerPaymentGatewayPublic(app,{db:database,authOptions,runtime:paymentGateway});
     registerCustomerAccounts(app,{db:database,authOptions});
     registerCustomerOrderHistory(app,{db:database,authOptions});
+    registerTerminalPublic(app,{db:database,authOptions});
     registerPosAuth(app,{db:database,authOptions});
     registerHandoffPublic(app,{db:database,authOptions});
     const allowed = new Set(['/api/auth/sign-in/email','/api/auth/sign-out','/api/auth/get-session','/api/auth/change-password']);

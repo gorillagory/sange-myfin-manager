@@ -30,5 +30,9 @@ export const state = reactive({
     appUpdateMessage: '',
     pendingSales: [],
     receiptReviews: [],
-    syncing: false
+    syncing: false,
+    storeNetwork: { policy:{ terminalEnforcement:false, requireOpenRegisterForPos:false }, stores:[], locations:[], terminals:[], staffAssignments:[] },
+    terminalContext: { supported:null, enrolled:false, companyId:null, terminal:null, store:null, location:null, policy:{ terminalEnforcement:false, requireOpenRegisterForPos:false } },
+    registerShifts: [],
+    shiftContext: { staffSession:null, workShift:null, registerShift:null }
 });

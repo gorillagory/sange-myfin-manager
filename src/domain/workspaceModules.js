@@ -7,6 +7,7 @@ const modules = [
       { path: '/orders', title: 'Sales Orders', description: 'Keep every order moving.', icon: 'clock' },
       { path: '/storefront', title: 'Online Storefront', description: 'Publish, promote, and take orders.', icon: 'spark' },
       { path: '/kitchen', title: 'Kitchen Display', description: 'Keep every station moving.', icon: 'printer' },
+      { path: '/shifts', title: 'Shifts & Cash', description: 'Open, hand over, and reconcile the register.', icon: 'clock' },
     ],
   },
   {
@@ -45,6 +46,7 @@ const modules = [
     pages: [
       { path: '/contacts', title: 'Contacts', description: 'Customers and suppliers.', icon: 'people' },
       { path: '/companies', title: 'Company', description: 'Maintain your business details.', icon: 'building' },
+      { path: '/store-network', title: 'Store Network', description: 'Organize stores, work areas, and terminals.', icon: 'pin' },
       { path: '/activity', title: 'Activity', description: 'A clear trail of the day.', icon: 'clock' },
     ],
   },
@@ -86,6 +88,7 @@ const aliases = Object.freeze({
   '/session-handoff': '/overview',
   '/sales': '/documents',
   '/student-programs': '/marketing',
+  '/terminal-setup': '/store-network',
 });
 
 export function workspacePageFor(path = '') {

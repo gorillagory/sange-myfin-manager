@@ -2,7 +2,7 @@ let expired = () => {};
 export const onSessionExpired = (fn) => {
   expired = fn;
 };
-export async function api(path, { method = "GET", body, ...options } = {}) {
+export async function api(path, { method = "GET", body, skipSessionExpiry = false, ...options } = {}) {
   let response;
   try {
     response = await fetch("/api" + path, {
@@ -10,10 +10,10 @@ export async function api(path, { method = "GET", body, ...options } = {}) {
       method,
       credentials: "same-origin",
       cache: "no-store",
-      headers:
-        body === undefined || body instanceof FormData
-          ? {}
-          : { "Content-Type": "application/json" },
+      headers: {
+        ...(body === undefined || body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(options.headers || {}),
+      },
       ...(body === undefined
         ? {}
         : { body: body instanceof FormData ? body : JSON.stringify(body) }),
@@ -26,9 +26,10 @@ export async function api(path, { method = "GET", body, ...options } = {}) {
     .json()
     .catch(() => ({ error: "Invalid server response" }));
   if (!response.ok) {
-    if (response.status === 401) expired();
+    if (response.status === 401 && !skipSessionExpiry) expired();
     const error = new Error(result.error || "Request failed");
     error.status = response.status;
+    error.body = result;
     throw error;
   }
   return result;

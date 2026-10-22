@@ -15,6 +15,13 @@ import { BULK_RECEIPT_REVIEW_LIMIT } from "../domain/receiptReviews";
 import { localPos } from "../services/posLocal";
 import { postSale } from "../services/checkout";
 import { checkoutPayload } from "../services/postSale";
+import { mergeShiftContext } from "../domain/storeNetwork.js";
+import {
+  claimTerminal as claimTerminalEnrollment, closeRegisterShift, joinRegisterShift, loadRegisterShifts,
+  loadStoreNetwork, loadTerminalContext, openRegisterShift, recordRegisterCash, saveNetworkRecord,
+  saveStaffAssignments, saveStoreNetworkPolicy, sendTerminalHeartbeat, updateStaffShift,
+  signOutTerminalStaff,
+} from "../services/storeNetwork.js";
 
 let initialized = false,
   session = 0,
@@ -29,6 +36,11 @@ let initialized = false,
   workspaceRefreshTask = null,
   reviewRefreshTask = null,
   lastDataRefreshAt = 0;
+let terminalHeartbeatTimer;
+const emptyTerminalContext = (supported = true, policy = {}) => ({
+  supported, enrolled:false, companyId:null, terminal:null, store:null, location:null,
+  policy:{ terminalEnforcement:false, requireOpenRegisterForPos:false, ...policy },
+});
 const accessSignature = user => JSON.stringify({
   role:user?.role || "", companyId:user?.company_id || "",
   modules:permissionsFor(user).modules.slice().sort(),
@@ -83,6 +95,77 @@ export const Store = reactive({
   },
   permissions() { return permissionsFor(state.currentUser); },
   can(action) { return can(state.currentUser, action); },
+  applyTerminalContext(value = {}) {
+    state.terminalContext = {
+      supported:true, enrolled:Boolean(value.terminal), companyId:value.companyId || value.company_id || null,
+      terminal:value.terminal || null,
+      store:value.store || null, location:value.location || null,
+      policy:{ terminalEnforcement:false, requireOpenRegisterForPos:false, ...(value.policy || {}) },
+    };
+    state.shiftContext = mergeShiftContext(state.shiftContext,value);
+    return state.terminalContext;
+  },
+  async refreshTerminalContext({ silent = false } = {}) {
+    if (!state.online) return state.terminalContext;
+    try {
+      return this.applyTerminalContext(await loadTerminalContext());
+    } catch (error) {
+      if ([401,403].includes(error.status)) {
+        state.terminalContext=emptyTerminalContext(true,error.body?.policy || {});
+        state.shiftContext={staffSession:null,workShift:null,registerShift:null};
+      } else if (error.status === 404) {
+        state.terminalContext=emptyTerminalContext(false);
+        state.shiftContext={staffSession:null,workShift:null,registerShift:null};
+      }
+      else if (!silent) this.notify('Terminal status could not be refreshed.', 'warning');
+      return state.terminalContext;
+    }
+  },
+  async claimTerminal(token) {
+    const result=await claimTerminalEnrollment(token);
+    await this.refreshTerminalContext();
+    return result;
+  },
+  async heartbeatTerminal() {
+    if (!state.online || !state.terminalContext.enrolled) return;
+    try { const result=await sendTerminalHeartbeat(); if(result?.terminal)this.applyTerminalContext(result); }
+    catch(error){if([401,403].includes(error.status)){state.terminalContext=emptyTerminalContext(true,error.body?.policy || {});state.shiftContext={staffSession:null,workShift:null,registerShift:null};}}
+  },
+  async refreshStoreNetwork() {
+    state.storeNetwork=await loadStoreNetwork(this);
+    return state.storeNetwork;
+  },
+  async saveNetworkRecord(kind, value) {
+    const result=await saveNetworkRecord(this,kind,value);
+    await this.refreshStoreNetwork();
+    return result;
+  },
+  async saveNetworkPolicy(policy) {
+    state.storeNetwork=await saveStoreNetworkPolicy(this,policy);
+    return state.storeNetwork;
+  },
+  async saveStaffAssignments(identityId, locationIds) {
+    await saveStaffAssignments(this,identityId,locationIds);
+    return this.refreshStoreNetwork();
+  },
+  async refreshRegisterShifts() {
+    state.registerShifts=await loadRegisterShifts(this);
+    await this.refreshTerminalContext({silent:true});
+    return state.registerShifts;
+  },
+  async shiftAction(action, body = {}) {
+    const handlers={
+      open:()=>openRegisterShift(this,body), join:()=>joinRegisterShift(this,body.registerShiftId),
+      cash:()=>recordRegisterCash(this,body), close:()=>closeRegisterShift(this,body),
+      clockIn:()=>updateStaffShift(this,'clock-in',body), break:()=>updateStaffShift(this,'break',body),
+      resume:()=>updateStaffShift(this,'resume',body), clockOut:()=>updateStaffShift(this,'clock-out',body),
+    };
+    if (!handlers[action]) throw new Error('shift_action_invalid');
+    const result=await handlers[action]();
+    state.shiftContext=mergeShiftContext(state.shiftContext,result || {});
+    await this.refreshRegisterShifts();
+    return result;
+  },
   async refreshActor() {
     if (!state.online || !state.currentUser) return state.currentUser;
     const generation = session, request = ++actorEpoch, previous = state.currentUser,
@@ -159,10 +242,13 @@ export const Store = reactive({
   },
   async posLogin(code) {
     try {
-      await api("/pos-auth/sign-in",{method:"POST",body:{code:String(code).trim()}});
-      await this.loadSession();return true;
+      const result=await api("/pos-auth/sign-in",{method:"POST",body:{code:String(code).trim()}});
+      if(result?.terminalContext)this.applyTerminalContext(result.terminalContext);
+      state.shiftContext={ staffSession:result.staffSession || null, workShift:result.workShift || null, registerShift:result.registerShift || null };
+      await this.loadSession();await this.refreshTerminalContext({silent:true});return true;
     } catch (error) {
-      this.notify(error.message==="pos_login_locked"?"Too many attempts. Wait 15 minutes before trying again.":"That access code is not valid for this company.","error");return false;
+      if(['terminal_enrollment_required','terminal_staff_session_required'].includes(error.message))state.terminalContext={...state.terminalContext,supported:true,enrolled:false,policy:{...state.terminalContext.policy,terminalEnforcement:true}};
+      this.notify(error.message==="pos_login_locked"?"Too many attempts. Wait 15 minutes before trying again.":error.message==="terminal_enrollment_required"?"This company requires an enrolled terminal. Pair this browser before staff sign-in.":error.message==="terminal_location_not_assigned"?"Your staff account is not assigned to this terminal’s work area.":"That access code is not valid for this company.","error");return false;
     }
   },
   async logout() {
@@ -174,7 +260,11 @@ export const Store = reactive({
     localSettings.setItem("myfin-logout-pending", "1");
     try {
       if(state.currentUser?.authLevel==="pos_code")await api("/pos-auth/sign-out",{method:"POST"});
-      else {await api("/session-handoffs/sign-out",{method:"POST"}).catch(()=>{});await api("/auth/sign-out", { method: "POST" });}
+      else {
+        if(state.terminalContext.enrolled)await signOutTerminalStaff().catch(()=>{});
+        await api("/session-handoffs/sign-out",{method:"POST"}).catch(()=>{});
+        await api("/auth/sign-out", { method: "POST" });
+      }
       localSettings.removeItem("myfin-logout-pending");
     } catch {
       this.notify(
@@ -185,7 +275,7 @@ export const Store = reactive({
     localSettings.removeItem("myfin-last-operator");
     this.clearSession();
   },
-  clearCompany() {
+  clearCompany(options = {}) {
     companyEpoch++;
     refreshEpoch++;
     reviewEpoch++;
@@ -206,6 +296,11 @@ export const Store = reactive({
     state.dataError = "";
     state.dataLoading = false;
     state.fromCache = true;
+    state.storeNetwork={ policy:{ terminalEnforcement:false, requireOpenRegisterForPos:false }, stores:[], locations:[], terminals:[], staffAssignments:[] };
+    state.registerShifts=[];
+    state.shiftContext={ staffSession:null, workShift:null, registerShift:null };
+    if (Object.prototype.hasOwnProperty.call(options,'nextCompanyId') && state.terminalContext.companyId && state.terminalContext.companyId !== options.nextCompanyId)
+      state.terminalContext=emptyTerminalContext();
   },
   async loadSession() {
     const generation = ++session;
@@ -301,12 +396,14 @@ export const Store = reactive({
     };
     const refreshVisible = () => {
       if (document.visibilityState !== "visible") return;
+      this.refreshTerminalContext({silent:true}).then(()=>this.heartbeatTerminal());
       this.refreshIfStale().catch((e) => { state.dataError = e.message; });
     };
     window.addEventListener("online", network);
     window.addEventListener("offline", network);
     window.addEventListener("focus", refreshVisible);
     document.addEventListener("visibilitychange", refreshVisible);
+    terminalHeartbeatTimer=window.setInterval(()=>this.heartbeatTerminal(),60000);
     state.online = navigator.onLine;
     api("/tenant-context").then(async context=>{
       state.tenantContext=context;state.tenantInvalid=false;
@@ -315,6 +412,8 @@ export const Store = reactive({
         const token=new URLSearchParams(location.hash.slice(1)).get("token");if(!token)throw new Error("handoff_expired");
         await api("/session-handoffs/consume",{method:"POST",body:{token}});history.replaceState({},"","/overview");
       }
+      await this.refreshTerminalContext({silent:true});
+      this.heartbeatTerminal();
       return this.loadSession();
     }).catch(()=>{state.tenantInvalid=true;state.isLoading=false;});
   },
@@ -373,7 +472,7 @@ export const Store = reactive({
   selectCompany(company, { hydrate = true, verifyActor = true, silent = false } = {}) {
     if (company && !state.companies.some((c) => c.id === company.id)) return;
     const changed = company?.id !== state.selectedCompany?.id;
-    if (changed) this.clearCompany();
+    if (changed) this.clearCompany({nextCompanyId:company?.id || null});
     if(company&&state.currentUser)state.currentUser=actorForCompany(state.currentUser,company);
     state.selectedCompany = company;
     state.globalAdministration = state.currentUser?.role === "super_admin" && !company;

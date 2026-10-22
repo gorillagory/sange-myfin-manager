@@ -75,7 +75,7 @@ test('consumption is exact-once and every failure stays inside the tender transa
   assert.ok(completion.indexOf('await checkout(') < completion.indexOf('INSERT INTO myfin.customer_order_payments'));
   assert.ok(completion.indexOf("SET status='paid',payment_state='paid'") < completion.indexOf('consumeOrderPromotionReservations'));
   assert.match(tender, /completePaidOrder/);
-  assert.match(business, /INSERT INTO myfin\.transactions\([\s\S]*pricing_snapshot_id\)/);
+  assert.match(business, /INSERT INTO myfin\.transactions\([\s\S]*pricing_snapshot_id,[\s\S]*register_shift_id\)/);
 });
 
 test('storefront token and submit paths never persist a raw voucher', async () => {

@@ -346,9 +346,12 @@ const workspaceUserProjection=(row,workspaceId)=>{
         SET module_ids=EXCLUDED.module_ids,updated_by=EXCLUDED.updated_by,updated_at=now()`,[assignment.company_id,id,assignment.modules,who.id]);
     }
   }
-  async function revokeTargetSessions(c,who,targetId){
+  async function revokeTargetSessions(c,who,targetId,terminalReason='session_revoked'){
     if(who.role==="workspace_owner"){
       const workspaceId=await actorWorkspace(c,who);
+      await c.query(`UPDATE myfin.terminal_staff_sessions ss SET status='ended',ended_at=now(),ended_reason=$3
+        FROM myfin.companies co WHERE ss.identity_id=$1 AND co.workspace_id=$2 AND ss.company_id=co.id
+          AND ss.status='active'`,[targetId,workspaceId,terminalReason]);
       if(await identityHasExternalScope(c,targetId,workspaceId)){
         await c.query(`UPDATE myfin.session_handoffs SET used_at=coalesce(used_at,now())
           WHERE identity_id=$1 AND used_at IS NULL
@@ -361,12 +364,16 @@ const workspaceUserProjection=(row,workspaceId)=>{
       }
     }
     if(who.role!=="manager"){
+      await c.query(`UPDATE myfin.terminal_staff_sessions SET status='ended',ended_at=now(),ended_reason=$2
+        WHERE identity_id=$1 AND status='active'`,[targetId,terminalReason]);
       await c.query('DELETE FROM myfin.auth_session WHERE "userId"=$1',[targetId]);
       await c.query("UPDATE myfin.session_handoffs SET used_at=coalesce(used_at,now()) WHERE identity_id=$1 AND used_at IS NULL",[targetId]);
       await c.query("UPDATE myfin.app_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE identity_id=$1",[targetId]);
       await c.query("UPDATE myfin.pos_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE identity_id=$1",[targetId]);
       return;
     }
+    await c.query(`UPDATE myfin.terminal_staff_sessions SET status='ended',ended_at=now(),ended_reason=$3
+      WHERE identity_id=$1 AND company_id=$2 AND status='active'`,[targetId,who.company_id,terminalReason]);
     await c.query(`UPDATE myfin.session_handoffs SET used_at=coalesce(used_at,now())
       WHERE identity_id=$1 AND used_at IS NULL
         AND target_hostname IN (SELECT hostname FROM myfin.tenant_hosts WHERE company_id=$2)`,[targetId,who.company_id]);
@@ -412,8 +419,8 @@ const workspaceUserProjection=(row,workspaceId)=>{
       }
       await writeAssignments(c,who,targetId,next);
     }
-    await revokeTargetSessions(c,who,targetId);
     const action=remove || (!target.disabled && updated.disabled)?"suspend_user":target.disabled && !updated.disabled?"restore_user":"update_user";
+    await revokeTargetSessions(c,who,targetId,action==="suspend_user"?'access_revoked':'session_revoked');
     const beforeAssignments=who.role==="manager"?target.assignments.filter(x=>x.company_id===who.company_id)
       :who.role==="workspace_owner"?target.assignments.filter(x=>x.workspace_id===ownerWorkspaceId):target.assignments;
     const afterAssignments=who.role==="manager"?updated.assignments.filter(x=>x.company_id===who.company_id)

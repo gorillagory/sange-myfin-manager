@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0048_storefront_asset_library.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0051_staff_register_shifts.sql';
 
 const tableGroups = [
   {
@@ -37,6 +37,9 @@ const tableGroups = [
       'online_payment_reconciliation_jobs',
       'receipt_email_deliveries',
       'petty_cash_funds', 'petty_cash_entries', 'expense_payment_events',
+      'stores', 'store_locations', 'terminals', 'terminal_enrollment_credentials',
+      'terminal_credentials', 'terminal_login_guards', 'staff_location_assignments',
+      'staff_work_shifts', 'terminal_staff_sessions', 'register_shifts',
     ],
   },
   {
@@ -59,6 +62,7 @@ const tableGroups = [
       'marketing_campaign_events', 'workspace_loyalty_setting_versions',
       'loyalty_point_reservation_events',
       'online_payment_intents', 'online_payment_events', 'online_payment_finalizations',
+      'terminal_events', 'register_cash_entries', 'staff_shift_events', 'register_shift_events',
     ],
   },
   { privileges: ['INSERT'], objects: ['receipt_email_events'] },

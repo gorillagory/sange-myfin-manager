@@ -12,6 +12,7 @@ test('a posted transaction takes precedence over an earlier pending dismissal re
  const review={id:sale.id,company_id:company.id,actor_id:actor.id,status:'pending',payload:sale,request_digest:digest,reason_code:'cashier_requested_dismissal',created_at:new Date().toISOString()};
  let posted=false,checkoutCalls=0,transactionChecks=0;
  const client={query:async sql=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-a'}]};
   if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:1,rows:[review]};
   if(sql.includes('FROM myfin.transactions')){transactionChecks++;return {rowCount:posted?1:0,rows:posted?[{id:sale.id}]:[]};}
@@ -35,6 +36,7 @@ test('a generic record conflict is durably queued and the requesting manager can
  const sale=stripConfidential(createSale({id:'generic-record-conflict',items:[cartItem({id:'product-a',name:'Item',price:10,stock:2})],company,user:{uid:manager.id,username:manager.username},method:'Cash',received:20}));
  let review=null,inserts=0,audits=0,updates=0,posts=0;
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-manager'}]};
   if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
   if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:review?1:0,rows:review?[review]:[]};
@@ -81,6 +83,7 @@ test('only validated paid intents and whitelisted constraint failures enter auto
  const make=id=>stripConfidential(createSale({id,items:[cartItem({id:'product-a',name:'Item',price:10,stock:2})],company,user:{uid:actor.id,username:actor.username},method:'Cash',received:20}));
  const reviews=new Map();let inserts=0;
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-safe-conflict'}]};
   if(sql.includes('pg_advisory_xact_lock')||/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))return {rowCount:0,rows:[]};
   if(sql.includes('FROM myfin.receipt_reviews')){const row=reviews.get(args[1]);return {rowCount:row?1:0,rows:row?[row]:[]};}
@@ -122,6 +125,7 @@ test('recipe timing approval requires, applies, persists and exposes an inventor
   reason_code:'receipt_review_required_recipe_timing',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
  let checkoutCalls=0;
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-a'}]};
   if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
   if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:1,rows:[review]};
@@ -179,6 +183,7 @@ test('a delayed snapshot-backed receipt preserves capture evidence and remains r
   reason_code:'receipt_review_required_delayed_sync',inventory_recipe_resolution:null,created_at:new Date().toISOString()};
  let updated=false;
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-delayed'}]};
   if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
   if(sql.includes('FROM myfin.receipt_reviews'))return {rowCount:1,rows:[review]};
@@ -212,6 +217,7 @@ test('individual approval resolves a paid recipe shortage with an audited financ
   stock:0,trackStock:false})],company,user:{uid:cashier.id,username:cashier.username},method:'Cash',received:10,offline:true}));
  let review=null,checkoutCalls=0,posts=0,updates=0;
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-stock'}]};
   if(sql.includes('pg_advisory_xact_lock')||/^(SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)/.test(sql))
    return {rowCount:0,rows:[]};
@@ -258,6 +264,7 @@ test('managers, workspace owners and super admins list reviews from another cash
  },request_digest:'digest',reason_code:'cashier_requested_dismissal',created_at:new Date().toISOString()};
  const filters=[];
  const client={query:async(sql,args=[])=>{
+  if(sql.includes('FROM myfin.companies'))return {rowCount:1,rows:[{require_open_register_for_pos:false,require_open_register_from:null}]};
   if(sql.includes('FROM myfin.auth_session'))return {rowCount:1,rows:[{id:'session-shared'}]};
   if(sql.includes('pg_advisory_xact_lock'))return {rowCount:1,rows:[]};
   if(sql.includes('FROM myfin.receipt_reviews')){
