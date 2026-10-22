@@ -76,7 +76,7 @@ test('terminal and shift capabilities preserve role delegation boundaries',()=>{
 });
 
 test('terminal capability arrays are serialized as JSON for PostgreSQL jsonb writes',async()=>{
-  const routes=new Map(),queries=[];
+  const routes=new Map(),queries=[],activityAudits=[];
   const app={};
   for(const method of ['get','post','put','patch','delete'])
     app[method]=(path,handler)=>routes.set(`${method.toUpperCase()} ${path}`,handler);
@@ -97,7 +97,11 @@ test('terminal capability arrays are serialized as JSON for PostgreSQL jsonb wri
     return {rows:[],rowCount:0};
   }};
   const scoped=(_req,work)=>work(c,'company-a');
-  registerTerminalOperations(app,{db:{},scoped,audit:async()=>{},authOptions:{pos:{sessionSecret:'secret'}}});
+  let activitySequence=0;
+  const audit=async(_c,_who,_companyId,action,details,id=`activity-${++activitySequence}`)=>{
+    activityAudits.push({action,details,id});
+  };
+  registerTerminalOperations(app,{db:{},scoped,audit,authOptions:{pos:{sessionSecret:'secret'}}});
   const identity={id:'owner-a',role:'workspace_owner'};
   const created=await routes.get('POST /api/companies/:company/store-network/terminals')({
     authLevel:'password',identity,body:{storeId:'store-a',locationId:'location-a',code:'TILL-1',
@@ -117,6 +121,23 @@ test('terminal capability arrays are serialized as JSON for PostgreSQL jsonb wri
   assert.match(update.sql,/capabilities=\$9::jsonb/);
   assert.equal(update.params[8],'["admin","stock"]');
   assert.equal(Array.isArray(update.params[8]),false);
+  assert.deepEqual(activityAudits,[
+    {action:'Create terminal',details:'terminal-a · Till 1',id:'activity-1'},
+    {action:'Update terminal',details:'terminal-a · Till 1',id:'activity-2'},
+  ]);
+});
+
+test('every store-network audit keeps the subject in details and reserves the activity id for audit',async()=>{
+  const operations=await source('server/src/terminal-operations.js');
+  const auditLines=operations.split('\n').filter(line=>line.includes('await audit('));
+  assert.equal(auditLines.length,12);
+  for(const line of auditLines)assert.doesNotMatch(line,/,(?:co|row\.id|identityId|id)\);\s*$/,
+    `audit subject must not be used as the activity id: ${line.trim()}`);
+  for(const action of [
+    'Update terminal policy','Create store','Update store','Create store location','Update store location',
+    'Create terminal','Update terminal','Revoke terminal','Update staff store assignments',
+    'Link shop ordering point','Force close staff shift','Force close register shift',
+  ])assert.match(operations,new RegExp(`await audit\\([^\\n]+['"]${action}['"][\\s\\S]{0,160}\\$\\{(?:co|row\\.id|identityId|id)\\}`),action);
 });
 
 test('migrations enforce complete store, terminal, staff and register contexts',async()=>{

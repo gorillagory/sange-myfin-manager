@@ -560,7 +560,8 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
         WHEN $2 AND $3 THEN require_open_register_from ELSE NULL END
       WHERE id=$1`,
     [co,body.terminalEnforcement,body.requireOpenRegisterForPos]);
-    await audit(c,req.identity,co,'Update terminal policy',body.terminalEnforcement?'Enabled terminal enforcement':'Disabled terminal enforcement',co);
+    await audit(c,req.identity,co,'Update terminal policy',
+      `${co} · ${body.terminalEnforcement?'Enabled terminal enforcement':'Disabled terminal enforcement'}`);
     return storeNetwork(c,co);
   }));
 
@@ -569,7 +570,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
     const row=(await c.query(`INSERT INTO myfin.stores(company_id,id,code,name,type,time_zone,address,phone,email,
         latitude,longitude,geofence_radius_m,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [co,id,body.code,body.name,body.type,body.timeZone,body.address,body.phone,body.email,body.latitude,body.longitude,body.geofenceRadiusM,req.identity.id])).rows[0];
-    await audit(c,req.identity,co,'Create store',row.name,row.id);return {store:storeOutput(row)};
+    await audit(c,req.identity,co,'Create store',`${row.id} · ${row.name}`);return {store:storeOutput(row)};
   }));
   app.patch('/api/companies/:company/store-network/stores/:id',req=>scoped(req,async(c,co)=>{
     managementAccess(req);const id=v.parse(v.id,req.params.id),body=v.parse(storeUpdate,req.body);
@@ -592,7 +593,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       phone=$9,email=$10,latitude=$11,longitude=$12,geofence_radius_m=$13,version=version+1,updated_at=now(),
       archived_at=CASE WHEN $6='closed' THEN coalesce(archived_at,now()) ELSE NULL END WHERE company_id=$1 AND id=$2 RETURNING *`,
     [co,id,next.code,next.name,next.type,next.status,next.time_zone,next.address,next.phone,next.email,next.latitude,next.longitude,next.geofence_radius_m])).rows[0];
-    await audit(c,req.identity,co,'Update store',row.name,row.id);return {store:storeOutput(row)};
+    await audit(c,req.identity,co,'Update store',`${row.id} · ${row.name}`);return {store:storeOutput(row)};
   }));
 
   app.post('/api/companies/:company/store-network/locations',req=>scoped(req,async(c,co)=>{
@@ -601,7 +602,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
     if(!parent)v.fail(409,'active_store_required');
     const row=(await c.query(`INSERT INTO myfin.store_locations(company_id,id,store_id,code,name,type,customer_facing,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[co,id,body.storeId,body.code,body.name,body.type,body.customerFacing,req.identity.id])).rows[0];
-    await audit(c,req.identity,co,'Create store location',row.name,row.id);return {location:locationOutput(row)};
+    await audit(c,req.identity,co,'Create store location',`${row.id} · ${row.name}`);return {location:locationOutput(row)};
   }));
   app.patch('/api/companies/:company/store-network/locations/:id',req=>scoped(req,async(c,co)=>{
     managementAccess(req);const id=v.parse(v.id,req.params.id),body=v.parse(locationUpdate,req.body);
@@ -630,7 +631,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       customer_facing=$8,version=version+1,updated_at=now(),archived_at=CASE WHEN $7='closed' THEN coalesce(archived_at,now()) ELSE NULL END
       WHERE company_id=$1 AND id=$2 RETURNING *`,[co,id,nextStoreId,body.code??prior.code,body.name??prior.name,
       body.type??prior.type,body.status??prior.status,body.customerFacing??prior.customer_facing])).rows[0];
-    await audit(c,req.identity,co,'Update store location',row.name,row.id);return {location:locationOutput(row)};
+    await audit(c,req.identity,co,'Update store location',`${row.id} · ${row.name}`);return {location:locationOutput(row)};
   }));
 
   app.post('/api/companies/:company/store-network/terminals',req=>scoped(req,async(c,co)=>{
@@ -645,7 +646,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       JSON.stringify(capabilities),req.identity.id])).rows[0];
     await c.query(`INSERT INTO myfin.terminal_events(company_id,id,terminal_id,action,actor_id,details)
       VALUES($1,$2,$3,'created',$4,$5)`,[co,randomUUID(),id,req.identity.id,{storeId:body.storeId,locationId:body.locationId}]);
-    await audit(c,req.identity,co,'Create terminal',row.name,row.id);return {terminal:terminalOutput(row)};
+    await audit(c,req.identity,co,'Create terminal',`${row.id} · ${row.name}`);return {terminal:terminalOutput(row)};
   }));
   app.patch('/api/companies/:company/store-network/terminals/:id',req=>scoped(req,async(c,co)=>{
     managementAccess(req);const id=v.parse(v.id,req.params.id),body=v.parse(terminalUpdate,req.body);
@@ -678,7 +679,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       body.type??prior.type,body.status??prior.status,JSON.stringify(nextCapabilities)])).rows[0];
     await c.query(`INSERT INTO myfin.terminal_events(company_id,id,terminal_id,action,actor_id,details)
       VALUES($1,$2,$3,'updated',$4,$5)`,[co,randomUUID(),id,req.identity.id,{status:row.status,version:Number(row.version)}]);
-    await audit(c,req.identity,co,'Update terminal',row.name,row.id);return {terminal:terminalOutput(row)};
+    await audit(c,req.identity,co,'Update terminal',`${row.id} · ${row.name}`);return {terminal:terminalOutput(row)};
   }));
   app.delete('/api/companies/:company/store-network/terminals/:id',req=>scoped(req,async(c,co)=>{
     managementAccess(req);const id=v.parse(v.id,req.params.id);
@@ -696,7 +697,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
     await revokeTerminalAccess(c,co,id,'terminal_revoked');
     await c.query(`INSERT INTO myfin.terminal_events(company_id,id,terminal_id,action,actor_id,details)
       VALUES($1,$2,$3,'revoked',$4,'{}')`,[co,randomUUID(),id,req.identity.id]);
-    await audit(c,req.identity,co,'Revoke terminal',row.name,row.id);return {ok:true};
+    await audit(c,req.identity,co,'Revoke terminal',`${row.id} · ${row.name}`);return {ok:true};
   }));
   app.post('/api/companies/:company/store-network/terminals/:id/enrollment',req=>scoped(req,async(c,co)=>{
     managementAccess(req);const id=v.parse(v.id,req.params.id),{expiresInMinutes}=v.parse(z.strictObject({
@@ -745,7 +746,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
           AND allowed.revoked_at IS NULL) RETURNING ss.id`,[co,identityId])).rows;
     if(ended.length)await c.query(`UPDATE myfin.pos_sessions SET revoked_at=coalesce(revoked_at,now())
       WHERE company_id=$1 AND staff_session_id=ANY($2::text[])`,[co,ended.map(row=>row.id)]);
-    await audit(c,req.identity,co,'Update staff store assignments',`${identityId} · ${unique.length||'unrestricted'}`,identityId);
+    await audit(c,req.identity,co,'Update staff store assignments',`${identityId} · ${unique.length||'unrestricted'}`);
     return {identityId,locationIds:unique};
   }));
 
@@ -764,7 +765,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       WHERE company_id=$1 AND id=$2 RETURNING id,name,fulfillment_mode,active,store_id,store_location_id`,
     [co,id,body.storeId,body.locationId])).rows[0];
     if(!row)v.fail(404,'shop_location_not_found');
-    await audit(c,req.identity,co,'Link shop ordering point',row.name,row.id);
+    await audit(c,req.identity,co,'Link shop ordering point',`${row.id} · ${row.name}`);
     return {shopLocation:{id:row.id,name:row.name,fulfillmentMode:row.fulfillment_mode,active:row.active,
       storeId:row.store_id||'',locationId:row.store_location_id||''}};
   }));
@@ -876,7 +877,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
       VALUES($1,$2,$3,$4,$5,$6,$7,'force_clock_out',$8,$9)`,
     [co,randomUUID(),id,prior.identity_id,prior.opened_terminal_id,prior.store_id,prior.store_location_id,
       req.identity.id,{reason}]);
-    await audit(c,req.identity,co,'Force close staff shift',reason,id);
+    await audit(c,req.identity,co,'Force close staff shift',`${id} · ${reason}`);
     return {workShift:workShiftOutput(work)};
   }));
 
@@ -1023,7 +1024,7 @@ export function registerTerminalOperations(app,{db,scoped,audit,authOptions}) {
     [co,randomUUID(),id,shift.terminal_id,shift.store_id,shift.store_location_id,shift.opened_staff_session_id,
       shift.opened_by,req.identity.id,body.requestId,
       {expectedCashSen:expected,countedCashSen:body.countedCashSen,varianceSen:variance,reason:body.reason}]);
-    await audit(c,req.identity,co,'Force close register shift',body.reason,id);
+    await audit(c,req.identity,co,'Force close register shift',`${id} · ${body.reason}`);
     return {registerShift:registerShiftOutput({...closed,current_expected_cash_sen:expected})};
   }));
   app.get('/api/companies/:company/staff-shifts/:id/events',req=>scoped(req,async(c,co)=>{
