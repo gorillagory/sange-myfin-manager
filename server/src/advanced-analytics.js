@@ -124,6 +124,12 @@ function normalizedLine(item = {}) {
       : safeText(item.category,120) || 'Uncategorized',
     subcategory:evidence ? safeText(evidence.subcategory,120) : safeText(item.subcategory,120),
     quantityMilli, grossSen, snapshotNetSen:evidence ? evidence.netSen : null,
+    catalogUnitPriceSen:evidence?.catalogUnitPriceSen ?? (() => {
+      const value=decimalToSen(item.catalogPrice);return value===null?null:value;
+    })(),
+    catalogProductVersion:evidence?.catalogProductVersion ??
+      (Number.isSafeInteger(Number(item.catalogVersion))?BigInt(item.catalogVersion):null),
+    priceSource:safeText(evidence?.priceSource||item.priceSource,32),
     allocationWeightSen:evidence?.netSen ?? grossSen,
     costSen,
   };
@@ -359,7 +365,8 @@ async function attachPricingSnapshotEvidence(c, companyId, rows) {
   const snapshotIds=[...new Set(rows.map(row => safeText(row.pricing_snapshot_id,128)).filter(Boolean))].sort();
   if (!snapshotIds.length) return rows;
   const result=await c.query(`SELECT l.snapshot_id,l.line_no,l.product_id,l.variant_id,
-      l.category,l.subcategory,l.quantity_milli,l.gross_sen,l.net_sen
+      l.category,l.subcategory,l.quantity_milli,l.gross_sen,l.net_sen,
+      l.catalog_unit_price_sen,l.catalog_product_version,l.price_source
     FROM myfin.pricing_snapshot_lines l
     JOIN myfin.pricing_snapshots s ON s.workspace_id=l.workspace_id
       AND s.company_id=l.company_id AND s.id=l.snapshot_id
@@ -387,7 +394,10 @@ async function attachPricingSnapshotEvidence(c, companyId, rows) {
     if (!usable) v.fail(409,'analytics_pricing_snapshot_mismatch');
     return { ...row,items:items.map((item,index) => ({ ...item,
       [SNAPSHOT_EVIDENCE]:{ category:lines[index].category,subcategory:lines[index].subcategory,
-        netSen:exactInteger(lines[index].net_sen) },
+        netSen:exactInteger(lines[index].net_sen),
+        catalogUnitPriceSen:exactInteger(lines[index].catalog_unit_price_sen),
+        catalogProductVersion:exactInteger(lines[index].catalog_product_version),
+        priceSource:safeText(lines[index].price_source,32) },
     })) };
   });
 }

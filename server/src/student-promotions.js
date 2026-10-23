@@ -293,14 +293,22 @@ export function priceWithPromotions({
   integer(taxBasisPoints, { min: 0, max: 10000, message: 'invalid_tax_rate' });
   boolean(cashRounding, 'invalid_cash_rounding');
   const normalizedLines = lines.map((line, index) => {
-    strictKeys(line, new Set(['lineNo', 'productId', 'variantId', 'category', 'subcategory', 'description', 'quantityMilli', 'unitPriceSen']), 'invalid_pricing_line');
+    strictKeys(line, new Set(['lineNo', 'productId', 'variantId', 'category', 'subcategory', 'description',
+      'quantityMilli', 'unitPriceSen', 'catalogUnitPriceSen', 'catalogProductVersion', 'priceSource']),
+    'invalid_pricing_line');
     const lineNo = integer(line.lineNo ?? index + 1, { min: 1, max: 500 });
     const quantityMilli = integer(line.quantityMilli, { min: 1, max: 1_000_000_000 });
     const unitPriceSen = integer(line.unitPriceSen, { max: MAX_SEN });
     const grossSen = safeNumber(roundedRatio(BigInt(unitPriceSen) * BigInt(quantityMilli), 1000n));
+    const catalogUnitPriceSen = integer(line.catalogUnitPriceSen ?? unitPriceSen, { max: MAX_SEN });
+    const catalogProductVersion = line.catalogProductVersion === null || line.catalogProductVersion === undefined
+      ? null : integer(line.catalogProductVersion, { min: 1, max: Number.MAX_SAFE_INTEGER });
+    const priceSource = text(line.priceSource || 'catalog', { min: 1, max: 32 });
+    if (!['catalog','online_override'].includes(priceSource)) fail('invalid_pricing_line');
     return { lineNo, productId: text(line.productId, { min: 1 }), variantId: text(line.variantId || '', { max: 128 }),
       category: text(line.category || '', { max: 120 }), subcategory: text(line.subcategory || '', { max: 120 }),
-      description: text(line.description || '', { min: 1, max: 500 }), quantityMilli, unitPriceSen, grossSen };
+      description: text(line.description || '', { min: 1, max: 500 }), quantityMilli, unitPriceSen,
+      catalogUnitPriceSen, catalogProductVersion, priceSource, grossSen };
   });
   if (new Set(normalizedLines.map(line => line.lineNo)).size !== normalizedLines.length) fail('duplicate_pricing_line');
   // A reward added by the pricing engine must never make its own campaign meet
@@ -317,6 +325,7 @@ export function priceWithPromotions({
   const rewardCatalog = new Map(boundedArray(automaticRewards, 100, 'too_many_automatic_rewards').map(raw => {
     strictKeys(raw, new Set([
       'promotionId', 'productId', 'variantId', 'category', 'subcategory', 'description', 'unitPriceSen',
+      'catalogUnitPriceSen', 'catalogProductVersion', 'priceSource',
     ]), 'invalid_automatic_reward');
     const promotionId = text(raw.promotionId, { min: 1 });
     return [promotionId, {
@@ -326,6 +335,14 @@ export function priceWithPromotions({
       subcategory: text(raw.subcategory || '', { max: 120 }),
       description: text(raw.description || '', { min: 1, max: 500 }),
       unitPriceSen: integer(raw.unitPriceSen, { max: MAX_SEN }),
+      catalogUnitPriceSen: integer(raw.catalogUnitPriceSen ?? raw.unitPriceSen, { max: MAX_SEN }),
+      catalogProductVersion: raw.catalogProductVersion === null || raw.catalogProductVersion === undefined
+        ? null : integer(raw.catalogProductVersion, { min: 1, max: Number.MAX_SAFE_INTEGER }),
+      priceSource: (() => {
+        const source = text(raw.priceSource || 'catalog', { min: 1, max: 32 });
+        if (!['catalog','online_override'].includes(source)) fail('invalid_automatic_reward');
+        return source;
+      })(),
     }];
   }));
   if (rewardCatalog.size !== automaticRewards.length) fail('duplicate_automatic_reward');

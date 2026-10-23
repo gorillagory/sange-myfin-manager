@@ -10,8 +10,8 @@ function client({ settings, host = '', locations = [], deliveryZones = [], slide
       if (sql.includes('FROM myfin.shop_locations')) return { rows: locations };
       if (sql.includes('FROM myfin.storefront_delivery_zones')) return { rows: deliveryZones };
       if (sql.includes('FROM myfin.storefront_carousel_slides')) return { rows: slides };
-      if (sql.includes('FROM myfin.storefront_products')) return { rows: products };
-      if (sql.includes('FROM myfin.storefront_product_variants')) return { rows: variants };
+      if (sql.includes('FROM myfin.products p LEFT JOIN myfin.storefront_products')) return { rows: products };
+      if (sql.includes('FROM myfin.product_variants pv LEFT JOIN myfin.storefront_product_variants')) return { rows: variants };
       throw new Error(`Unexpected query: ${sql}`);
     },
   };
@@ -72,7 +72,8 @@ function successfulWrite(sql) {
   if (sql.includes('FROM myfin.shop_locations')) return { rows:[], rowCount:0 };
   if (sql.includes('FROM myfin.storefront_delivery_zones')) return { rows:[], rowCount:0 };
   if (sql.includes('FROM myfin.storefront_carousel_slides')) return { rows:[], rowCount:0 };
-  if (sql.includes('FROM myfin.storefront_products')) return { rows:[], rowCount:0 };
+  if (sql.includes('FROM myfin.products p LEFT JOIN myfin.storefront_products')) return { rows:[], rowCount:0 };
+  if (sql.includes('FROM myfin.product_variants pv LEFT JOIN myfin.storefront_product_variants')) return { rows:[], rowCount:0 };
   throw new Error(`Unexpected query: ${sql}`);
 }
 
@@ -174,7 +175,7 @@ test('storefront admin exposes bounded carousel content and exact-sen channel pr
       description:'Saturday only', image_url:'https://example.test/tea.jpg', background_color:'#123456',
       cta_label:'Order now', cta_url:'/shop?category=Tea', created_at:'created', updated_at:'updated' }],
     products: [{ product_id:'product-a', data:{ name:'Latte' }, store_price:'12.3450',
-      online_price_sen:1090, published:true, sold_out:false, sort_order:0, display_name:'', description:'' }],
+      online_price_sen:1090, sold_out:false, sort_order:0, image_url:'' }],
     variants: [{ product_id:'product-a', variant_id:'large', store_price:'14.9950', online_price_sen:null,
       published:true, sold_out:false, sort_order:0 }],
   });
@@ -184,6 +185,8 @@ test('storefront admin exposes bounded carousel content and exact-sen channel pr
     createdAt:'created', updatedAt:'updated' });
   assert.equal(result.products[0].storePriceSen, 1235);
   assert.equal(result.products[0].onlinePriceSen, 1090);
+  assert.equal(result.products[0].published, true, 'inventory Active is the storefront visibility source');
+  assert.equal(result.products[0].imageUrl, '');
   assert.equal(result.products[0].variants[0].storePriceSen, 1500);
   assert.equal(result.products[0].variants[0].onlinePriceSen, null);
 });
@@ -214,20 +217,23 @@ test('storefront product writes preserve exact-sen product and variant online ov
   );
   const productInsert=fixture.calls.find(call=>call.sql.includes('INSERT INTO myfin.storefront_products'));
   const variantInsert=fixture.calls.find(call=>call.sql.includes('INSERT INTO myfin.storefront_product_variants'));
-  assert.equal(productInsert.params[7],875);
-  assert.equal(variantInsert.params[4],1025);
+  assert.equal(productInsert.params[5],875);
+  assert.equal(variantInsert.params[5],1025);
 });
 
-test('storefront admin cannot republish an inactive inventory product', async () => {
+test('storefront admin keeps an inactive inventory product hidden while preserving channel settings', async () => {
   const fixture=writeFixture(sql=>{
     if(sql.includes('SELECT p.data,sp.online_price_sen'))return {rows:[{data:{name:'Retired',active:false,variants:[]},online_price_sen:null}],rowCount:1};
-    throw new Error(`Unexpected query: ${sql}`);
+    if(sql.includes('SELECT variant_id,online_price_sen,sold_out'))return {rows:[],rowCount:0};
+    if(sql.includes('INSERT INTO myfin.storefront_products'))return {rows:[],rowCount:1};
+    if(sql.includes('DELETE FROM myfin.storefront_product_variants'))return {rows:[],rowCount:1};
+    return successfulWrite(sql);
   });
   const handler=fixture.routes.get('PUT /api/companies/:company/storefront/products/:product');
-  await assert.rejects(handler(fixture.request({published:true,soldOut:false,sortOrder:0,
-    displayName:'',description:'',variantIds:[],onlinePriceSen:null,variantOverrides:[]},{product:'retired'})),
-  error=>error.statusCode===409&&error.message==='product_inactive');
-  assert.equal(fixture.calls.some(call=>call.sql.includes('INSERT INTO myfin.storefront_products')),false);
+  await handler(fixture.request({published:true,soldOut:false,sortOrder:0,
+    displayName:'',description:'',variantIds:[],onlinePriceSen:null,variantOverrides:[]},{product:'retired'}));
+  const insert=fixture.calls.find(call=>call.sql.includes('INSERT INTO myfin.storefront_products'));
+  assert.equal(insert.params[2],false,'legacy publication state mirrors Inventory Active');
 });
 
 test('storefront hostname claims fail before changing the current host when another company owns the name', async () => {

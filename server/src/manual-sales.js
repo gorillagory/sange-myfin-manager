@@ -73,6 +73,8 @@ function canonicalLines(input, products) {
       desc: product.name + (variant ? ` (${variant.name})` : ''),
       price: line.unitPrice,
       catalogPrice: Number(target.price),
+      catalogVersion: Number(product.version || 1),
+      priceSource: cents(line.unitPrice) === cents(target.price) ? 'catalog' : 'manual_override',
       cost: Number(target.cost || 0),
       unit: product.unit || 'pcs',
       qty: line.quantity,

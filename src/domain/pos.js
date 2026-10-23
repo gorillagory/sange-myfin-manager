@@ -81,7 +81,10 @@ export function sellableQuantity(product, variant, pendingSales = []) {
 export function cartItem(product, variant) {
   const p = normalizeProduct(product), v = variant && p.variants.find(v => v.id === variant.id);
   if (variant && !v) throw new Error('This option is no longer available.');
-  return { productId: p.id, variantId: v?.id || '', variant: v?.name || '', sku: v?.sku || p.sku, desc: p.name + (v ? ` (${v.name})` : ''), price: v?.price ?? p.price, cost: v?.cost ?? p.cost, unit: p.unit, qty: 1 };
+  const price = v?.price ?? p.price;
+  return { productId: p.id, variantId: v?.id || '', variant: v?.name || '', sku: v?.sku || p.sku,
+    desc: p.name + (v ? ` (${v.name})` : ''), price, catalogPrice:price,
+    catalogVersion:Number(p.version || 1), priceSource:'catalog', cost: v?.cost ?? p.cost, unit: p.unit, qty: 1 };
 }
 export function totalsFor(items, taxRate = 0, discount = 0) {
   const rate = Number(taxRate), off = Number(discount);

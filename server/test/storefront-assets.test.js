@@ -41,9 +41,9 @@ function fixture(root) {
       Object.assign(row, { label:params[2], alt_text:params[3] });
       return { rows:[row], rowCount:1 };
     }
-    if (sql.includes("WHERE id=$1 AND kind='assets'")) {
+    if (sql.includes('SELECT f.id,f.mime,f.size FROM myfin.files f')) {
       const row = files.get(params[0]);
-      return row?.kind === 'assets' ? { rows:[row], rowCount:1 } : { rows:[], rowCount:0 };
+      return ['assets','products'].includes(row?.kind) ? { rows:[row], rowCount:1 } : { rows:[], rowCount:0 };
     }
     throw new Error(`Unexpected query: ${sql}`);
   } };
@@ -60,7 +60,7 @@ const request = (params = {}) => ({
 test('storefront assets upload once, retain reusable metadata, and stream only through the public asset route', async t => {
   const root = await mkdtemp(join(tmpdir(), 'myfin-assets-'));
   t.after(() => rm(root, { recursive:true, force:true }));
-  const { routes, files } = await fixture(root);
+  const { routes, files, calls } = await fixture(root);
   const upload = await routes.get('POST /api/companies/:company/files/:kind')({
     ...request({ kind:'assets' }),
     file:async () => ({ filename:'  Campus hero.png  ', file:{ truncated:false }, toBuffer:async () => png }),
@@ -87,6 +87,20 @@ test('storefront assets upload once, retain reusable metadata, and stream only t
   for await (const chunk of stream) chunks.push(chunk);
   assert.deepEqual(Buffer.concat(chunks), png);
   assert.equal(headers['cache-control'], 'public, max-age=31536000, immutable');
+
+  const productUpload=await routes.get('POST /api/companies/:company/files/:kind')({
+    ...request({kind:'products'}),
+    file:async()=>({filename:'latte.png',file:{truncated:false},toBuffer:async()=>png}),
+  });
+  const productStream=await routes.get('GET /api/public/storefront-assets/:id')(
+    {params:{id:productUpload.path}},reply);
+  const productChunks=[];for await(const chunk of productStream)productChunks.push(chunk);
+  assert.deepEqual(Buffer.concat(productChunks),png);
+  const publicLookup=calls.find(call=>call.sql.includes('SELECT f.id,f.mime,f.size FROM myfin.files f'));
+  assert.match(publicLookup.sql,/f\.kind='products'/);
+  assert.match(publicLookup.sql,/s\.published/);
+  assert.match(publicLookup.sql,/coalesce\(p\.data->>'active','true'\)<>'false'/);
+  assert.match(publicLookup.sql,/p\.data->>'imagePath'=f\.id/);
 
   files.set('2c179bbb-d0ce-4f02-87fa-68ad6f7abe25', { id:'2c179bbb-d0ce-4f02-87fa-68ad6f7abe25',
     company_id:'company-a', kind:'receipts', mime:'image/png', size:png.length });

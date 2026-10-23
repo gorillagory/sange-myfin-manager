@@ -86,10 +86,11 @@ const locationCreateSchema = z.strictObject({
 });
 const locationUpdateSchema = locationCreateSchema.extend({ active: z.boolean() });
 const publicationSchema = z.strictObject({
-  published: z.boolean(), soldOut: z.boolean().default(false),
+  published: z.boolean().optional(), soldOut: z.boolean().default(false),
   sortOrder: z.number().int().min(-1000000).max(1000000).default(0),
-  displayName: z.string().trim().max(120).default(''),
-  description: z.string().trim().max(2000).default(''),
+  displayName: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(2000).optional(),
+  imageUrl: optionalStorefrontImageUrl.optional(),
   variantIds: z.array(v.id).max(100).optional(),
   onlinePriceSen: z.number().int().min(0).max(100000000).nullable().optional(),
   variantOverrides: z.array(z.strictObject({
@@ -113,7 +114,8 @@ const lockDeliveryConfiguration = (c, companyId) => c.query(
 );
 
 async function validateStorefrontAssetOwnership(c, companyId, input) {
-  const urls = [input.logoUrl, input.heroImageUrl, ...(input.slides || []).map(slide => slide.imageUrl)];
+  const urls = [input.logoUrl, input.heroImageUrl, input.imageUrl,
+    ...(input.slides || []).map(slide => slide.imageUrl)];
   const ids = [...new Set(urls.flatMap(value => publicAssetPath.exec(value || '')?.[1] || []))];
   if (!ids.length) return;
   const owned = await c.query(
@@ -142,14 +144,21 @@ async function configOutput(c, companyId) {
        FROM myfin.storefront_carousel_slides WHERE company_id=$1 ORDER BY sort_order,id`, [companyId],
   )).rows;
   const products = (await c.query(
-    `SELECT sp.*,p.data,p.price AS store_price FROM myfin.storefront_products sp JOIN myfin.products p
-       ON p.company_id=sp.company_id AND p.id=sp.product_id
-      WHERE sp.company_id=$1 ORDER BY sp.sort_order,sp.product_id`, [companyId],
+    `SELECT p.id AS product_id,p.data,p.price AS store_price,
+            coalesce(sp.sold_out,false) AS sold_out,coalesce(sp.sort_order,0) AS sort_order,
+            sp.online_price_sen,coalesce(sp.image_url,'') AS image_url
+       FROM myfin.products p LEFT JOIN myfin.storefront_products sp
+         ON sp.company_id=p.company_id AND sp.product_id=p.id
+      WHERE p.company_id=$1 ORDER BY coalesce(sp.sort_order,0),p.id`, [companyId],
   )).rows;
   const variants = products.length ? (await c.query(
-    `SELECT spv.*,pv.price AS store_price FROM myfin.storefront_product_variants spv
-       JOIN myfin.product_variants pv ON pv.company_id=spv.company_id AND pv.product_id=spv.product_id AND pv.id=spv.variant_id
-      WHERE spv.company_id=$1 AND spv.product_id=ANY($2::text[]) ORDER BY spv.sort_order,spv.variant_id`,
+    `SELECT pv.product_id,pv.id AS variant_id,pv.price AS store_price,
+            coalesce(spv.sold_out,false) AS sold_out,coalesce(spv.sort_order,0) AS sort_order,
+            spv.online_price_sen
+       FROM myfin.product_variants pv LEFT JOIN myfin.storefront_product_variants spv
+         ON spv.company_id=pv.company_id AND spv.product_id=pv.product_id AND spv.variant_id=pv.id
+      WHERE pv.company_id=$1 AND pv.product_id=ANY($2::text[])
+      ORDER BY coalesce(spv.sort_order,0),pv.id`,
     [companyId, products.map(product => product.product_id)],
   )).rows : [];
   const privacy = storefrontPrivacyOutput(settings);
@@ -189,12 +198,12 @@ async function configOutput(c, companyId) {
       createdAt: row.created_at, updatedAt: row.updated_at })),
     products: products.map(row => ({ productId: row.product_id, productName: row.data.name,
       active: row.data?.active !== false,
-      published: row.published, soldOut: row.sold_out, sortOrder: row.sort_order,
-      displayName: row.display_name, description: row.description,
+      published: row.data?.active !== false, soldOut: row.sold_out, sortOrder: row.sort_order,
+      displayName: '', description: row.data?.description || '', imageUrl:row.image_url,
       storePriceSen: decimalToScaledInteger(row.store_price, 2, 'invalid_catalog_price'),
       onlinePriceSen: row.online_price_sen === null || row.online_price_sen === undefined ? null : Number(row.online_price_sen),
       variants: variants.filter(variant => variant.product_id === row.product_id).map(variant => ({
-        variantId: variant.variant_id, published: variant.published, soldOut: variant.sold_out,
+        variantId: variant.variant_id, published: row.data?.active !== false, soldOut: variant.sold_out,
         sortOrder: variant.sort_order,
         storePriceSen: decimalToScaledInteger(variant.store_price, 2, 'invalid_catalog_price'),
         onlinePriceSen: variant.online_price_sen === null || variant.online_price_sen === undefined
@@ -435,49 +444,53 @@ export function registerStorefrontAdmin(app, { scoped, authOptions, audit }) {
   app.put('/api/companies/:company/storefront/products/:product', req => scoped(req, async (c, companyId) => {
     requireConfigure(req.identity);
     const productId = v.parse(v.id, req.params.product), input = v.parse(publicationSchema, req.body);
+    await validateStorefrontAssetOwnership(c, companyId, input);
     const currentProduct = (await c.query(
-      `SELECT p.data,sp.online_price_sen FROM myfin.products p LEFT JOIN myfin.storefront_products sp
+      `SELECT p.data,sp.online_price_sen,sp.image_url FROM myfin.products p LEFT JOIN myfin.storefront_products sp
          ON sp.company_id=p.company_id AND sp.product_id=p.id
         WHERE p.company_id=$1 AND p.id=$2 FOR SHARE OF p`, [companyId, productId],
     )).rows[0];
     const product = currentProduct?.data;
     if (!product) v.fail(404, 'product_not_found');
-    if (product.active === false && input.published) v.fail(409, 'product_inactive');
     const known = new Set((product.variants || []).map(variant => variant.id));
-    const selected = input.variantIds === undefined ? [...known] : input.variantIds;
-    if (selected.some(id => !known.has(id))) v.fail(400, 'invalid_product_variant');
+    if ((input.variantIds || []).some(id => !known.has(id))) v.fail(400, 'invalid_product_variant');
+    const selected = [...known];
     const requestedOverrides = input.variantOverrides || [];
     if (new Set(requestedOverrides.map(row => row.variantId)).size !== requestedOverrides.length ||
-        requestedOverrides.some(row => !known.has(row.variantId) || !selected.includes(row.variantId)))
+        requestedOverrides.some(row => !known.has(row.variantId)))
       v.fail(400, 'invalid_product_variant');
     const existingVariants = (await c.query(
-      `SELECT variant_id,online_price_sen FROM myfin.storefront_product_variants
+      `SELECT variant_id,online_price_sen,sold_out FROM myfin.storefront_product_variants
         WHERE company_id=$1 AND product_id=$2 FOR SHARE`, [companyId, productId],
     )).rows;
     const existingPrice = new Map(existingVariants.map(row => [row.variant_id,
       row.online_price_sen === null || row.online_price_sen === undefined ? null : Number(row.online_price_sen)]));
+    const existingSoldOut = new Map(existingVariants.map(row => [row.variant_id,Boolean(row.sold_out)]));
     const overridePrice = new Map(requestedOverrides.map(row => [row.variantId, row.onlinePriceSen]));
     const onlinePriceSen = input.onlinePriceSen === undefined
       ? (currentProduct.online_price_sen === null || currentProduct.online_price_sen === undefined
         ? null : Number(currentProduct.online_price_sen)) : input.onlinePriceSen;
+    const imageUrl = input.imageUrl === undefined ? (currentProduct.image_url || '') : input.imageUrl;
     await c.query(
       `INSERT INTO myfin.storefront_products(company_id,product_id,published,sold_out,sort_order,display_name,description,
-         online_price_sen,updated_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(company_id,product_id) DO UPDATE SET
+         online_price_sen,image_url,updated_by)
+       VALUES($1,$2,$3,$4,$5,'','',$6,$7,$8) ON CONFLICT(company_id,product_id) DO UPDATE SET
        published=EXCLUDED.published,sold_out=EXCLUDED.sold_out,sort_order=EXCLUDED.sort_order,
        display_name=EXCLUDED.display_name,description=EXCLUDED.description,
-       online_price_sen=EXCLUDED.online_price_sen,updated_by=EXCLUDED.updated_by,updated_at=now()`,
-      [companyId, productId, input.published, input.soldOut, input.sortOrder, input.displayName,
-        input.description, onlinePriceSen, req.identity.id],
+      online_price_sen=EXCLUDED.online_price_sen,image_url=EXCLUDED.image_url,
+       updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      [companyId, productId, product.active !== false, input.soldOut, input.sortOrder,
+        onlinePriceSen, imageUrl, req.identity.id],
     );
     await c.query('DELETE FROM myfin.storefront_product_variants WHERE company_id=$1 AND product_id=$2', [companyId, productId]);
     let sort = 0;
     for (const id of selected) await c.query(
-      `INSERT INTO myfin.storefront_product_variants(company_id,product_id,variant_id,published,sort_order,online_price_sen)
-       VALUES($1,$2,$3,true,$4,$5)`, [companyId, productId, id, sort++,
+      `INSERT INTO myfin.storefront_product_variants(company_id,product_id,variant_id,published,sold_out,sort_order,online_price_sen)
+       VALUES($1,$2,$3,true,$4,$5,$6)`, [companyId, productId, id, existingSoldOut.get(id) || false, sort++,
         input.variantOverrides === undefined ? (existingPrice.get(id) ?? null) : (overridePrice.get(id) ?? null)],
     );
-    await audit(c, req.identity, companyId, 'Storefront product', `${product.name} · ${input.published ? 'Published' : 'Hidden'}`);
+    await audit(c, req.identity, companyId, 'Storefront product',
+      `${product.name} · ${product.active === false ? 'Inactive catalogue item' : input.soldOut ? 'Sold out' : 'Available'}`);
     return configOutput(c, companyId);
   }));
 }

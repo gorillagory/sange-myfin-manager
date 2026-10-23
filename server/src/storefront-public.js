@@ -60,6 +60,17 @@ const safeImage = value => typeof value === 'string' && value.length <= 2048 &&
   (/^https:\/\/\S+$/i.test(value) ||
     /^\/api\/public\/storefront-assets\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value))
   ? value : '';
+const fileIdPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const productFileUrl = new RegExp(`^/api/files/(${fileIdPattern})$`);
+const productFileId = new RegExp(`^${fileIdPattern}$`);
+export function inventoryProductImage(product = {}) {
+  const direct = safeImage(product.imageUrl);
+  if (direct) return direct;
+  const fromUrl = productFileUrl.exec(String(product.imageUrl || ''))?.[1];
+  const fromPath = productFileId.test(String(product.imagePath || '')) ? String(product.imagePath) : '';
+  const id = fromUrl || fromPath;
+  return id ? `/api/public/storefront-assets/${id}` : '';
+}
 const safeAction = value => typeof value === 'string' && value.length <= 2048 && (/^https:\/\/\S+$/i.test(value) ||
   (/^\/[A-Za-z0-9/_?&=.%#-]*$/.test(value) && !value.startsWith('//'))) ? value : '';
 const boundedText = (value, max) => String(value || '').trim().slice(0, max);
@@ -308,17 +319,19 @@ async function publishedCart(c, companyId, input, snapshot = null) {
   }
   const ids = [...new Set(input.items.map(item => item.productId))].sort();
   const result = await c.query(
-    `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sold_out
-      FROM myfin.products p JOIN myfin.storefront_products sp
+    `SELECT p.id,p.data,p.price,p.stock,coalesce(sp.sold_out,false) AS sold_out
+      FROM myfin.products p LEFT JOIN myfin.storefront_products sp
          ON sp.company_id=p.company_id AND sp.product_id=p.id
-      WHERE p.company_id=$1 AND p.id=ANY($2::text[]) AND sp.published
+      WHERE p.company_id=$1 AND p.id=ANY($2::text[])
         AND coalesce(p.data->>'active','true')<>'false'
       ORDER BY p.id FOR SHARE OF p`, [companyId, ids],
   );
   if (result.rowCount !== ids.length) v.fail(409, 'menu_item_unavailable');
   const variantRows = await c.query(
-    `SELECT product_id,variant_id,published,sold_out FROM myfin.storefront_product_variants
-      WHERE company_id=$1 AND product_id=ANY($2::text[])`, [companyId, ids],
+    `SELECT pv.product_id,pv.id AS variant_id,coalesce(spv.sold_out,false) AS sold_out
+       FROM myfin.product_variants pv LEFT JOIN myfin.storefront_product_variants spv
+         ON spv.company_id=pv.company_id AND spv.product_id=pv.product_id AND spv.variant_id=pv.id
+      WHERE pv.company_id=$1 AND pv.product_id=ANY($2::text[])`, [companyId, ids],
   );
   const visibility = new Map(variantRows.rows.map(row => [`${row.product_id}\u0000${row.variant_id}`, row]));
   const reserved = await activeReservationQuantities(c, companyId, ids);
@@ -330,7 +343,7 @@ async function publishedCart(c, companyId, input, snapshot = null) {
     const variant = item.variantId ? product.variants?.find(entry => entry.id === item.variantId) : null;
     if (item.variantId) {
       const publication = visibility.get(lineKey(item));
-      if (!variant || !publication?.published || publication.sold_out) v.fail(409, 'menu_item_unavailable');
+      if (!variant || publication?.sold_out) v.fail(409, 'menu_item_unavailable');
     } else if (product.variants?.length) v.fail(400, 'menu_variant_required');
     if (product.trackStock) {
       const available = Number((variant || product).stock || 0) - (reserved.get(lineKey(item)) || 0);
@@ -338,7 +351,7 @@ async function publishedCart(c, companyId, input, snapshot = null) {
     }
     return {
       lineNo: index + 1, productId: item.productId, variantId: item.variantId || '',
-      description: row.display_name || product.name, variant: variant?.name || '',
+      description: product.name, variant: variant?.name || '',
       sku: variant?.sku || product.sku || '', unit: product.unit || 'pcs',
       qty: item.quantity,
     };
@@ -420,7 +433,10 @@ function quoteFor(input, location, priced, delivery) {
   return { locationId: location.id, serviceMode: input.serviceMode,
     items: priced.lines.map(item => ({ productId: item.productId, variantId: item.variantId,
       description: item.description, variant: item.variant, unit: item.unit, quantity: item.qty,
-      unitPrice: item.unitPriceSen / 100, lineTotal: item.grossSen / 100 })),
+      unitPrice: item.unitPriceSen / 100,
+      catalogUnitPrice:item.catalogUnitPriceSen == null ? null : item.catalogUnitPriceSen / 100,
+      catalogProductVersion:item.catalogProductVersion, priceSource:item.priceSource,
+      lineTotal: item.grossSen / 100 })),
     ...totals, discounts: priced.snapshot.discounts.map(item => ({ name: item.name, amount: item.discountSen / 100 })),
     currency: priced.currency, ...(delivery ? { delivery: deliveryQuote(delivery) } : {}) };
 }
@@ -436,7 +452,9 @@ async function pricedCart(c, context, input, customerId, voucherPepper) {
   const lines = publication.lines.map(line => {
     const priced = snapshot.lines.find(item => item.productId === line.productId && item.variantId === line.variantId);
     if (!priced) v.fail(409, 'quote_changed');
-    return { ...line, unitPriceSen: priced.unitPriceSen, grossSen: priced.grossSen };
+    return { ...line, unitPriceSen: priced.unitPriceSen, catalogUnitPriceSen:priced.catalogUnitPriceSen,
+      catalogProductVersion:priced.catalogProductVersion, priceSource:priced.priceSource,
+      grossSen: priced.grossSen };
   });
   return { ...publication, lines, snapshot };
 }
@@ -448,7 +466,9 @@ async function snapshotCart(c, context, input, customerId, token) {
   const publication = await publishedCart(c, context.company_id, input, snapshot);
   return { ...publication, snapshot, lines: publication.lines.map(line => {
     const priced = snapshot.lines.find(item => item.productId === line.productId && item.variantId === line.variantId);
-    return { ...line, unitPriceSen: priced.unitPriceSen, grossSen: priced.grossSen };
+    return { ...line, unitPriceSen: priced.unitPriceSen, catalogUnitPriceSen:priced.catalogUnitPriceSen,
+      catalogProductVersion:priced.catalogProductVersion, priceSource:priced.priceSource,
+      grossSen: priced.grossSen };
   }) };
 }
 
@@ -581,21 +601,21 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         [context.company_id],
       )).rows;
       const products = (await c.query(
-        `SELECT p.id,p.data,p.price,p.stock,sp.display_name,sp.description,sp.sort_order,sp.sold_out,
-                sp.online_price_sen
-           FROM myfin.products p JOIN myfin.storefront_products sp
+        `SELECT p.id,p.data,p.price,p.stock,coalesce(sp.sort_order,0) AS sort_order,
+                coalesce(sp.sold_out,false) AS sold_out,sp.online_price_sen,
+                coalesce(sp.image_url,'') AS storefront_image_url
+           FROM myfin.products p LEFT JOIN myfin.storefront_products sp
              ON sp.company_id=p.company_id AND sp.product_id=p.id
-          WHERE p.company_id=$1 AND sp.published
-            AND coalesce(p.data->>'active','true')<>'false'
+          WHERE p.company_id=$1 AND coalesce(p.data->>'active','true')<>'false'
           ORDER BY sp.sort_order,p.id FOR SHARE OF p`, [context.company_id],
       )).rows.filter(row => row.data?.active !== false);
       const ids = products.map(row => row.id);
       const variantRows = ids.length ? (await c.query(
-        `SELECT spv.product_id,spv.variant_id,spv.published,spv.sold_out,spv.sort_order,
-                spv.online_price_sen,pv.price AS store_price
-           FROM myfin.storefront_product_variants spv JOIN myfin.product_variants pv
-             ON pv.company_id=spv.company_id AND pv.product_id=spv.product_id AND pv.id=spv.variant_id
-          WHERE spv.company_id=$1 AND spv.product_id=ANY($2::text[])`, [context.company_id, ids],
+        `SELECT pv.product_id,pv.id AS variant_id,coalesce(spv.sold_out,false) AS sold_out,
+                coalesce(spv.sort_order,0) AS sort_order,spv.online_price_sen,pv.price AS store_price
+           FROM myfin.product_variants pv LEFT JOIN myfin.storefront_product_variants spv
+             ON spv.company_id=pv.company_id AND spv.product_id=pv.product_id AND spv.variant_id=pv.id
+          WHERE pv.company_id=$1 AND pv.product_id=ANY($2::text[])`, [context.company_id, ids],
       )).rows : [];
       const cap = Number(config.max_item_quantity);
       const reserved = await activeReservationQuantities(c, context.company_id, ids);
@@ -611,24 +631,25 @@ export function registerStorefrontPublic(app, { db, authOptions }) {
         const variants = (product.variants || []).map(variant => {
           const publication = variantRows.find(entry => entry.product_id === row.id && entry.variant_id === variant.id);
           const maxQuantity = publication?.sold_out ? 0 : availability(variant);
-          const storePriceSen = publication ? decimalToScaledInteger(publication.store_price, 2, 'invalid_catalog_price') : 0;
+          const storePriceSen = decimalToScaledInteger(publication?.store_price ?? variant.price, 2, 'invalid_catalog_price');
           const onlinePriceSen = publication?.online_price_sen === null || publication?.online_price_sen === undefined
             ? (row.online_price_sen === null || row.online_price_sen === undefined ? storePriceSen : Number(row.online_price_sen))
             : Number(publication.online_price_sen);
-          return publication?.published ? { id: variant.id, name: boundedText(variant.name, 120),
+          return { id: variant.id, name: boundedText(variant.name, 120),
             storePrice: storePriceSen / 100, onlinePrice: onlinePriceSen / 100, price: onlinePriceSen / 100,
             hasOnlinePriceOverride: onlinePriceSen !== storePriceSen,
-            available: maxQuantity > 0, maxQuantity, sortOrder: publication.sort_order } : null;
-        }).filter(Boolean).sort((a, b) => a.sortOrder - b.sortOrder);
+            available: maxQuantity > 0, maxQuantity, sortOrder: publication?.sort_order || 0 };
+        }).sort((a, b) => a.sortOrder - b.sortOrder);
         const maxQuantity = row.sold_out || (product.variants?.length && !variants.some(item => item.available)) ? 0 : availability(product);
         const storePriceSen = decimalToScaledInteger(row.price, 2, 'invalid_catalog_price');
         const onlinePriceSen = row.online_price_sen === null || row.online_price_sen === undefined
           ? storePriceSen : Number(row.online_price_sen);
         return {
-          id: row.id, active: true, name: boundedText(row.display_name || product.name, 120),
-          description: boundedText(row.description || product.description, 2000),
+          id: row.id, active: true, name: boundedText(product.name, 120),
+          description: boundedText(product.description, 2000),
           category: boundedText(product.category || 'Menu', 120), subcategory: boundedText(product.subcategory, 120),
-          imageUrl: safeImage(product.imageUrl), unit: boundedText(product.unit || 'pcs', 40),
+          imageUrl: safeImage(row.storefront_image_url) || inventoryProductImage(product),
+          unit: boundedText(product.unit || 'pcs', 40),
           storePrice: storePriceSen / 100, onlinePrice: onlinePriceSen / 100,
           price: onlinePriceSen / 100, hasOnlinePriceOverride: onlinePriceSen !== storePriceSen, available: maxQuantity > 0,
           maxQuantity: product.variants?.length ? undefined : maxQuantity, variants,

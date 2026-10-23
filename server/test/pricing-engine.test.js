@@ -32,6 +32,7 @@ function pricingFixture(overrides = {}) {
     if (sql.includes('FROM myfin.products p') && sql.includes('LEFT JOIN myfin.product_variants')) {
       const available = overrides.catalogRows || [overrides.catalogRow || {
         id: 'latte', data: { name: 'Latte', category: 'Beverage', subcategory: 'Coffee', variants: [] },
+        product_version: '7',
         product_price: '19.9999', product_online_price_sen: null, variant_id: null, variant_price: null,
         variant_online_price_sen: null,
       }];
@@ -102,6 +103,8 @@ test('authoritative quote loads catalog, current rules, student state and HMAC v
   assert.equal(result.expiresAt, '2026-10-09T04:05:00.000Z');
   assert.equal(result.currencyCode, 'MYR');
   assert.equal(result.studentEligibilityVersion, 4);
+  assert.deepEqual({ catalog:result.lines[0].catalogUnitPriceSen, version:result.lines[0].catalogProductVersion,
+    source:result.lines[0].priceSource }, { catalog:2000, version:7, source:'catalog' });
   assert.deepEqual({ subtotal: result.subtotalSen, discount: result.discountSen,
     taxable: result.taxableSen, tax: result.taxSen, rounding: result.roundingSen, total: result.totalSen },
   { subtotal: 3000, discount: 425, taxable: 2575, tax: 155, rounding: 0, total: 2730 });
@@ -129,6 +132,8 @@ test('authoritative quote loads catalog, current rules, student state and HMAC v
   assert.match(voucherLookup.sql, /FROM myfin\.promotion_reservations/);
   assert.match(rules.sql, /FROM myfin\.promotion_reservations/);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_lines')).length, 1);
+  const lineInsert=fixture.calls.find(call=>call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_lines'));
+  assert.deepEqual(lineInsert.params.slice(15),[2000,7,'catalog']);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discounts')).length, 2);
   assert.equal(fixture.calls.filter(call => call.sql.startsWith('INSERT INTO myfin.pricing_snapshot_discount_lines')).length, 2);
 });
@@ -156,6 +161,8 @@ test('POS preview is channel-aware and read-only while the final quote persists 
   assert.equal(preview.id, '');
   assert.equal(preview.channel, 'pos');
   assert.equal(preview.subtotalSen, 2000, 'POS ignores the separate online price');
+  assert.deepEqual({ catalog:preview.lines[0].catalogUnitPriceSen,source:preview.lines[0].priceSource },
+    { catalog:2000,source:'catalog' });
   assert.equal(preview.promotionDiscountSen, 200);
   assert.equal(preview.manualDiscountSen, 90);
   assert.equal(preview.discountSen, 290);
@@ -169,6 +176,19 @@ test('POS preview is channel-aware and read-only while the final quote persists 
   assert.equal(snapshots.length, 1);
   assert.deepEqual(snapshots[0].params.slice(17, 21), ['pos','cashier-a',500,90]);
   assert.equal(snapshots[0].params[21], '2026-10-09T04:15:00.000Z');
+});
+
+test('storefront quotes retain the catalog baseline and version behind an online price override', async () => {
+  const fixture=pricingFixture({promotionRows:[],catalogRow:{
+    id:'latte',data:{name:'Latte',category:'Beverage',subcategory:'Coffee',variants:[]},
+    product_version:'11',product_price:'20.00',product_online_price_sen:1750,
+    variant_id:null,variant_price:null,variant_online_price_sen:null,
+  }});
+  const quote=await createPricingSnapshot(fixture.c,{companyId:'company-a',channel:'storefront',
+    lines:[{productId:'latte',variantId:'',quantityMilli:1000}]},{now:AT,persist:false});
+  assert.deepEqual({actual:quote.lines[0].unitPriceSen,catalog:quote.lines[0].catalogUnitPriceSen,
+    version:quote.lines[0].catalogProductVersion,source:quote.lines[0].priceSource},
+  {actual:1750,catalog:2000,version:11,source:'online_override'});
 });
 
 test('POS automatically inserts an eligible free reward while storefront pricing remains explicitly basket-driven', async () => {

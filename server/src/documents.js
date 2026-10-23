@@ -10,6 +10,21 @@ const settings=z.strictObject({layout:z.enum(["clean","modern","corporate"]),pri
 const line=z.strictObject({desc:z.string().min(1).max(500),qty:z.number().positive().max(1e6),unit:short.optional(),price:z.number().min(0).max(1e9),productId:v.id.optional(),variantId:z.string().max(128).optional(),sku:short.optional()});
 const draft=z.strictObject({id:v.id.optional(),type:z.enum(["Invoice","Quote"]),client_id:z.string().max(128).default(""),date,dueDate:date.default(""),validUntil:date.default(""),items:z.array(line).min(1).max(500),discount:z.number().min(0).max(100).default(0),taxRate:z.number().min(0).max(100).default(0),notes:text.default(""),paymentInstructions:text.default(""),terms:text.default(""),footer:text.default(""),signatureLabel:short.default(""),templateId:z.string().max(128).default(""),assignedTo:z.string().max(128).default(""),version:z.number().int().positive().optional()});
 async function event(c,who,co,id,action,details={}){await c.query("INSERT INTO myfin.document_events(id,company_id,document_id,actor_id,action,details) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),co,id,who.id,action,details]);}
+async function documentCatalogEvidence(c,co,items,preserveExisting=false){
+ const ids=[...new Set(items.map(item=>item.productId).filter(Boolean))].sort();
+ if(!ids.length)return items;
+ const rows=(await c.query("SELECT id,data,version FROM myfin.products WHERE company_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR SHARE",[co,ids])).rows;
+ return items.map(item=>{
+  if(preserveExisting&&Number.isFinite(Number(item.catalogPrice))&&Number.isSafeInteger(Number(item.catalogVersion))&&item.catalogVersion>0&&["catalog","manual_override"].includes(item.priceSource))return item;
+  const row=rows.find(candidate=>candidate.id===item.productId),product=row?.data,
+   variant=item.variantId?product?.variants?.find(candidate=>candidate.id===item.variantId):null;
+  if(!product||(item.variantId&&!variant))return item;
+  const catalogPrice=Number(variant?.price??product.price);
+  if(!Number.isFinite(catalogPrice)||catalogPrice<0)return item;
+  return {...item,catalogPrice,catalogVersion:Number(row.version||product.version||1),
+   priceSource:cents(item.price)===cents(catalogPrice)?"catalog":"manual_override"};
+ });
+}
 export async function publishedTemplate(c,co,kind,templateId="",version=null){
  if(templateId&&version){const exact=await c.query("SELECT * FROM myfin.document_template_versions WHERE template_id=$1 AND version=$2 AND company_id=$3 AND kind=$4",[templateId,version,co,kind]);if(!exact.rowCount)v.fail(409,"published_template_required");return exact.rows[0];}
  const r=templateId?await c.query("SELECT v.* FROM myfin.document_templates t JOIN myfin.document_template_versions v ON v.template_id=t.id AND v.version=t.published_version WHERE t.id=$1 AND t.company_id=$2 AND t.kind=$3",[templateId,co,kind]):await c.query("SELECT v.* FROM myfin.document_template_defaults d JOIN myfin.document_template_versions v ON v.template_id=d.template_id AND v.version=d.version WHERE d.company_id=$1 AND d.kind=$2",[co,kind]);
@@ -72,7 +87,8 @@ export function registerDocuments(app,{db,authorize,audit}){
   if((options.expectedTemplateId!==undefined&&options.expectedTemplateId!==(template.template_id||""))||(options.expectedTemplateVersion!==undefined&&options.expectedTemplateVersion!==template.version))v.fail(409,"template_changed");
   const year=Number(businessDate().slice(0,4));const n=(await c.query("INSERT INTO myfin.document_number_sequences(company_id,kind,year,value) VALUES($1,$2,$3,1) ON CONFLICT(company_id,kind,year) DO UPDATE SET value=myfin.document_number_sequences.value+1 RETURNING value",[co,row.data.type,year])).rows[0].value;
   const number=`${row.data.type==="Invoice"?"INV":"QUO"}-${year}-${String(n).padStart(6,"0")}`;
-  const data={...row.data,number,status:row.data.type==="Quote"?"Issued":"Pending",documentState:"issued",correctionOf:row.correction_of};
+  const items=await documentCatalogEvidence(c,co,row.data.items,Boolean(row.quote_id||row.correction_of));
+  const data={...row.data,items,number,status:row.data.type==="Quote"?"Issued":"Pending",documentState:"issued",correctionOf:row.correction_of};
   const snapshot=buildDocumentViewModel(data,{...company.data,id:company.id,name:company.name},client,{settings:template.settings});
   snapshot.templateVersion=template.version;snapshot.templateId=template.template_id;
   await c.query("UPDATE myfin.transactions SET data=$3,document_state='issued',issued_snapshot=$4,issued_at=now() WHERE company_id=$1 AND id=$2",[co,row.id,data,snapshot]);

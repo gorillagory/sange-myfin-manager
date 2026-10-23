@@ -147,7 +147,14 @@ export async function registerFiles(app, { database: db, uploadDir }) {
   app.get("/api/public/storefront-assets/:id", async (req, reply) => {
     const fileId = parse(z.uuid(), req.params.id);
     const meta = await db.transaction(async c => (await c.query(
-      "SELECT id,mime,size FROM myfin.files WHERE id=$1 AND kind='assets'", [fileId],
+      `SELECT f.id,f.mime,f.size FROM myfin.files f WHERE f.id=$1 AND (
+         f.kind='assets' OR (f.kind='products' AND EXISTS(
+           SELECT 1 FROM myfin.products p
+           JOIN myfin.storefront_settings s ON s.company_id=p.company_id AND s.published
+           WHERE p.company_id=f.company_id AND coalesce(p.data->>'active','true')<>'false'
+             AND (p.data->>'imagePath'=f.id OR p.data->>'imageUrl'='/api/files/'||f.id)
+         ))
+       )`, [fileId],
     )).rows[0]);
     if (!meta) fail(404, "not_found");
     const handle = await open(join(root, fileId), constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -238,6 +245,9 @@ export async function registerFiles(app, { database: db, uploadDir }) {
             WHERE company_id=$1 AND (logo_url=$2 OR hero_image_url=$2)
            UNION ALL
            SELECT 1 FROM myfin.storefront_carousel_slides
+            WHERE company_id=$1 AND image_url=$2
+           UNION ALL
+           SELECT 1 FROM myfin.storefront_products
             WHERE company_id=$1 AND image_url=$2 LIMIT 1`,
           [r.rows[0].company_id, publicUrl],
         );

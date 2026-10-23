@@ -287,7 +287,8 @@ async function acceptedOrderPricing(c, companyId, orderId, sale) {
       cents(expected.total) !== cents(expected.totalBeforeRounding) + cents(expected.rounding))
     v.fail(409, "customer_order_checkout_changed");
   const lines = (await c.query(
-    `SELECT line_no,product_id,variant_id,quantity_milli,unit_price_sen,gross_sen
+    `SELECT line_no,product_id,variant_id,quantity_milli,unit_price_sen,gross_sen,
+            catalog_unit_price_sen,catalog_product_version,price_source
        FROM myfin.pricing_snapshot_lines
       WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3 ORDER BY line_no`,
     [order.workspace_id, companyId, sale.pricingSnapshotId],
@@ -304,7 +305,11 @@ async function acceptedOrderPricing(c, companyId, orderId, sale) {
       WHERE workspace_id=$1 AND company_id=$2 AND snapshot_id=$3 ORDER BY sequence`,
     [order.workspace_id, companyId, sale.pricingSnapshotId],
   )).rows.map(row => ({ name: row.display_name, amount: Number(row.discount_sen) / 100 }));
-  return { totals: expected, discounts };
+  return { totals: expected, discounts, pricingLines: lines.map(line => ({
+    catalogUnitPriceSen: line.catalog_unit_price_sen == null ? null : Number(line.catalog_unit_price_sen),
+    catalogProductVersion: line.catalog_product_version == null ? null : Number(line.catalog_product_version),
+    priceSource: line.price_source || '',
+  })) };
 }
 async function posSalePricing(c, companyId, who, sale, approval = null) {
   const company = (await c.query(
@@ -369,7 +374,7 @@ async function posSalePricing(c, companyId, who, sale, approval = null) {
     total: snapshot.totalSen / 100,
   };
   const discounts = snapshot.discounts.map(row => ({ name: row.name, amount: row.discountSen / 100 }));
-  return { totals, discounts, workspaceId: company.workspace_id,
+  return { totals, discounts, pricingLines:snapshot.lines, workspaceId: company.workspace_id,
     manualDiscountAmount: snapshot.manualDiscountSen / 100 };
 }
 export async function checkout(c, who, companyId, input, approval=null, options={}) {
@@ -543,16 +548,23 @@ export async function checkout(c, who, companyId, input, approval=null, options=
   const company={...companyRow.data,name:companyRow.name},prefs=company.preferences||{};
   const expectedStore={name:company.name||"",address:company.address||"",phone:company.phone||"",registration:company.registration||"",currency:prefs.currency||"RM",footer:prefs.receiptFooter||"Thank you for shopping with us.",paperWidth:prefs.paperWidth||"80"};
   if((!approval||approval.revalidatePolicy)&&JSON.stringify(canonical(sale.storeSnapshot))!==JSON.stringify(canonical(expectedStore)))v.fail(409,"receipt_review_required_merchant_changed");
-  const canonicalItems=sale.items.map(item=>{
-    const product=rows.rows.find(row=>row.id===item.productId)?.data;
+  const canonicalItems=sale.items.map((item,index)=>{
+    const productRow=rows.rows.find(row=>row.id===item.productId),product=productRow?.data;
     const variant=item.variantId?product?.variants?.find(v=>v.id===item.variantId):null;
     if(!product||(item.variantId&&!variant))v.fail(409,"receipt_review_required_product_changed");
-    return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice:Number(variant?.price??product.price)};
+    const currentCatalogPrice=Number(variant?.price??product.price),evidence=lockedPricing?.pricingLines?.[index],
+      hasHistoricalCatalog=Number.isSafeInteger(evidence?.catalogUnitPriceSen)&&evidence.catalogUnitPriceSen>=0;
+    const catalogPrice=hasHistoricalCatalog?evidence.catalogUnitPriceSen/100:
+      (lockedPricing?Number(item.price):currentCatalogPrice);
+    const catalogVersion=Number(evidence?.catalogProductVersion||productRow.version||product.version||1);
+    const priceSource=evidence?.priceSource||
+      (lockedPricing||cents(item.price)===cents(currentCatalogPrice)?'catalog':'manual_override');
+    return {...item,cost:Number(variant?.cost??product.cost??0),catalogPrice,catalogVersion,priceSource};
   });
-  const priceChanged=canonicalItems.some(item=>item.price!==item.catalogPrice),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0),unlockedPricePolicy=!lockedPricing&&(priceChanged||taxChanged);
+  const priceChanged=canonicalItems.some(item=>cents(item.price)!==cents(item.catalogPrice)),taxChanged=sale.taxRate!==Number(prefs.taxRate??prefs.tax??0),limit=Number(prefs.staffDiscountLimit||0),unlockedPricePolicy=!lockedPricing&&(priceChanged||taxChanged);
   if((!approval||approval.revalidatePolicy)&&!options.acceptedOrderQuote&&operator(who)&&(unlockedPricePolicy||sale.discount>limit))v.fail(409,"receipt_review_required_pricing_policy");
   if(!approval&&!options.acceptedOrderQuote&&manager(who)&&(unlockedPricePolicy||sale.discount>limit)&&!sale.overrideReason)v.fail(409,"manager_override_reason_required");
-  sale.items=canonicalItems.map(({catalogPrice,...item})=>item);
+  sale.items=canonicalItems;
   const template=sale.receiptTemplateId?await publishedTemplate(c,companyId,"Receipt",sale.receiptTemplateId,sale.receiptTemplateVersion):sale.receiptTemplateVersion===0?{settings:templateDefaults("Receipt")}:await publishedTemplate(c,companyId,"Receipt");
   if(approval)Object.assign(expectedStore,sale.storeSnapshot);
   const companySnapshot={...expectedStore,email:company.email||"",logo:company.logo||"",qrCode:company.qrCode||company.qrCodeUrl||""};

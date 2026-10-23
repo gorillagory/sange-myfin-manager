@@ -134,7 +134,8 @@ function dataObject(value) {
 async function catalogLines(c, companyId, requested, channel) {
   const ids = [...new Set(requested.map(line => line.productId))].sort();
   const result = await c.query(
-    `SELECT p.id,p.data,p.price AS product_price,pv.id AS variant_id,pv.price AS variant_price,
+    `SELECT p.id,p.data,p.version AS product_version,p.price AS product_price,
+            pv.id AS variant_id,pv.price AS variant_price,
             sp.online_price_sen AS product_online_price_sen,
             spv.online_price_sen AS variant_online_price_sen
        FROM myfin.products p
@@ -150,7 +151,8 @@ async function catalogLines(c, companyId, requested, channel) {
   );
   const byProduct = new Map();
   for (const row of result.rows) {
-    const current = byProduct.get(row.id) || { data: dataObject(row.data), price: row.product_price,
+    const current = byProduct.get(row.id) || { data: dataObject(row.data), version: Number(row.product_version),
+      price: row.product_price,
       onlinePriceSen: row.product_online_price_sen, variants: new Map() };
     if (row.variant_id) current.variants.set(row.variant_id, {
       price: row.variant_price, onlinePriceSen: row.variant_online_price_sen,
@@ -170,15 +172,20 @@ async function catalogLines(c, companyId, requested, channel) {
     if (line.variantId && variantPrice === undefined) fail(409, 'catalog_variant_unavailable');
     const variant = line.variantId ? configuredVariants.find(item => item?.id === line.variantId) : null;
     const productName = String(product.data.name || '').trim() || line.productId;
+    const catalogUnitPriceSen = decimalToScaledInteger(variantPrice?.price ?? product.price, 2,
+      'invalid_catalog_price');
+    const onlineOverride = variantPrice?.onlinePriceSen ?? product.onlinePriceSen;
+    const hasOnlineOverride = channel === 'storefront' && onlineOverride !== null && onlineOverride !== undefined;
     return {
       ...line,
       category: String(product.data.category || '').trim().slice(0, 120),
       subcategory: String(product.data.subcategory || '').trim().slice(0, 120),
       description: `${productName}${variant?.name ? ` / ${String(variant.name).trim()}` : ''}`.slice(0, 500),
-      unitPriceSen: channel === 'storefront'
-        ? Number(variantPrice?.onlinePriceSen ?? product.onlinePriceSen
-          ?? decimalToScaledInteger(variantPrice?.price ?? product.price, 2, 'invalid_catalog_price'))
-        : decimalToScaledInteger(variantPrice?.price ?? product.price, 2, 'invalid_catalog_price'),
+      catalogUnitPriceSen,
+      catalogProductVersion: Number.isSafeInteger(product.version) && product.version > 0
+        ? product.version : Number(product.data.version || 1),
+      priceSource: hasOnlineOverride ? 'online_override' : 'catalog',
+      unitPriceSen: hasOnlineOverride ? Number(onlineOverride) : catalogUnitPriceSen,
     };
   });
 }
@@ -426,11 +433,13 @@ async function persistSnapshot(c, {
   for (const line of priced.lines) await c.query(
     `INSERT INTO myfin.pricing_snapshot_lines(
        workspace_id,company_id,snapshot_id,line_no,product_id,variant_id,category,subcategory,
-       description,quantity_milli,unit_price_sen,gross_sen,discount_sen,net_sen,automatic_reward)
-     VALUES($1,$2,$3,$4,$5,nullif($6,''),$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+       description,quantity_milli,unit_price_sen,gross_sen,discount_sen,net_sen,automatic_reward,
+       catalog_unit_price_sen,catalog_product_version,price_source)
+     VALUES($1,$2,$3,$4,$5,nullif($6,''),$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
     [workspaceId, companyId, id, line.lineNo, line.productId, line.variantId, line.category,
       line.subcategory, line.description, line.quantityMilli, line.unitPriceSen, line.grossSen,
-      line.discountSen, line.netSen, Boolean(line.automaticReward)],
+      line.discountSen, line.netSen, Boolean(line.automaticReward), line.catalogUnitPriceSen,
+      line.catalogProductVersion, line.priceSource],
   );
   for (let index = 0; index < priced.applications.length; index++) {
     const application = priced.applications[index];
@@ -611,6 +620,9 @@ export async function createPricingSnapshot(c, input, options = {}) {
         subcategory: line.subcategory,
         description: line.description,
         unitPriceSen: line.unitPriceSen,
+        catalogUnitPriceSen: line.catalogUnitPriceSen,
+        catalogProductVersion: line.catalogProductVersion,
+        priceSource: line.priceSource,
       }));
     }
   }
@@ -705,6 +717,9 @@ export async function loadPricingSnapshot(c, input, options = {}) {
       description: line.description, quantityMilli: Number(line.quantity_milli),
       unitPriceSen: Number(line.unit_price_sen), grossSen: Number(line.gross_sen),
       discountSen: Number(line.discount_sen), netSen: Number(line.net_sen),
+      catalogUnitPriceSen: line.catalog_unit_price_sen == null ? null : Number(line.catalog_unit_price_sen),
+      catalogProductVersion: line.catalog_product_version == null ? null : Number(line.catalog_product_version),
+      priceSource: line.price_source || '',
       automaticReward: Boolean(line.automatic_reward) })),
     discounts: discounts.map(discount => ({ promotionId: discount.promotion_id,
       promotionVersion: Number(discount.promotion_version), name: discount.display_name,
