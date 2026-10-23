@@ -95,7 +95,16 @@ test('storefront and display make guest, account, reusable QR, and channel prici
   assert.match(storefront,/online · .* store/);
   assert.match(storefront,/<s v-if="hasOnlineSaving\(product\)"/);
   assert.match(storefront,/>Order total</);
-  assert.match(storefront,/'Place order'/);
+  assert.match(storefront,/'Send order to shop'/);
+  assert.match(storefront,/aria-label="Order steps"/);
+  assert.match(storefront,/>Menu</);
+  assert.match(storefront,/>Review</);
+  assert.match(storefront,/>Details</);
+  assert.match(storefront,/QR LOCATION CONFIRMED/);
+  assert.match(storefront,/function chooseProduct\(product, event\)/);
+  assert.match(storefront,/role="dialog" aria-modal="true" aria-labelledby="customer-product-title"/);
+  assert.match(storefront,/STEP 2 OF 3/);
+  assert.match(storefront,/STEP 3 OF 3/);
   assert.match(storefront,/customer-mobile-order-bar/);
   assert.match(storefront,/:role="mobileViewport\?'dialog'/);
   assert.match(storefront,/event\.key === 'Escape'/);

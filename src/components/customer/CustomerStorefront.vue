@@ -14,8 +14,10 @@ const route = useRoute(), router = useRouter();
 const menu = ref(null), lines = ref([]), quote = ref(null), quoteToken = ref(''), loading = ref(true), busy = ref(false), placing = ref(false);
 const error = ref(''), notice = ref(''), category = ref('All'), query = ref(''), selectedLocationId = ref('');
 const serviceChoice = ref('pickup');
-const reviewing = ref(false), cartOpen = ref(false), online = ref(navigator.onLine), variantChoices = reactive({});
+const reviewing = ref(false), cartOpen = ref(false), online = ref(navigator.onLine);
+const selectedProduct = ref(null), selectedVariantId = ref('');
 const cartDialog = ref(null), cartClose = ref(null), reviewDialog = ref(null), reviewClose = ref(null);
+const productDialog = ref(null), productClose = ref(null);
 const account = ref({ authenticated: false }), accountOpen = ref(false), accountLoading = ref(true);
 const failedImages = ref(new Set());
 const accountLoyaltyBalance = computed(() => Number(account.value.loyalty?.pointBalance ?? account.value.loyalty?.balance ?? account.value.loyalty?.stampBalance ?? 0));
@@ -75,6 +77,8 @@ const menuGroups=computed(()=>{
 });
 const cartSummary = computed(() => publicCartSummary(lines.value));
 const itemCount = computed(() => cartSummary.value.itemCount);
+const orderStep = computed(() => reviewing.value ? 3 : cartOpen.value ? 2 : 1);
+const availableSelectedVariants = computed(() => (selectedProduct.value?.variants || []).filter(option => option.available));
 const orderBase = computed(() => ({
   ...(locationToken.value ? { locationToken: locationToken.value } : {}),
   ...(!lockedLocation.value && selectedLocationId.value ? { locationId: selectedLocationId.value } : {}),
@@ -83,7 +87,7 @@ const orderBase = computed(() => ({
   items: cartRequestItems(lines.value),
 }));
 let loadRequest = 0, retry = null, slideTimer = null;
-let cartReturnFocus = null, reviewReturnFocus = null, previousBodyOverflow = '', bodyLocked = false;
+let cartReturnFocus = null, reviewReturnFocus = null, productReturnFocus = null, previousBodyOverflow = '', bodyLocked = false;
 
 function imageKey(scope, url) { return `${scope}:${String(url || '')}`; }
 function imageAvailable(scope, url) { return Boolean(url) && !failedImages.value.has(imageKey(scope, url)); }
@@ -105,8 +109,12 @@ function toggleCarousel() { carouselPaused.value = !carouselPaused.value; resetS
 function viewportChanged(event){mobileViewport.value=event.matches;if(!event.matches&&cartOpen.value)closeCart();}
 function openCart(event) { cartReturnFocus = event?.currentTarget || document.activeElement; cartOpen.value = true; }
 function closeCart() { cartOpen.value = false; }
+function closeProduct() {
+  selectedProduct.value = null;
+  selectedVariantId.value = '';
+}
 function updateBodyLock() {
-  const shouldLock = reviewing.value || (cartOpen.value && mobileViewport.value);
+  const shouldLock = reviewing.value || Boolean(selectedProduct.value) || (cartOpen.value && mobileViewport.value);
   if (shouldLock && !bodyLocked) {
     previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -115,6 +123,16 @@ function updateBodyLock() {
     document.body.style.overflow = previousBodyOverflow;
     bodyLocked = false;
   }
+}
+function handleProductKeydown(event) {
+  if (event.key === 'Escape') { event.preventDefault(); closeProduct(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...(productDialog.value?.querySelectorAll('button:not([disabled]),input:not([disabled])') || [])]
+    .filter(element => element.getClientRects().length);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 function handleCartKeydown(event) {
   if (!mobileViewport.value) return;
@@ -248,14 +266,28 @@ async function load() {
   finally { if (epoch === loadRequest) loading.value = false; }
 }
 
-function add(product) {
+function add(product, variantId = '') {
   error.value = ''; notice.value = '';
   try {
-    const chosen = product.variants.length ? variantChoices[product.id] || '' : '';
-    lines.value = addPublicCartLine(lines.value, publicCartLine(product, chosen));
+    lines.value = addPublicCartLine(lines.value, publicCartLine(product, variantId));
     quote.value = null; quoteToken.value = ''; reviewing.value = false;
     notice.value = `${product.name} added. Your order now has ${itemCount.value} ${itemCount.value === 1 ? 'item' : 'items'}.`;
   } catch (caught) { error.value = caught.message; }
+}
+function chooseProduct(product, event) {
+  if (!product?.available) return;
+  const available = (product.variants || []).filter(option => option.available);
+  if (!product.variants?.length) { add(product); return; }
+  if (available.length === 1) { add(product, available[0].id); return; }
+  productReturnFocus = event?.currentTarget || document.activeElement;
+  selectedProduct.value = product;
+  selectedVariantId.value = available[0]?.id || '';
+}
+function addSelectedProduct() {
+  if (!selectedProduct.value || !selectedVariantId.value) return;
+  const product = selectedProduct.value, variantId = selectedVariantId.value;
+  add(product, variantId);
+  closeProduct();
 }
 function setQuantity(key, value) {
   try { lines.value = setPublicCartQuantity(lines.value, key, value); quote.value = null; quoteToken.value = ''; reviewing.value = false; retry = null; }
@@ -318,7 +350,7 @@ watch([deliveryZoneId,delivery], () => { quote.value = null; quoteToken.value = 
 watch(voucherCode, () => { quote.value = null; quoteToken.value = ''; reviewing.value = false; retry = null; });
 watch(routePromoCode, code => {if(code){voucherCode.value=code;notice.value=`Promo code ${code} is ready. Its discount will be confirmed when you review the order.`;}},{immediate:true});
 watch([() => slides.value.length, () => storefront.value.carouselIntervalSeconds], resetSlideTimer);
-watch([cartOpen,reviewing,mobileViewport],updateBodyLock);
+watch([cartOpen,reviewing,mobileViewport,selectedProduct],updateBodyLock);
 watch(cartOpen, async open => {
   if (open&&mobileViewport.value) {
     await nextTick();
@@ -341,6 +373,16 @@ watch(reviewing, async open => {
   else cartReturnFocus?.focus?.();
   cartReturnFocus = null;
 });
+watch(selectedProduct, async product => {
+  await nextTick();
+  if (product) {
+    productClose.value?.focus();
+    return;
+  }
+  const target = productReturnFocus;
+  productReturnFocus = null;
+  if (target?.isConnected && target.getClientRects().length) target.focus();
+});
 onMounted(() => { load(); refreshAccount(); mobileMedia?.addEventListener?.('change',viewportChanged);window.addEventListener('online', networkChange); window.addEventListener('offline', networkChange); });
 onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);if(bodyLocked)document.body.style.overflow=previousBodyOverflow;mobileMedia?.removeEventListener?.('change',viewportChanged); window.removeEventListener('online', networkChange); window.removeEventListener('offline', networkChange); });
 </script>
@@ -355,11 +397,18 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);i
     <main v-if="loading" class="customer-state" role="status"><span class="customer-loader"></span><h1>Opening the menu…</h1></main>
     <main v-else-if="!menu" class="customer-state"><span class="customer-state-mark">!</span><h1>Menu unavailable</h1><p>{{ error }}</p><button type="button" @click="load">Try again</button></main>
     <main v-else class="customer-main">
+      <nav class="customer-order-steps" aria-label="Order steps">
+        <ol>
+          <li :class="{active:orderStep===1,done:orderStep>1}" :aria-current="orderStep===1?'step':undefined"><span>1</span><div><small>STEP 1</small><strong>Menu</strong></div></li>
+          <li :class="{active:orderStep===2,done:orderStep>2}" :aria-current="orderStep===2?'step':undefined"><span>2</span><div><small>STEP 2</small><strong>Review</strong></div></li>
+          <li :class="{active:orderStep===3}" :aria-current="orderStep===3?'step':undefined"><span>3</span><div><small>STEP 3</small><strong>Details</strong></div></li>
+        </ol>
+      </nav>
       <section class="customer-hero" :class="{'with-image':imageAvailable('hero',storefront.hero?.imageUrl)}"><div class="customer-hero-copy"><span class="customer-kicker">{{ storefront.hero?.eyebrow || `ORDER ONLINE / ${fulfillmentLabel}` }}</span><h1>{{ storefront.hero?.title || storefront.name }}</h1><p>{{ storefront.hero?.description || storefront.description || (deliveryAvailable ? 'Choose your favourites for pickup or delivery. Payment options appear after the shop accepts your order.' : 'Choose your favourites for pickup. Payment options appear after the shop accepts your order.') }}</p><div class="customer-hero-actions"><button type="button" class="customer-browse-menu" @click="scrollToMenu">Start your order <span aria-hidden="true">↓</span></button><div class="customer-auth-choice"><span>No account needed.</span><button v-if="!account.authenticated" type="button" @click="accountOpen=true">Sign in for loyalty</button><button v-else type="button" @click="accountOpen=true">Account & loyalty</button></div></div></div>
         <img v-if="imageAvailable('hero',storefront.hero?.imageUrl)" class="customer-hero-image" :src="storefront.hero.imageUrl" alt="" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" @error="imageFailed('hero',storefront.hero?.imageUrl)">
       </section>
 
-      <section id="customer-fulfillment" class="customer-order-context" aria-labelledby="customer-fulfillment-title"><div class="customer-context-heading"><span class="customer-kicker">HOW TO GET YOUR ORDER</span><h2 id="customer-fulfillment-title">{{ fulfillmentMode==='delivery'?'Delivery':fulfillmentMode==='table'?'Order to this table':'Pickup' }}</h2><p>{{ fulfillmentMode === 'table' ? 'We will bring the accepted order to this table.' : fulfillmentMode === 'delivery' ? 'Choose your area now. The shop confirms timing before preparation.' : 'Choose your collection point. Preparation starts after the shop accepts.' }}</p></div><div class="customer-context"><span class="customer-kicker">{{ fulfillmentMode==='delivery'?'DISPATCHED FROM':'COLLECT FROM' }}</span>
+      <section id="customer-fulfillment" class="customer-order-context" :class="{'qr-confirmed':lockedLocation}" aria-labelledby="customer-fulfillment-title"><div class="customer-context-heading"><span class="customer-kicker"><b v-if="lockedLocation" aria-hidden="true">✓</b>{{ lockedLocation?'QR LOCATION CONFIRMED':'HOW TO GET YOUR ORDER' }}</span><h2 id="customer-fulfillment-title">{{ fulfillmentMode==='delivery'?'Delivery':fulfillmentMode==='table'?'Order to this table':'Pickup' }}</h2><p>{{ fulfillmentMode === 'table' ? 'We will bring the accepted order to this table.' : fulfillmentMode === 'delivery' ? 'Choose your area now. The shop confirms timing before preparation.' : 'Choose your collection point. Preparation starts after the shop accepts.' }}</p></div><div class="customer-context"><span class="customer-kicker">{{ fulfillmentMode==='delivery'?'DISPATCHED FROM':'COLLECT FROM' }}</span>
           <strong v-if="lockedLocation">{{ selectedLocation?.name }}</strong>
           <select v-else-if="locations.length" v-model="selectedLocationId" aria-label="Collection location"><option v-for="place in locations" :key="place.id" :value="place.id">{{ place.name }} · Pickup</option></select>
           <strong v-else>Shop counter</strong>
@@ -410,23 +459,32 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);i
               <div class="customer-product-copy"><div><span>{{ product.subcategory || product.category }}</span><h3>{{ product.name }}</h3><p v-if="product.description">{{ product.description }}</p></div>
                 <div class="customer-product-buy"><div class="customer-price"><s v-if="hasOnlineSaving(product)">{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</s><span v-else-if="hasChannelPriceDifference(product)">In store {{ formatCustomerMoney(displayPrice(product,'storePrice'), storefront.currency) }}</span><strong>{{ product.variants.length?'From ':'' }}{{ formatCustomerMoney(displayPrice(product,'onlinePrice'), storefront.currency) }}</strong><small v-if="hasChannelPriceDifference(product)">{{ onlineSavingLabel(product) || 'Online price' }}</small></div>
                   <template v-if="product.available">
-                    <select v-if="product.variants.length" v-model="variantChoices[product.id]" :aria-label="`Choose an option for ${product.name}`"><option value="" disabled>Choose an option</option><option v-for="option in product.variants" :key="option.id" :value="option.id" :disabled="!option.available">{{ option.name }} · {{ optionPriceLabel(option) }}{{ option.available ? '' : ' · Sold out' }}</option></select>
-                    <button type="button" :aria-label="`Add ${product.name} to order`" @click="add(product)"><span v-if="productCartCount(product.id)" class="customer-product-count">{{ productCartCount(product.id) }}</span>{{ productCartCount(product.id) ? 'Add another' : 'Add' }} <span aria-hidden="true">+</span></button>
+                    <button type="button" class="customer-product-add" :aria-label="`${product.variants.length>1?'Choose an option for':'Add'} ${product.name}`" @click="chooseProduct(product,$event)"><span v-if="productCartCount(product.id)" class="customer-product-count">{{ productCartCount(product.id) }}</span>{{ product.variants.filter(option=>option.available).length>1?'Choose':productCartCount(product.id)?'Add another':'Add' }} <span aria-hidden="true">{{ product.variants.filter(option=>option.available).length>1?'→':'+' }}</span></button>
                   </template><span v-else class="customer-sold-out">Sold out</span>
                 </div></div>
             </article>
           </div></section>
           <div v-if="!visibleProducts.length" class="customer-no-results"><strong>No menu items found</strong><p>Try another search or category.</p></div>
         </section>
-        <div id="customer-cart-dialog" ref="cartDialog" class="customer-cart-wrap" :class="{open:cartOpen}" :role="mobileViewport?'dialog':undefined" :aria-modal="mobileViewport?'true':undefined" aria-label="Your order" :aria-hidden="mobileViewport&&!cartOpen?'true':undefined" @keydown="handleCartKeydown" @click.self="closeCart"><button ref="cartClose" type="button" class="customer-cart-close" aria-label="Close order" @click="closeCart">×</button><div class="customer-cart-panel"><div class="customer-voucher"><label for="customer-voucher-code">Have a voucher?</label><input id="customer-voucher-code" v-model.trim="voucherCode" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter voucher code"><small>We confirm the discount when you review the order.</small></div><CustomerCart :lines="lines" :currency="storefront.currency" :quote="quote" :busy="busy" @quantity="setQuantity" @review="review" /></div></div>
+        <div id="customer-cart-dialog" ref="cartDialog" class="customer-cart-wrap" :class="{open:cartOpen}" :role="mobileViewport?'dialog':undefined" :aria-modal="mobileViewport?'true':undefined" aria-label="Review your order" :aria-hidden="mobileViewport&&!cartOpen?'true':undefined" @keydown="handleCartKeydown" @click.self="closeCart"><button ref="cartClose" type="button" class="customer-cart-close" aria-label="Close order" @click="closeCart">×</button><div class="customer-cart-panel"><div class="customer-cart-step"><span>2</span><div><small>STEP 2 OF 3</small><strong>Review your order</strong><p>{{ fulfillmentMode==='table'?'Table order':fulfillmentMode==='delivery'?'Delivery':'Pickup' }} · {{ selectedLocation?.name||'Shop counter' }}</p></div></div><div class="customer-voucher"><label for="customer-voucher-code">Have a voucher?</label><input id="customer-voucher-code" v-model.trim="voucherCode" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter voucher code"><small>We confirm the discount when you review the order.</small></div><CustomerCart :lines="lines" :currency="storefront.currency" :quote="quote" :busy="busy" @quantity="setQuantity" @review="review" /></div></div>
       </div>
       <footer class="customer-footer"><p>{{ storefront.pickupInstructions || "The shop confirms your order first. Then choose secure online payment when available or follow the shop's payment instructions." }}</p><p>Order as a guest or sign in for order history and loyalty. <RouterLink to="/privacy">Privacy notice</RouterLink></p></footer>
       <button v-if="itemCount" type="button" class="customer-mobile-order-bar" :aria-expanded="cartOpen" aria-controls="customer-cart-dialog" @click="openCart($event)"><span><small>Your order · {{ itemCount }} {{ itemCount===1?'item':'items' }}</small><strong>{{ formatCustomerMoney(cartSummary.estimatedTotal,storefront.currency) }}</strong></span><b>View order <span aria-hidden="true">→</span></b></button>
     </main>
 
+    <div v-if="selectedProduct" class="customer-product-backdrop" role="presentation" @mousedown.self="closeProduct">
+      <section ref="productDialog" class="customer-product-dialog" role="dialog" aria-modal="true" aria-labelledby="customer-product-title" @keydown="handleProductKeydown">
+        <header><div><span class="customer-kicker">CHOOSE AN OPTION</span><h2 id="customer-product-title">{{ selectedProduct.name }}</h2></div><button ref="productClose" type="button" aria-label="Close options" @click="closeProduct">×</button></header>
+        <div v-if="imageAvailable(`product:${selectedProduct.id}`,selectedProduct.imageUrl)" class="customer-product-dialog-image"><img :src="selectedProduct.imageUrl" alt="" decoding="async" referrerpolicy="no-referrer" @error="imageFailed(`product:${selectedProduct.id}`,selectedProduct.imageUrl)"></div>
+        <p v-if="selectedProduct.description" class="customer-product-dialog-description">{{ selectedProduct.description }}</p>
+        <fieldset><legend>Select one</legend><label v-for="option in selectedProduct.variants" :key="option.id" :class="{selected:selectedVariantId===option.id,unavailable:!option.available}"><input v-model="selectedVariantId" type="radio" name="customer-product-option" :value="option.id" :disabled="!option.available"><span><strong>{{ option.name }}</strong><small v-if="option.onlinePrice!==option.storePrice"><s>{{ formatCustomerMoney(option.storePrice,storefront.currency) }}</s> Online price</small><small v-else>{{ option.available?'Available':'Sold out' }}</small></span><b>{{ optionPriceLabel(option).split(' online')[0] }}</b></label></fieldset>
+        <footer><button type="button" class="customer-primary" :disabled="!selectedVariantId || !availableSelectedVariants.length" @click="addSelectedProduct">Add to order <span aria-hidden="true">+</span></button></footer>
+      </section>
+    </div>
+
     <div v-if="reviewing" class="customer-review-backdrop" role="presentation" @mousedown.self="closeReview">
       <section ref="reviewDialog" class="customer-review" role="dialog" aria-modal="true" aria-labelledby="customer-review-title" @keydown="handleReviewKeydown">
-        <header><div><span class="customer-kicker">REVIEW</span><h2 id="customer-review-title">Place your order</h2></div><button ref="reviewClose" type="button" aria-label="Close" :disabled="placing" @click="closeReview">×</button></header>
+        <header><div><span class="customer-kicker">STEP 3 OF 3</span><h2 id="customer-review-title">Your details</h2><p>Confirm how the shop can reach you, then send your order.</p></div><button ref="reviewClose" type="button" aria-label="Close" :disabled="placing" @click="closeReview">×</button></header>
         <div class="customer-review-body">
           <div class="customer-review-location"><span>{{ fulfillmentMode==='delivery'?'Dispatch shop':'Collection' }}</span><strong>{{ selectedLocation?.name || 'Shop counter' }}</strong><small>{{ fulfillmentMode === 'table' ? 'Table service after staff acceptance · choose payment next' : fulfillmentMode==='delivery' ? `${quote?.delivery?.zoneName || ''} · about ${quote?.delivery?.leadTimeMinutes || 0} minutes after acceptance · choose payment next` : 'Preparation starts after staff acceptance · choose payment next' }}</small></div>
           <div v-if="fulfillmentMode==='delivery'" class="customer-review-location customer-delivery-summary"><span>Deliver to</span><strong>{{ delivery.postcode }} {{ delivery.city }}, {{ delivery.state }}</strong><small>{{ delivery.addressLine1 }}<template v-if="delivery.addressLine2"> · {{ delivery.addressLine2 }}</template></small></div>
@@ -445,7 +503,7 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);i
           </section>
           <div v-if="error" class="customer-banner error" role="alert">{{ error }}</div>
         </div>
-        <footer><button type="button" :disabled="placing" @click="closeReview">Back to menu</button><button type="button" class="customer-primary" :disabled="placing || !online || !quoteToken" @click="placeOrder">{{ placing ? 'Placing order…' : 'Place order' }} <span aria-hidden="true">→</span></button></footer>
+        <footer><button type="button" :disabled="placing" @click="closeReview">Back to order</button><button type="button" class="customer-primary" :disabled="placing || !online || !quoteToken" @click="placeOrder">{{ placing ? 'Sending order…' : 'Send order to shop' }} <span aria-hidden="true">→</span></button></footer>
       </section>
     </div>
     <CustomerAccountPanel :open="accountOpen" :account="account" :loading="accountLoading || loading" :privacy="privacy" :font-family="storefrontFontStack(storefront.theme?.fontFamily)" @close="accountOpen=false" @account-change="accountChanged" />
@@ -488,5 +546,21 @@ onBeforeUnmount(() => { loadRequest++; if(slideTimer)clearInterval(slideTimer);i
 @media(max-width:1150px){.customer-product-grid{grid-template-columns:1fr}}
 @media(max-width:920px){.customer-quick-nav{display:none}.customer-order-context{grid-template-columns:1fr;gap:15px;padding:19px 20px}.customer-order-context .customer-context{padding:15px 0 0;border-top:1px solid var(--customer-line);border-left:0}.customer-tools{grid-template-columns:1fr auto;grid-template-areas:'heading fulfillment' 'search search' 'categories categories';top:68px}.customer-menu-heading{display:none}.customer-fulfillment-summary{min-width:0}.customer-menu-group{scroll-margin-top:190px}}
 @media(max-width:600px){.customer-hero.with-image{grid-template-columns:1fr}.customer-hero-image{grid-row:1;height:176px}.customer-order-context{margin-bottom:14px;padding:16px;border-radius:13px}.customer-context-heading h2{font-size:21px}.customer-tools{grid-template-columns:minmax(0,1fr) 112px;margin-inline:-12px}.customer-fulfillment-summary{min-width:0}.customer-product-grid{gap:8px}.customer-menu-group{scroll-margin-top:198px}.customer-menu-group>header{margin-bottom:9px}.customer-menu-group>header h2{font-size:23px}.customer-product h3{font-size:18px;margin:5px 0 6px}}
+.customer-order-steps{margin:22px 0 0;border:1px solid var(--customer-line);border-radius:14px;background:#fff;box-shadow:0 8px 28px #102b2309}.customer-order-steps ol{display:grid;grid-template-columns:repeat(3,1fr);max-width:780px;margin:0 auto;padding:0;list-style:none}.customer-order-steps li{position:relative;display:flex;align-items:center;justify-content:center;gap:10px;min-height:62px;color:var(--customer-muted)}.customer-order-steps li:not(:last-child)::after{content:'';position:absolute;top:50%;right:-10%;width:20%;height:1px;background:var(--customer-line)}.customer-order-steps li>span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--customer-line);border-radius:50%;background:#fff;font-size:10px;font-weight:800}.customer-order-steps li>div{display:grid;gap:1px}.customer-order-steps small{font-size:7px;letter-spacing:.12em;font-weight:750}.customer-order-steps strong{color:var(--customer-ink);font-size:11px}.customer-order-steps li.active>span,.customer-order-steps li.done>span{border-color:var(--customer-accent);background:var(--customer-accent);color:var(--customer-accent-ink)}.customer-order-steps li.active strong{color:var(--customer-accent)}
+.customer-order-context.qr-confirmed{border-color:color-mix(in srgb,var(--customer-accent) 45%,var(--customer-line));background:color-mix(in srgb,var(--customer-accent) 5%,white)}.customer-context-heading .customer-kicker b{display:inline-grid;place-items:center;width:18px;height:18px;margin-right:7px;border-radius:50%;background:var(--customer-accent);color:var(--customer-accent-ink);font-size:10px;letter-spacing:0}
+.customer-cart-step{display:flex;align-items:center;gap:11px;margin:0 0 10px;padding:13px 15px;border:1px solid var(--customer-line);border-radius:12px;background:color-mix(in srgb,var(--customer-accent) 5%,white);color:var(--customer-ink)}.customer-cart-step>span{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border-radius:50%;background:var(--customer-accent);color:var(--customer-accent-ink);font-weight:800}.customer-cart-step>div{display:grid;gap:2px;min-width:0}.customer-cart-step small{color:var(--customer-muted);font-size:7px;letter-spacing:.12em;font-weight:800}.customer-cart-step strong{font-size:13px}.customer-cart-step p{overflow:hidden;margin:0;color:var(--customer-muted);font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+.customer-product-backdrop{position:fixed;inset:0;z-index:1100;display:grid;place-items:center;padding:18px;background:#102b23a8;backdrop-filter:blur(4px)}.customer-product-dialog{color:var(--customer-ink);width:min(500px,100%);max-height:calc(100dvh - 36px);display:flex;flex-direction:column;background:#fff;border-radius:20px;box-shadow:0 30px 100px #102b2355;overflow:hidden}.customer-product-dialog>header{display:flex;align-items:start;justify-content:space-between;padding:22px 24px 17px;border-bottom:1px solid var(--customer-line)}.customer-product-dialog h2{margin:5px 0 0;font:650 27px/1.08 var(--customer-font)}.customer-product-dialog>header button{width:38px;height:38px;border:0;border-radius:50%;background:var(--customer-tint);color:var(--customer-ink);font-size:23px}.customer-product-dialog-image{height:150px;background:var(--customer-tint)}.customer-product-dialog-image img{width:100%;height:100%;object-fit:cover}.customer-product-dialog-description{margin:16px 24px 0;color:var(--customer-muted);font-size:11px;line-height:1.5}.customer-product-dialog fieldset{display:grid;gap:8px;min-width:0;margin:18px 24px;padding:0;border:0;overflow:auto}.customer-product-dialog legend{margin-bottom:9px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.customer-product-dialog fieldset label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;min-height:58px;padding:10px 13px;border:1px solid var(--customer-line);border-radius:12px;background:#fff;cursor:pointer}.customer-product-dialog fieldset label.selected{border-color:var(--customer-accent);box-shadow:0 0 0 1px var(--customer-accent)}.customer-product-dialog fieldset label.unavailable{opacity:.5;cursor:not-allowed}.customer-product-dialog input{width:18px;height:18px;accent-color:var(--customer-accent)}.customer-product-dialog label>span{display:grid;gap:3px}.customer-product-dialog label strong{font-size:12px}.customer-product-dialog label small{color:var(--customer-muted);font-size:9px}.customer-product-dialog label small s{margin-right:5px}.customer-product-dialog label>b{font-size:12px}.customer-product-dialog>footer{padding:15px 24px calc(15px + env(safe-area-inset-bottom));border-top:1px solid var(--customer-line);background:var(--customer-tint)}.customer-product-dialog .customer-primary{min-height:50px;font-size:13px}
+.customer-review>header>div>p{max-width:440px;margin:6px 0 0;color:var(--customer-muted);font-size:10px;line-height:1.45}
+@media(max-width:920px){
+  .customer-order-steps{position:sticky;top:68px;z-index:115;margin:0 -20px;border-width:0 0 1px;border-radius:0;box-shadow:0 8px 18px #102b230a}.customer-order-steps ol{max-width:none}.customer-order-steps li{min-height:52px;gap:7px}.customer-order-steps li:not(:last-child)::after{right:-6%;width:12%}.customer-order-steps li>span{width:24px;height:24px}.customer-order-steps small{display:none}.customer-order-steps strong{font-size:10px}
+  .customer-tools{top:120px}.customer-menu-group{scroll-margin-top:242px}.customer-cart-step{margin:0 20px 10px;padding-right:64px}
+}
+@media(max-width:600px){
+  .customer-order-steps{margin-inline:-12px}.customer-hero,.customer-hero.with-image{gap:11px;padding:17px 0 16px}.customer-hero h1{font-size:32px;margin-block:7px 9px}.customer-hero-copy>p{font-size:11px;line-height:1.4}.customer-hero-image{grid-row:auto;height:126px;border-radius:13px}.customer-hero-actions{margin-top:12px}.customer-browse-menu{min-height:42px}.customer-auth-choice button{min-height:42px}
+  .customer-order-context{gap:11px;padding:13px 14px}.customer-context-heading h2{font-size:19px}.customer-context-heading p{font-size:9px}.customer-order-context .customer-context{padding-top:11px}.customer-context strong{font-size:17px}
+  .customer-promotion{min-height:126px}.customer-promotion>div{min-height:126px;padding:17px 18px 34px}.customer-promotion h2{font-size:22px}.customer-promotion>img{min-height:126px}.customer-promotion nav{left:18px;bottom:9px}
+  .customer-tools{top:120px}.customer-menu-group{scroll-margin-top:246px}.customer-product-buy{grid-template-columns:minmax(0,1fr) auto}.customer-product-add{min-width:84px;justify-content:center}
+  .customer-product-backdrop{align-items:end;padding:0}.customer-product-dialog{max-height:92dvh;border-radius:22px 22px 0 0}.customer-product-dialog>header{padding:20px 20px 15px}.customer-product-dialog h2{font-size:24px}.customer-product-dialog-image{height:130px}.customer-product-dialog-description{margin:14px 20px 0}.customer-product-dialog fieldset{margin:16px 20px}.customer-product-dialog fieldset label{min-height:62px}.customer-product-dialog>footer{padding-inline:20px}
+}
 @media(prefers-reduced-motion:reduce){.customer-product,.customer-cart-wrap{transition:none}.customer-product:hover{transform:none}}
 </style>
