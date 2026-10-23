@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { Store } from './store';
+import { isCustomerSurfacePath, isStorefrontHostname } from './domain/customerOrdering';
 
 // Components
 import AuthManager from './components/AuthManager.vue'; 
@@ -12,7 +13,9 @@ const currentUser = computed(() => Store.state.currentUser);
 const selectedCompany = computed(() => Store.state.selectedCompany);
 const toast = computed(() => Store.state.notification);
 const route = useRoute();
-const customerSurface = computed(() => route.meta.surface === 'customer');
+const customerSurface = computed(() => route.meta.surface === 'customer'
+  || isCustomerSurfacePath(globalThis.location?.pathname || '')
+  || isStorefrontHostname(globalThis.location?.hostname || ''));
 watch(customerSurface, customer => { if (!customer) Store.init(); }, { immediate: true });
 const applyAppUpdate = () => window.dispatchEvent(new Event('myfin:apply-app-update'));
 

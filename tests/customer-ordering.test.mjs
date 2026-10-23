@@ -186,9 +186,14 @@ test('storefront normalization preserves only safe bounded privacy notice fields
 });
 
 test('customer bootstrap bypasses the staff offline worker', async () => {
-  const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const [main,app] = await Promise.all([
+    readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/App.vue', import.meta.url), 'utf8'),
+  ]);
   assert.match(main, /!isCustomerSurfacePath\(location\.pathname\)/);
   assert.doesNotMatch(main, /Store\.init\(\)/);
+  assert.match(app, /isCustomerSurfacePath\(globalThis\.location\?\.pathname/);
+  assert.match(app, /isStorefrontHostname\(globalThis\.location\?\.hostname/);
 });
 
 test('storefront discards a stale promotion quote before refreshing it', async () => {
