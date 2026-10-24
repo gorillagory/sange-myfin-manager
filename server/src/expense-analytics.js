@@ -407,7 +407,7 @@ function insightsOutput(expenses,cash,filters,scope,pettyCash) {
       reference:row.data?.number||row.data?.reference||row.source_id||row.id,date:day,
       description:String(row.data?.description||row.data?.payee||'Expense'),category,
       payee:String(row.data?.supplierName||row.data?.payee||''),draft,status,amountSen:amount,paidSen:paid,
-      outstandingSen:outstanding,dueDate:due,paidDate:dateOnly(row.paid_as_of_on),
+      outstandingSen:outstanding,dueDate:due,paidDate:paid>0?dateOnly(row.paid_as_of_on):'',
       evidence:evidence?'Attached':'Missing',claimantId:claimant.id,claimantName:claimant.name,
       claimantAttribution:claimant.attribution,paymentSources:row.report_payment_sources||[],links:row.report_links||[]});
     if(!draft&&outstanding>0){

@@ -237,9 +237,12 @@ test('legacy expense documents reconcile with financial analytics as imported cl
   const paid=result.claims.find(row=>row.id==='legacy:old-paid');
   assert.equal(paid.recordType,'legacy_transaction');assert.equal(paid.claimReportAvailable,false);
   assert.equal(paid.claimantAttribution,'imported_unattributed');assert.equal(paid.evidence,'Attached');
+  assert.equal(paid.paidDate,'2026-10-02');
   assert.deepEqual(paid.paymentSources,[{type:'bank',label:'Bank',amountSen:1234}]);
-  assert.equal(result.claims.find(row=>row.id==='legacy:old-pending').status,'pending_payment');
-  assert.equal(result.claims.find(row=>row.id==='legacy:old-future').paidSen,0);
+  const pending=result.claims.find(row=>row.id==='legacy:old-pending');
+  assert.equal(pending.status,'pending_payment');assert.equal(pending.paidDate,'');
+  const future=result.claims.find(row=>row.id==='legacy:old-future');
+  assert.equal(future.paidSen,0);assert.equal(future.paidDate,'');
   assert.equal(result.oldestOutstanding.find(row=>row.expenseId==='legacy:old-pending').claimReportAvailable,false);
 });
 
