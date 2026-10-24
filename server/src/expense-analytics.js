@@ -235,7 +235,7 @@ async function legacyExpenseRows(c, companyId, who, filters) {
     `coalesce(t.data->>'status','')<>'Voided'`,
     `${legacyDateSql('t')} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
     `${legacyValidDateSql('t')} IS NOT NULL`,
-    `${legacyDateSql('t')} BETWEEN $2 AND $3`,
+    `${legacyValidDateSql('t')} BETWEEN $2::date AND $3::date`,
   ];
   if(filters.category){args.push(filters.category);predicates.push(
     `lower(coalesce(nullif(btrim(t.data->>'category'),''),'General'))=lower($${args.length})`);}

@@ -209,6 +209,8 @@ test('legacy expense documents reconcile with financial analytics as imported cl
     if(sql.includes('FROM myfin.transactions t')&&sql.includes('ORDER BY expense_date')){
       assert.match(sql,/document_state='legacy'/);assert.match(sql,/data->>'type' IN \('Expense','Payment Voucher'\)/);
       assert.match(sql,/coalesce\(t\.data->>'status',''\)<>'Voided'/);
+      assert.match(sql,/myfin\.valid_expense_date\(left\(t\.data->>'date',10\)\) BETWEEN \$2::date AND \$3::date/);
+      assert.doesNotMatch(sql,/left\(t\.data->>'date',10\) BETWEEN \$2 AND \$3/);
       assert.match(sql,/paidOn[\s\S]*>\$3::date THEN 0::bigint/);
       return {rows:[
         {id:'old-paid',data:{date:'2026-10-02',type:'Expense',description:'Legacy rent',category:'Rent',
