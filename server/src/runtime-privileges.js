@@ -1,4 +1,4 @@
-export const REQUIRED_RUNTIME_MIGRATION = '0051_staff_register_shifts.sql';
+export const REQUIRED_RUNTIME_MIGRATION = '0053_expense_reporting_indexes.sql';
 
 const tableGroups = [
   {
@@ -98,6 +98,7 @@ export const RUNTIME_PRIVILEGES = Object.freeze({
     marketing_campaign_events_sequence_seq: Object.freeze(['USAGE']),
   }),
   functions: Object.freeze({
+    'valid_expense_date(text)': Object.freeze(['EXECUTE']),
     'reserve_order_promotions(text,text,text,timestamptz)': Object.freeze(['EXECUTE']),
     'reserve_pos_promotions(text,text,text,timestamptz)': Object.freeze(['EXECUTE']),
     'release_pos_promotions(text,text,text,text)': Object.freeze(['EXECUTE']),

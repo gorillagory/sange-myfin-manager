@@ -85,11 +85,17 @@ function tableRequirements(graph) {
   return inventory;
 }
 
-function directlyCalledFunctions(graph) {
+function directlyCalledFunctions(graph, tableNames) {
   const names = new Set();
-  for (const source of graph.values())
-    for (const match of source.matchAll(/\b(?:SELECT|FROM)\s+myfin\.([a-z_][a-z0-9_]*)\s*\(/gi))
-      names.add(match[1]);
+  for (const source of graph.values()) {
+    for (const match of source.matchAll(/\bmyfin\.([a-z_][a-z0-9_]*)\s*\(/gi)) {
+      // INSERT INTO myfin.table(column, ...) has the same lexical shape as a
+      // schema-qualified function call. The table inventory is built first,
+      // so exclude those targets while retaining scalar functions used inside
+      // SELECT expressions as well as set-returning functions after FROM.
+      if (!tableNames.has(match[1])) names.add(match[1]);
+    }
+  }
   return [...names].sort();
 }
 
@@ -137,7 +143,7 @@ async function identitySequences() {
 
 const graph = await runtimeSourceGraph();
 const requirements = tableRequirements(graph);
-const calledFunctions = directlyCalledFunctions(graph);
+const calledFunctions = directlyCalledFunctions(graph, requirements);
 const [developmentSql, productionSql, developmentProvision, productionProvision, identities] = await Promise.all([
   readFile(join(repositoryRoot, 'db', 'grant-development-runtime.sql'), 'utf8'),
   readFile(join(repositoryRoot, 'db', 'grant-production-runtime.sql'), 'utf8'),
@@ -210,7 +216,7 @@ test('startup readiness consumes every parameterized shared-manifest predicate',
   assert.equal((check.predicate.match(/has_(?:schema|table|sequence|function)_privilege/g) || []).length,
     expectedPredicateCount);
   assert.equal(check.parameters.length, expectedPredicateCount * 2);
-  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0051_staff_register_shifts.sql');
+  assert.equal(REQUIRED_RUNTIME_MIGRATION, '0053_expense_reporting_indexes.sql');
 });
 
 test('the dynamic SQL allowlist stays narrow and reviewable', () => {

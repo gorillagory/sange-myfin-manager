@@ -85,6 +85,7 @@ GRANT UPDATE ON myfin.inventory_source_effects,myfin.purchase_order_lines,
  myfin.customer_order_lines,myfin.inventory_recipe_versions,
  myfin.inventory_recipe_components TO myfin_prod_runtime;
 GRANT EXECUTE ON FUNCTION myfin.reserve_order_promotions(text,text,text,timestamptz),
+ myfin.valid_expense_date(text),
  myfin.reserve_pos_promotions(text,text,text,timestamptz),
  myfin.release_pos_promotions(text,text,text,text),
  myfin.authorize_pos_pricing_recovery(text,text,text,text,text),
