@@ -36,6 +36,7 @@ curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$compa
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/orders?view=active&limit=10" > "$work/orders.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/reports/summary?$range" > "$work/summary.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/reports/details?$range" > "$work/details.json"
+curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/expense-insights?$range&grain=month" > "$work/expense-insights.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/reports/consolidation?$range" > "$work/consolidation.json"
 curl --fail --silent --show-error -b "$work/cookies" "$base/api/companies/$company/documents" > "$work/documents.json"
 pages=0
@@ -88,12 +89,20 @@ DETAIL_ROW_KEYS={
     'quotes':('id','date','kind','number','customer','status','total','converted'),
 }
 me=read('me'); orders=read('orders'); counts=read('orders-summary')['counts']; documents=read('documents')
-summary=read('summary'); details=read('details'); consolidation=read('consolidation')
+summary=read('summary'); details=read('details'); expense_insights=read('expense-insights'); consolidation=read('consolidation')
 transaction_pages=[json.loads(line) for line in (root/'transactions-pages.jsonl').read_text().splitlines()]
 transactions=[row for page in transaction_pages for row in page['rows']]
 assert me.get('authLevel')=='password' and me.get('role') in ('super_admin','workspace_owner','manager')
 assert isinstance(documents,list)
 assert isinstance(orders['rows'],list) and isinstance(counts['active'],int)
+require_keys(expense_insights,('from','to','grain','scope','summary','periods','ageing','categories','claimants','paymentSources','pettyCash','claims','claimsLimited','claimsReturned','claimLimit','oldestOutstanding'),'expense-insights')
+require_keys(expense_insights['summary'],('claimCount','draftCount','draftSen','totalSen','paidSen','outstandingSen','cashOutSen','overdueCount','overdueSen','evidenceCount','pettyCashSen'),'expense-insights.summary')
+assert expense_insights['grain']=='month' and isinstance(expense_insights['claimsLimited'],bool)
+assert isinstance(expense_insights['claims'],list) and expense_insights['claimsReturned']==len(expense_insights['claims'])
+assert expense_insights['claimsReturned']<=expense_insights['claimLimit']
+for key in ('draftSen','totalSen','paidSen','outstandingSen','cashOutSen','overdueSen','pettyCashSen'):
+    assert isinstance(expense_insights['summary'][key],int) and not isinstance(expense_insights['summary'][key],bool),f'expense-insights.summary.{key} must be integer sen'
+assert not re.search(r'receiptUrl|receiptPath|attachmentUrl|attachmentPath',json.dumps(expense_insights),re.I),'expense insights expose private evidence locations'
 summary_totals=require_totals(summary,'summary')
 details_totals=require_totals(details.get('totals'),'details.totals')
 assert summary_totals==details_totals,'summary and detail totals differ'

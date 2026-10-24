@@ -6,6 +6,8 @@ import { ledgerOutput } from '../src/stock.js';
 
 const expenseRow = {
   id: 'expense-1', company_id: 'company-1', amount: 42.05, amount_sen: 4205,
+  created_by: 'creator-1',
+  create_request_digest: 'a'.repeat(64),
   status: 'paid', paid_by_type: 'app_user', paid_by_identity_id: 'payer-1', paid_by_name: null,
   credit_terms_days: null, credit_due_date: null, paid_on: '2026-10-02', version: 3,
   data: { date: '2026-10-02', description: 'Beans', amount: 42.05 },
@@ -37,7 +39,9 @@ function projectionClient() {
   return { async query(sql) {
     if (sql.includes('FROM myfin.expense_links')) return { rows: linkedRows };
     if (sql.includes('FROM myfin.expense_payment_events')) return { rows: paymentRows };
-    if (sql.includes('FROM myfin.app_identities')) return { rows: [{ id: 'payer-1', display_name: 'Paying user' }] };
+    if (sql.includes('FROM myfin.app_identities')) return { rows: [
+      { id: 'payer-1', display_name: 'Paying user' },{ id:'creator-1',display_name:'Claim creator' },
+    ] };
     throw new Error(`Unexpected query: ${sql}`);
   } };
 }
@@ -55,7 +59,9 @@ function singleFlightClient() {
         await new Promise(resolve => setImmediate(resolve));
         if (sql.includes('FROM myfin.expense_links')) return { rows: linkedRows };
         if (sql.includes('FROM myfin.expense_payment_events')) return { rows: paymentRows };
-        if (sql.includes('FROM myfin.app_identities')) return { rows: [{ id: 'payer-1', display_name: 'Paying user' }] };
+        if (sql.includes('FROM myfin.app_identities')) return { rows: [
+          { id: 'payer-1', display_name: 'Paying user' },{ id:'creator-1',display_name:'Claim creator' },
+        ] };
         return { rows: [] };
       } finally {
         active = false;
@@ -78,6 +84,8 @@ test('expense link projections respect stock-history and procurement permissions
   const operator = (await expenseOutput(projectionClient(), 'company-1', [expenseRow], { id: 'operator-1', role: 'operator' }))[0];
   assert.deepEqual(operator.links.map(link => link.type), ['stock_item']);
   assert.equal(operator.paidByUserName, 'Paying user');
+  assert.equal(operator.claimantName, 'Claim creator');
+  assert.equal(operator.claimantAttribution, 'recorded_user');
   assert.deepEqual(operator.paymentSources, [
     {sourceType:'petty_cash',amountSen:3000,paidByUserId:'',paidByName:'',pettyCashFundId:'fund-1',pettyCashFundName:'Front counter'},
     {sourceType:'app_user',amountSen:1205,paidByUserId:'payer-1',paidByName:'',pettyCashFundId:'',pettyCashFundName:''},

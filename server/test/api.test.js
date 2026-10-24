@@ -128,6 +128,28 @@ test('pool options are passed through, idle errors are sanitized, close is idemp
   await Promise.all([db.close(), db.close()]);
   assert.equal(closes, 1);
 });
+test('database transactions opt into repeatable-read before work and always release the client', async () => {
+  const statements=[];let releases=0;
+  const client={async query(sql){statements.push(sql);return {rows:[]};},release(){releases++;}};
+  class FakePool extends EventEmitter {
+    async connect(){return client;}
+    async query(){return {rows:[{ready:true}]};}
+    async end(){}
+  }
+  const db=createDatabase({}, {Pool:FakePool});
+  const result=await db.transaction(async c=>{assert.equal(c,client);await c.query('SELECT snapshot');return 'ok';},
+    {isolation:'repeatable_read'});
+  assert.equal(result,'ok');
+  assert.deepEqual(statements,['BEGIN ISOLATION LEVEL REPEATABLE READ','SELECT snapshot','COMMIT']);
+  assert.equal(releases,1);
+  statements.length=0;
+  await assert.rejects(()=>db.transaction(async()=>{throw Error('failed');},{isolation:'repeatable_read'}),/failed/);
+  assert.deepEqual(statements,['BEGIN ISOLATION LEVEL REPEATABLE READ','ROLLBACK']);
+  assert.equal(releases,2);
+  await assert.rejects(()=>db.transaction(async()=>{}, {isolation:'serializable'}),/invalid_transaction_isolation/);
+  assert.equal(releases,2);
+  await db.close();
+});
 test('database readiness fails closed when migrations or any runtime ACL check fails', async () => {
   for (const ready of [false, null, undefined, 'throw']) {
     class FakePool extends EventEmitter {

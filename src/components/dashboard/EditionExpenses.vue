@@ -1,27 +1,31 @@
 <script setup>
-import {ref,computed} from 'vue';
+import {ref,computed,onBeforeUnmount} from 'vue';
 import {Store} from '../../store';
 import {api,companyPath} from '../../services/api';
 import {useStorage} from '../../composables/useStorage';
 import {expenseRecords,money,businessDate,cents} from '../../domain/pos';
 import {expenseTemplateCsv,exportExpensesCsv,importExpensesCsv} from '../../domain/expensesCsv.js';
-import {buildExpenseReport,effectiveReportExpenseStatus} from '../../domain/expenseReport.js';
+import {buildExpenseClaimReport,effectiveReportExpenseStatus} from '../../domain/expenseReport.js';
 import {
   EXPENSE_LINK_LABELS,EXPENSE_PAID_BY_LABELS,EXPENSE_STATUS_LABELS,
   expenseHasCashImpact,expenseSaveFailureDisposition,normalizeExpenseLifecycle,
 } from '../../domain/expenseLifecycle.js';
-import {downloadExpenseReportPdf} from '../../services/expenseReportPdf.js';
-import {listExpensePayments,listPettyCashEntries,listPettyCashFunds,postExpensePayment,reverseExpensePayment} from '../../services/pettyCash.js';
+import {downloadExpenseClaimPdf} from '../../services/expenseReportPdf.js';
+import {getExpenseClaimReport} from '../../services/expenseAnalytics.js';
+import {listExpensePayments,listPettyCashFunds,postExpensePayment,reverseExpensePayment} from '../../services/pettyCash.js';
 import {clearExpenseIntent,loadOrCreateExpenseIntent} from '../../services/expenseIntent.js';
 import Icon from '../ui/EditionIcon.vue';
 import Modal from '../ui/EditionModal.vue';
 import PettyCashPanel from './expenses/PettyCashPanel.vue';
+import ExpenseAnalyticsPanel from './expenses/ExpenseAnalyticsPanel.vue';
 
 const {uploadFile,removeFile}=useStorage();
-const view=ref('expenses'),search=ref(''),statusFilter=ref(''),paidByFilter=ref(''),fromDate=ref(''),toDate=ref(''),form=ref(null),file=ref(null),busy=ref(false),reportBusy=ref(false),error=ref(''),deleting=ref(null),approval=ref({managerCode:'',reason:''}),csvInput=ref(null),importBatch=ref(null);
-const payment=ref(null),paymentRows=ref([]),paymentFunds=ref([]),expenseFunds=ref([]),reversingPayment=ref(null),pettyReportData=ref({funds:[],entries:[]});
+const view=ref('expenses'),search=ref(''),statusFilter=ref(''),paidByFilter=ref(''),fromDate=ref(''),toDate=ref(''),form=ref(null),file=ref(null),busy=ref(false),claimReportBusy=ref(''),error=ref(''),deleting=ref(null),approval=ref({managerCode:'',reason:''}),csvInput=ref(null),importBatch=ref(null);
+const payment=ref(null),paymentRows=ref([]),paymentFunds=ref([]),expenseFunds=ref([]),reversingPayment=ref(null);
 const expenseEvents=ref([]),eventsLoading=ref(false),editing=ref(false),expenseOutcomeUnknown=ref(false);
 let expenseEventRequest=0;
+let claimPdfRequest=0;
+onBeforeUnmount(()=>{claimPdfRequest++;claimReportBusy.value='';});
 const linkOptions=ref({stockItems:[],stockMovements:[],purchaseOrders:[],goodsReceipts:[]});
 const currency=computed(()=>Store.state.selectedCompany?.preferences?.currency||'RM');
 const writeReady=computed(()=>Store.state.online&&!Store.state.fromCache);
@@ -127,27 +131,27 @@ async function save(){
 async function remove(){if(busy.value)return;if(!writeReady.value){Store.notify('Reconnect and refresh live data before voiding an expense.','error');return;}if(!deleting.value||!canVoidRecord(deleting.value)){Store.notify('You do not have permission to void this expense.','error');return;}busy.value=true;try{if(deleting.value.origin==='transactions')throw new Error('Historical expenses require a correction workflow.');await Store.deleteExpense(deleting.value.id,approval.value);deleting.value=null;approval.value={managerCode:'',reason:''};Store.notify('Expense voided. Its audit history was retained.');}catch(caught){Store.notify(caught.message,'error');}finally{busy.value=false;}}
 function download(text,name){const url=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function exportCsv(){download(exportExpensesCsv(expenses.value,suppliers.value),'myfin-expenses.csv');}
-async function pettyDataForReport(){
-  if(!Store.can('pettyCashRead')||!Store.state.online)return {funds:[],entries:[]};
-  const known=pettyReportData.value.funds?.[0],funds=known?[known]:((await listPettyCashFunds(Store)).rows||[]);
-  const fund=known||funds.find(item=>item.isDefault)||funds.find(item=>item.status==='open')||funds[0];
-  if(!fund)return {funds:[],entries:[]};
-  if(known&&pettyReportData.value.complete!==false)return pettyReportData.value;
-  const entries=[],seen=new Set();let after='';
-  do{const page=await listPettyCashEntries(Store,fund.id,{after,limit:500});entries.push(...(page.rows||[]));after=page.next||'';if(after&&seen.has(after))throw new Error('Petty cash history pagination did not advance. Refresh and try again.');if(after)seen.add(after);if(entries.length>50000)throw new Error('Petty cash history exceeds the PDF export limit. Narrow the date range.');}while(after);
-  return {funds:[fund],entries,scope:'selected_fund',complete:true};
+function pdfContextKey(){
+  const user=Store.state.currentUser||{},grants=Array.isArray(user.module_grants)?[...new Set(user.module_grants)].sort().join(','):(user.module_grants===null?'*':'');
+  return [Store.state.selectedCompany?.id||'',user.id||user.uid||'',user.role||'',grants,Store.can('expenseReportsRead')?'1':'0'].join('\u0000');
 }
-async function exportPdf(){
-  if(reportBusy.value||!Store.can('financialReports'))return;
-  if(fromDate.value&&toDate.value&&fromDate.value>toDate.value){Store.notify('The report start date must be on or before the end date.','error');return;}
-  reportBusy.value=true;
+async function exportClaimPdf(expense){
+  if(!expense?.id||expense.origin==='transactions'||claimReportBusy.value)return;
+  if(!Store.state.online){Store.notify('Reconnect before creating a claim report.','error');return;}
+  const request=++claimPdfRequest,requestContext=pdfContextKey();
+  const contextCurrent=()=>request===claimPdfRequest&&requestContext===pdfContextKey()&&Store.state.online;
+  claimReportBusy.value=expense.id;
   try{
-    const company=Store.state.selectedCompany||{},workspace=Store.state.tenantContext?.workspace||{id:company.workspace_id,name:company.workspaceName};
-    const pettyCash=await pettyDataForReport();
-    const report=buildExpenseReport({expenses:allExpenses.value,company,workspace,actor:Store.state.currentUser,
-      filters:{from:fromDate.value,to:toDate.value,status:statusFilter.value,paidBy:paidByFilter.value,query:search.value},pettyCash,generatedAt:new Date().toISOString()});
-    downloadExpenseReportPdf(report);Store.notify(`Expense report created with ${report.totals.count} records.`);
-  }catch(caught){Store.notify(caught.message||'The expense report could not be created.','error');}finally{reportBusy.value=false;}
+    const payload=await getExpenseClaimReport(Store,expense.id);
+    if(!contextCurrent())return;
+    const company=Store.state.selectedCompany||{};
+    const workspace=payload.workspace||Store.state.tenantContext?.workspace||{id:company.workspace_id,name:company.workspaceName};
+    const report=buildExpenseClaimReport({...payload,company:payload.company||company,workspace,
+      actor:Store.state.currentUser,generatedAt:new Date().toISOString()});
+    const saved=await downloadExpenseClaimPdf(report,{shouldSave:contextCurrent});
+    if(saved)Store.notify('Claim report downloaded.');
+  }catch(caught){if(contextCurrent())Store.notify(caught.message||'The claim report could not be created.','error');}
+  finally{if(request===claimPdfRequest)claimReportBusy.value='';}
 }
 const paymentOutstanding=expense=>Number.isSafeInteger(Number(expense?.outstandingAmountSen))?Number(expense.outstandingAmountSen)/100:Number(expense?.amount||0);
 const canSettle=expense=>writeReady.value&&Store.can('expensePaymentsWrite')&&expense.origin!=='transactions'&&!['paid','voided','draft'].includes(effectiveReportExpenseStatus(expense))&&paymentOutstanding(expense)>0;
@@ -184,16 +188,17 @@ async function importCsv(){if(!importBatch.value||busy.value)return;if(!writeRea
 
 <template>
   <div v-if="Store.can('expensesRead')" class="ed-page">
-    <header class="ed-page-head"><div><div class="ed-eyebrow">FINANCE</div><h1>Expenses</h1><p>Track claims, payables, settlements, supporting evidence, and controlled petty cash.</p></div><div v-if="view==='expenses'" class="ed-actions"><template v-if="Store.can('expensesWrite')"><button class="ed-btn" @click="templateCsv"><Icon name="download"/>CSV template</button><button class="ed-btn" :disabled="!writeReady" @click="csvInput.click()"><Icon name="arrow-up"/>Upload CSV</button><input ref="csvInput" type="file" accept=".csv,text/csv" hidden @change="readCsv"></template><button v-if="Store.can('financialReports')" class="ed-btn" :disabled="reportBusy" @click="exportPdf"><Icon name="download"/>{{ reportBusy?'Preparing…':'Finance PDF' }}</button><button v-if="Store.permissions().owner||Store.permissions().manager" class="ed-btn" @click="exportCsv"><Icon name="download"/>Export CSV</button><button v-if="Store.can('expensesCreate')" class="ed-btn primary" :disabled="!writeReady" @click="edit()"><Icon name="plus"/>Record expense</button></div></header>
-    <div v-if="Store.can('pettyCashRead')" class="ed-tabs expense-tabs" role="tablist" aria-label="Expense finance views"><button :class="{active:view==='expenses'}" role="tab" :aria-selected="view==='expenses'" @click="view='expenses'">Expenses & claims</button><button :class="{active:view==='petty'}" role="tab" :aria-selected="view==='petty'" @click="view='petty'">Petty cash</button></div>
+    <header class="ed-page-head"><div><div class="ed-eyebrow">FINANCE</div><h1>Expenses</h1><p>Track claims, payables, settlements, supporting evidence, and controlled petty cash.</p></div><div v-if="view==='expenses'" class="ed-actions"><template v-if="Store.can('expensesWrite')"><button class="ed-btn" @click="templateCsv"><Icon name="download"/>CSV template</button><button class="ed-btn" :disabled="!writeReady" @click="csvInput.click()"><Icon name="arrow-up"/>Upload CSV</button><input ref="csvInput" type="file" accept=".csv,text/csv" hidden @change="readCsv"></template><button v-if="Store.permissions().owner||Store.permissions().manager" class="ed-btn" @click="exportCsv"><Icon name="download"/>Export CSV</button><button v-if="Store.can('expensesCreate')" class="ed-btn primary" :disabled="!writeReady" @click="edit()"><Icon name="plus"/>Record expense</button></div></header>
+    <div class="ed-tabs expense-tabs" role="tablist" aria-label="Expense finance views"><button :class="{active:view==='expenses'}" role="tab" :aria-selected="view==='expenses'" @click="view='expenses'">Expenses &amp; claims</button><button v-if="Store.can('pettyCashRead')" :class="{active:view==='petty'}" role="tab" :aria-selected="view==='petty'" @click="view='petty'">Petty cash</button><button :class="{active:view==='insights'}" role="tab" :aria-selected="view==='insights'" @click="view='insights'">Insights &amp; reports</button></div>
     <div v-if="!writeReady" class="ed-notice warning" role="status">Cached expense data is read-only. Reconnect and refresh before recording, editing, importing, or voiding expenses.</div>
     <template v-if="view==='expenses'">
       <div class="ed-filters expense-filters"><div class="ed-search"><Icon name="search"/><input v-model="search" class="ed-input" aria-label="Search expenses" placeholder="Search expenses, payers, or links"></div><label class="filter-date"><span>From</span><input v-model="fromDate" class="ed-input" type="date" aria-label="Expense report from date"></label><label class="filter-date"><span>To</span><input v-model="toDate" class="ed-input" type="date" aria-label="Expense report to date"></label><select v-model="statusFilter" class="ed-input" aria-label="Filter expense status"><option value="">All statuses</option><option v-for="([value,label]) in statusFilters" :key="value" :value="value">{{ label }}</option></select><select v-model="paidByFilter" class="ed-input" aria-label="Filter paid by"><option value="">All payment sources</option><option v-for="(label,value) in EXPENSE_PAID_BY_LABELS" :key="value" :value="value">{{ label }}</option></select></div>
       <div class="expense-totals"><span><small>Recorded shown</small><strong>{{ money(accruedTotal,currency) }}</strong></span><span><small>Paid shown</small><strong>{{ money(cashPaidTotal,currency) }}</strong></span><span :class="{attention:outstandingTotal>0}"><small>Outstanding shown</small><strong>{{ money(outstandingTotal,currency) }}</strong></span></div>
-      <div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Expense</th><th>Category</th><th>Paid to</th><th>Status</th><th>Payment source</th><th>Linked records</th><th>Date</th><th class="num">Amount</th><th>Receipt</th><th>Actions</th></tr></thead><tbody><tr v-for="expense in expenses" :key="expense.origin+expense.id"><td><button v-if="canEditRecord(expense)" class="ed-link" @click="edit(expense)">{{ expense.description }}</button><strong v-else>{{ expense.description }}</strong><small v-if="expense.origin==='transactions'">Legacy {{ expense.type.toLowerCase() }}</small></td><td><span class="ed-pill">{{ expense.category||'General' }}</span></td><td>{{ supplierName(expense.supplier_id)||expense.payee||'—' }}</td><td><span class="ed-pill" :class="{ready:effectiveReportExpenseStatus(expense)==='paid',warning:['pending_payment','partially_paid'].includes(effectiveReportExpenseStatus(expense)),error:effectiveReportExpenseStatus(expense)==='overdue'}">{{ statusName(expense) }}</span><small v-if="Number(expense.paidAmountSen)>0">Paid {{ money(Number(expense.paidAmountSen)/100,currency) }} · due {{ money(Number(expense.outstandingAmountSen||0)/100,currency) }}</small><small v-else-if="expense.paidOn">Paid {{ expense.paidOn }}</small><small v-else-if="expense.creditDueDate">Due {{ expense.creditDueDate }}</small></td><td>{{ paidByName(expense) }}</td><td><template v-if="expense.links?.length"><small v-for="link in expense.links.slice(0,3)" :key="link.type+link.id">{{ EXPENSE_LINK_LABELS[link.type] }} · {{ link.label||link.id }}</small><small v-if="expense.links.length>3">+{{ expense.links.length-3 }} more</small></template><span v-else class="ed-muted">—</span></td><td>{{ businessDate(expense.date) }}</td><td class="num">{{ money(expense.amount,currency) }}</td><td><a v-if="expense.receiptUrl" class="ed-link" :href="expense.receiptUrl" target="_blank" rel="noopener">View ↗</a><span v-else class="ed-muted">—</span></td><td><div class="expense-row-actions"><button v-if="canViewPayments(expense)" class="ed-btn small" @click="openPayment(expense)">{{ canSettle(expense)?'Pay / settle':'Payments' }}</button><button v-if="canEditRecord(expense)" class="ed-icon-button" :aria-label="`Edit ${expense.description}`" @click="edit(expense)"><Icon name="edit"/></button><button v-if="canVoidRecord(expense)" class="ed-icon-button" :aria-label="`Void ${expense.description}`" @click="deleting=expense;approval={managerCode:'',reason:''}"><Icon name="close"/></button></div></td></tr></tbody></table></div>
+      <div class="ed-table-wrap"><table class="ed-table"><thead><tr><th>Expense</th><th>Category</th><th>Paid to</th><th>Status</th><th>Payment source</th><th>Linked records</th><th>Date</th><th class="num">Amount</th><th>Receipt</th><th>Actions</th></tr></thead><tbody><tr v-for="expense in expenses" :key="expense.origin+expense.id"><td><button v-if="canEditRecord(expense)" class="ed-link" @click="edit(expense)">{{ expense.description }}</button><strong v-else>{{ expense.description }}</strong><small v-if="expense.origin==='transactions'">Legacy {{ expense.type.toLowerCase() }}</small></td><td><span class="ed-pill">{{ expense.category||'General' }}</span></td><td>{{ supplierName(expense.supplier_id)||expense.payee||'—' }}</td><td><span class="ed-pill" :class="{ready:effectiveReportExpenseStatus(expense)==='paid',warning:['pending_payment','partially_paid'].includes(effectiveReportExpenseStatus(expense)),error:effectiveReportExpenseStatus(expense)==='overdue'}">{{ statusName(expense) }}</span><small v-if="Number(expense.paidAmountSen)>0">Paid {{ money(Number(expense.paidAmountSen)/100,currency) }} · due {{ money(Number(expense.outstandingAmountSen||0)/100,currency) }}</small><small v-else-if="expense.paidOn">Paid {{ expense.paidOn }}</small><small v-else-if="expense.creditDueDate">Due {{ expense.creditDueDate }}</small></td><td>{{ paidByName(expense) }}</td><td><template v-if="expense.links?.length"><small v-for="link in expense.links.slice(0,3)" :key="link.type+link.id">{{ EXPENSE_LINK_LABELS[link.type] }} · {{ link.label||link.id }}</small><small v-if="expense.links.length>3">+{{ expense.links.length-3 }} more</small></template><span v-else class="ed-muted">—</span></td><td>{{ businessDate(expense.date) }}</td><td class="num">{{ money(expense.amount,currency) }}</td><td><a v-if="expense.receiptUrl" class="ed-link" :href="expense.receiptUrl" target="_blank" rel="noopener">View ↗</a><span v-else class="ed-muted">—</span></td><td><div class="expense-row-actions"><button v-if="expense.origin!=='transactions'&&Store.can('expenseReportsRead')" class="ed-btn small" :disabled="!Store.state.online||claimReportBusy===expense.id" @click="exportClaimPdf(expense)"><Icon name="download"/>{{ claimReportBusy===expense.id?'Preparing…':'Claim PDF' }}</button><button v-if="canViewPayments(expense)" class="ed-btn small" @click="openPayment(expense)">{{ canSettle(expense)?'Pay / settle':'Payments' }}</button><button v-if="canEditRecord(expense)" class="ed-icon-button" :aria-label="`Edit ${expense.description}`" @click="edit(expense)"><Icon name="edit"/></button><button v-if="canVoidRecord(expense)" class="ed-icon-button" :aria-label="`Void ${expense.description}`" @click="deleting=expense;approval={managerCode:'',reason:''}"><Icon name="close"/></button></div></td></tr></tbody></table></div>
       <div v-if="!expenses.length" class="ed-empty"><Icon name="wallet"/><h3>No matching expenses.</h3><p>Record an expense or change the filters.</p></div>
     </template>
-    <PettyCashPanel v-else-if="view==='petty'&&Store.can('pettyCashRead')" @report-data="pettyReportData=$event"/>
+    <PettyCashPanel v-else-if="view==='petty'&&Store.can('pettyCashRead')"/>
+    <ExpenseAnalyticsPanel v-else-if="view==='insights'"/>
 
     <Modal v-if="form" :title="editing?'Edit expense':'Record expense'" :busy="busy" wide @close="closeEditor">
       <form id="expense-form" class="ed-form-grid" @submit.prevent="save">

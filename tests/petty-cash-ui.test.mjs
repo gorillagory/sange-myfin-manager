@@ -45,7 +45,9 @@ test('expense and petty cash components compile with reconciliation and settleme
   }
   const expense=await readFile(new URL('../src/components/dashboard/EditionExpenses.vue',import.meta.url),'utf8');
   const petty=await readFile(new URL('../src/components/dashboard/expenses/PettyCashPanel.vue',import.meta.url),'utf8');
-  assert.match(expense,/Finance PDF/);assert.match(expense,/Pay \/ settle/);assert.match(expense,/pettyCashFundId/);
+  assert.match(expense,/ExpenseAnalyticsPanel/);assert.match(expense,/Insights &amp; reports/);
+  assert.doesNotMatch(expense,/Finance PDF|downloadExpenseReportPdf|pettyDataForReport/);
+  assert.match(expense,/Pay \/ settle/);assert.match(expense,/pettyCashFundId/);
   assert.match(expense,/canViewPayments=.*paidAmountSen/);
   assert.match(expense,/v-if="canViewPayments\(expense\)"/);
   assert.match(expense,/fully settled[\s\S]*immutable payment history[\s\S]*Reverse/);

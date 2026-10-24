@@ -199,7 +199,8 @@ const linkLabel = row => {
 export async function expenseOutput(c, companyId, rows, who) {
   if (!rows.length) return [];
   const permissions=permissionsFor(who);
-  const expenseIds = rows.map(row => row.id), payerIds = [...new Set(rows.map(row => row.paid_by_identity_id).filter(Boolean))];
+  const expenseIds = rows.map(row => row.id), identityIds = [...new Set(rows.flatMap(row =>
+    [row.paid_by_identity_id,row.created_by]).filter(Boolean))];
   const linkResult = await c.query(`SELECT el.*,si.name AS stock_item_name,sl.item_id AS movement_item_id,
         sl.kind AS movement_kind,msi.name AS movement_item_name,po.number AS purchase_order_number,
         gr.reference AS goods_receipt_reference,rpo.number AS receipt_order_number
@@ -212,8 +213,8 @@ export async function expenseOutput(c, companyId, rows, who) {
       LEFT JOIN myfin.purchase_orders rpo ON rpo.company_id=gr.company_id AND rpo.id=gr.purchase_order_id
       WHERE el.company_id=$1 AND el.expense_id=ANY($2::text[])
       ORDER BY el.expense_id,el.link_type,el.created_at,el.id`, [companyId, expenseIds]);
-  const payerResult = payerIds.length
-    ? await c.query('SELECT id,display_name FROM myfin.app_identities WHERE id=ANY($1::text[])', [payerIds])
+  const identityResult = identityIds.length
+    ? await c.query('SELECT id,display_name FROM myfin.app_identities WHERE id=ANY($1::text[])', [identityIds])
     : { rows:[] };
   const paymentResult = await c.query(`SELECT p.expense_id,p.source_type,p.paid_by_identity_id,p.paid_by_name,
         p.petty_cash_fund_id,f.name AS petty_cash_fund_name,
@@ -225,7 +226,7 @@ export async function expenseOutput(c, companyId, rows, who) {
         p.petty_cash_fund_id,f.name
       HAVING sum(CASE WHEN p.event_type='payment' THEN p.amount_sen ELSE -p.amount_sen END)>0
       ORDER BY p.expense_id,p.source_type,p.paid_by_name,p.petty_cash_fund_id`, [companyId, expenseIds]);
-  const payers = new Map(payerResult.rows.map(row => [row.id, row.display_name || row.id]));
+  const identities = new Map(identityResult.rows.map(row => [row.id, row.display_name || row.id]));
   const links = new Map(expenseIds.map(id => [id, []]));
   for (const row of linkResult.rows) {
     const visible=row.link_type==='stock_item'
@@ -243,6 +244,9 @@ export async function expenseOutput(c, companyId, rows, who) {
     pettyCashFundName:row.petty_cash_fund_name||'',
   });
   return rows.map(row => {
+    // Pre-request-digest rows include the original Firebase import, whose
+    // importer identity is not evidence of the historical claimant.
+    const importedUnattributed=Boolean(row.imported_unattributed)||!row.created_by||row.create_request_digest==null;
     const outputAmountSen=Number(row.amount_sen == null ? cents(row.amount) : row.amount_sen);
     const outputPaidSen=Number(row.paid_amount_sen == null
       ? ((row.status || row.data?.status || 'paid')==='paid'?outputAmountSen:0)
@@ -258,7 +262,7 @@ export async function expenseOutput(c, companyId, rows, who) {
       creditDueDate:outputDate(row.credit_due_date)}),
     paidByType:row.paid_by_type || row.data?.paidByType || 'other',
     paidByUserId:row.paid_by_identity_id || row.data?.paidByUserId || '',
-    paidByUserName:payers.get(row.paid_by_identity_id) || '',
+    paidByUserName:identities.get(row.paid_by_identity_id) || '',
     paidByName:row.paid_by_name || row.data?.paidByName || '',
     pettyCashFundId:row.petty_cash_fund_id || row.data?.pettyCashFundId || '',
     paidAmountSen:outputPaidSen,paidAmount:outputPaidSen/100,
@@ -268,6 +272,9 @@ export async function expenseOutput(c, companyId, rows, who) {
     creditDueDate:outputDate(row.credit_due_date),
     paidOn:outputDate(row.paid_on || row.data?.paidOn || ((row.status || row.data?.status || 'paid') === 'paid' ? row.data?.date : '')),
     version:Number(row.version || 1),
+    createdBy:importedUnattributed?'':row.created_by||'',
+    claimantName:importedUnattributed?'Imported / unattributed':(identities.get(row.created_by)||'Unattributed'),
+    claimantAttribution:importedUnattributed?'imported_unattributed':'recorded_user',
     links:links.get(row.id) || [],
     paymentSources:paymentSources.get(row.id) || [],
   });});

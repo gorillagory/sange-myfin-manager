@@ -11,9 +11,11 @@ export function createDatabase(config, { Pool = pg.Pool, onError = () => {} } = 
   return {
     pool,
     query: (...args) => pool.query(...args),
-    async transaction(fn) {
+    async transaction(fn, { isolation = 'read_committed' } = {}) {
+      if(!['read_committed','repeatable_read'].includes(isolation))throw new Error('invalid_transaction_isolation');
       const client = await pool.connect();
-      try { await client.query("BEGIN"); const result = await fn(client); await client.query("COMMIT"); return result; }
+      const begin=isolation==='repeatable_read'?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN';
+      try { await client.query(begin); const result = await fn(client); await client.query("COMMIT"); return result; }
       catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
       finally { client.release(); }
     },

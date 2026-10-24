@@ -45,6 +45,7 @@ import {
   posPricingRecoveryState,
 } from "./pricing-engine.js";
 import { registerAdvancedAnalytics } from "./advanced-analytics.js";
+import { registerExpenseAnalytics } from "./expense-analytics.js";
 import { registerManualSales } from "./manual-sales.js";
 import { assertProductReservationFloor, assertUnreservedSaleStock } from "./customer-order-reservations.js";
 import { registerPaymentGatewayStaff } from "./payment-gateways.js";
@@ -791,13 +792,13 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   registerWorkspaces(app,{db,authOptions,authorize,audit,validateFileRefs});
   registerDocuments(app,{db,authorize,audit});
   registerReceiptReviews(app,{db,authorize,checkout,audit,ensureTerminalActor:ensureRequestTerminalStaff});
-  const scoped = (req, fn, admin = false) => {
+  const scoped = (req, fn, admin = false, transactionOptions = undefined) => {
     const company = v.parse(v.id, req.params.company);
     return db.transaction(async (c) => {
       await managementSession(c,req);
       await authorize(c, req.identity, company, admin);
       return fn(c, company);
-    });
+    },transactionOptions);
   };
   registerTerminalOperations(app,{db,scoped,audit,authOptions});
   registerExpenseImport(app,{scoped,audit});
@@ -806,6 +807,7 @@ export function registerBusiness(app, { database: db, auth, authOptions, payment
   registerProcurement(app,{scoped,audit});
   registerReportAutomation(app,{scoped,audit});
   registerAdvancedAnalytics(app,{scoped});
+  registerExpenseAnalytics(app,{scoped});
   registerOrders(app,{scoped,audit});
   registerManualSales(app,{scoped,audit});
   registerStorefrontAdmin(app,{scoped,authOptions,audit});
